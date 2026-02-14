@@ -1,0 +1,8 @@
+CLAUDE.md
+start_claude.sh
+node_modules/
+package-lock.json
+package.json
+.claude
+datas
+diff-gaussian-rasterization
