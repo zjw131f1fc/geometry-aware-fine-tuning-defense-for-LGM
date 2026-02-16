@@ -433,8 +433,191 @@ validate_dataset("./datas/train")
 - ✗ `depths` - 可选，LGM不需要
 - ✗ `normals` - 可选，LGM不需要
 
-**下一步**:
-1. 下载 `blender_renders` 数据
-2. 编写转换脚本
-3. 验证数据格式
-4. 修改 `provider_objaverse.py` 以适配新数据路径
+---
+
+## 实际数据分析 (已验证)
+
+### 下载的数据结构
+
+**实际路径**: `raw/blender_renders_24_views` (不是 `/blender_renders`)
+
+```bash
+# 正确的下载命令
+openxlab dataset download --dataset-repo omniobject3d/OmniObject3D-New \
+                          --source-path raw/blender_renders_24_views/img \
+                          --target-path ./datas
+```
+
+**数据规模**:
+- 总大小: ~410GB
+- 文件数: 433个类别压缩包
+- 格式: tar.gz (每个类别一个压缩包)
+
+### 解压后的数据结构
+
+```
+anise.tar.gz (解压后)
+├── anise_001/
+│   ├── 000.png - 023.png  (24个视图)
+│   └── transforms.json
+├── anise_002/
+│   ├── 000.png - 023.png
+│   └── transforms.json
+└── ...
+```
+
+### 数据质量评估 ✅
+
+**图像格式**:
+- 分辨率: 1024×1024 (高于LGM需求的512×512)
+- 格式: PNG with RGBA
+- 背景: 透明背景
+- 大小: 每张约600-800KB
+- 质量: 高质量渲染，细节清晰
+
+**相机参数** (来自transforms.json):
+```json
+{
+    "camera_angle_x": 0.8575560450553894,  // 49.1° (与LGM完全一致!)
+    "aabb": [[-0.4, -0.4, -0.4], [0.4, 0.4, 0.4]],
+    "frames": [
+        {
+            "file_path": "000.png",
+            "transform_matrix": [[...], [...], [...], [...]]  // 4x4矩阵
+        },
+        // ... 24个视图
+    ]
+}
+```
+
+**关键参数对比**:
+
+| 参数 | OmniObject3D | LGM需求 | 状态 |
+|------|--------------|---------|------|
+| 视图数 | 24 | 8-12 | ✅ 超过需求 |
+| 分辨率 | 1024×1024 | 512×512 | ✅ 可下采样 |
+| FOV | 49.1° | 49.1° | ✅ 完全匹配 |
+| 相机距离 | 1.2 | 1.5 | ⚠️ 需缩放 |
+| Alpha通道 | ✅ | ✅ | ✅ 有 |
+| 变换矩阵 | 4×4 | 4×4 | ✅ 格式一致 |
+
+**结论**: 数据质量优秀，完全符合LGM训练需求！
+
+### 示例数据
+
+**anise_001对象**:
+- 24个视图 (000.png - 023.png)
+- 每个视图约680KB
+- 总大小: 97MB
+- 相机轨道半径: 1.2
+
+**示例图像**: 八角茴香的高质量3D渲染，物体居中，背景透明，光照均匀。
+
+---
+
+## 数据转换
+
+### 使用转换脚本
+
+已提供转换脚本: `scripts/convert_omniobject3d.py`
+
+**功能**:
+1. 图像resize: 1024×1024 → 512×512
+2. 相机距离缩放: 1.2 → 1.5
+3. 格式转换: transforms.json → 单独的pose文件
+4. 目录重组: 符合LGM的数据加载器格式
+
+**使用方法**:
+
+```bash
+# 1. 解压数据
+cd datas
+tar -xzf omniobject3d___OmniObject3D-New/raw/blender_renders_24_views/img/anise.tar.gz
+
+# 2. 转换单个类别 (测试)
+python3 ../scripts/convert_omniobject3d.py \
+    ./anise_001 \
+    ./lgm_format/anise_001 \
+    --resize 512
+
+# 3. 批量转换 (限制数量)
+python3 ../scripts/convert_omniobject3d.py \
+    ./ \
+    ./lgm_format \
+    --resize 512 \
+    --max 10
+
+# 4. 转换所有对象
+python3 ../scripts/convert_omniobject3d.py \
+    ./ \
+    ./lgm_format \
+    --resize 512
+```
+
+**输出格式**:
+```
+lgm_format/
+├── anise_001/
+│   ├── rgb/
+│   │   ├── 000.png - 023.png  (512×512 RGBA)
+│   └── pose/
+│       ├── 000.txt - 023.txt  (4×4矩阵)
+├── anise_002/
+└── object_list.txt  (对象ID列表)
+```
+
+### 转换脚本说明
+
+**主要功能**:
+- `convert_object()`: 转换单个对象
+- `batch_convert()`: 批量转换多个对象
+- 自动生成 `object_list.txt`
+
+**参数**:
+- `source`: 源目录 (解压后的数据)
+- `target`: 目标目录
+- `--resize`: 图像resize大小 (默认512)
+- `--max`: 最多转换多少个对象 (用于测试)
+
+**处理流程**:
+1. 读取 transforms.json
+2. 对每个视图:
+   - 读取并resize图像 (LANCZOS插值)
+   - 调整相机距离 (×1.25)
+   - 保存图像到 rgb/
+   - 保存位姿到 pose/
+
+---
+
+## 下一步
+
+1. **下载数据** (建议先下载1-2个类别测试):
+```bash
+openxlab dataset download --dataset-repo omniobject3d/OmniObject3D-New \
+                          --source-path raw/blender_renders_24_views/img/anise.tar.gz \
+                          --target-path ./datas
+```
+
+2. **解压和转换**:
+```bash
+cd datas
+tar -xzf omniobject3d___OmniObject3D-New/raw/blender_renders_24_views/img/anise.tar.gz
+python3 ../scripts/convert_omniobject3d.py ./ ./lgm_format --max 5
+```
+
+3. **验证数据**:
+```bash
+python3 scripts/validate_dataset.py ./datas/lgm_format
+```
+
+4. **修改数据加载器**:
+   - 编辑 `LGM/core/provider_objaverse.py`
+   - 更新数据路径
+   - 调整视图选择策略
+
+5. **开始训练**:
+```bash
+source /mnt/huangjiaxin/venvs/3d-defense/bin/activate
+cd LGM
+accelerate launch --config_file acc_configs/gpu1.yaml main.py big --workspace ../workspace_test
+```

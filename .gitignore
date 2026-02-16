@@ -6,3 +6,6 @@ package.json
 .claude
 datas
 diff-gaussian-rasterization
+workspace*
+.vscode
+*__pycache__/
