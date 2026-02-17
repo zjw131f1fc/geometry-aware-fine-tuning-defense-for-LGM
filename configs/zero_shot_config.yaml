@@ -3,7 +3,7 @@
 # 模型配置
 model:
   size: big
-  resume: /mnt/huangjiaxin/3d-defense/LGM/pretrained/model_fp16_fixrot.safetensors
+  resume: /mnt/huangjiaxin/3d-defense/third_party/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
   gpu_ids: "7"
 
@@ -19,5 +19,5 @@ data:
 
 # 其他配置
 misc:
-  workspace: ./workspace_zero_shot
+  workspace: ./output/workspace_zero_shot
   seed: 42

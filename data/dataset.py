@@ -2,8 +2,7 @@
 灵活的数据加载模块 - 支持多种视角选择策略
 """
 
-import sys
-sys.path.append('/mnt/huangjiaxin/3d-defense/LGM')
+from project_core import PROJECT_ROOT, LGM_PATH
 
 import os
 import json
@@ -352,9 +351,11 @@ class OmniObject3DDataset(Dataset):
             sample_idx=sample_idx,  # 传入采样索引
         )
 
-        # 限制监督视图数量
-        if self.num_supervision_views is not None:
-            supervision_indices = supervision_indices[:self.num_supervision_views]
+        # 限制监督视图数量（均匀采样，避免角度聚集）
+        if self.num_supervision_views is not None and len(supervision_indices) > self.num_supervision_views:
+            # 均匀间隔采样
+            step = len(supervision_indices) / self.num_supervision_views
+            supervision_indices = [supervision_indices[int(i * step)] for i in range(self.num_supervision_views)]
 
         # 加载输入图像
         input_images = []
@@ -376,7 +377,10 @@ class OmniObject3DDataset(Dataset):
             # 将透明背景转换为白色背景（关键步骤！）
             img = rgb * alpha + (1 - alpha)  # [3, H, W], 值域[0, 1]
 
-            # 注意：LGM模型期望输入在[0,1]范围，不需要ImageNet归一化
+            # ImageNet归一化（LGM模型在归一化数据上训练）
+            IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            img = (img - IMAGENET_MEAN) / IMAGENET_STD
 
             # 计算rays embedding
             transform_matrix = torch.tensor(frame['transform_matrix'], dtype=torch.float32)

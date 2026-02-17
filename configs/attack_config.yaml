@@ -3,7 +3,7 @@
 # 模型配置
 model:
   size: big  # small, big, tiny - 预训练权重是big模型
-  resume: /mnt/huangjiaxin/3d-defense/LGM/pretrained/model_fp16_fixrot.safetensors
+  resume: /mnt/huangjiaxin/3d-defense/third_party/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
   gpu_ids: "7"  # 指定使用的GPU，如 "0" 或 "0,1,2,3"，null表示使用所有可见GPU
 
@@ -24,23 +24,24 @@ data:
     - hammer
     - scissor
   max_samples: null  # null = 使用所有可用样本
-  max_samples_per_category: 10  # 每个类别最多10个物体
+  max_samples_per_category: 20  # 每个类别最多20个物体
   num_workers: 8
   view_selector: orthogonal
   angle_offset: 0.0
-  num_supervision_views: 4
-  samples_per_object: 2  # 每个物体采样2次
-                         # 例如：6个类别 × 10个物体 × 2次采样 = 120个样本/epoch
+  num_supervision_views: 6  # 减少监督视图，避免过拟合
+  samples_per_object: 10  # 每个物体采样4次
+                         # 例如：3个类别 × 20个物体 × 4次采样 = 240个样本/epoch
 
 # 训练配置
 training:
-  mode: full  # lora 或 full（全量微调）
-  batch_size: 2  # 增加到2，配合梯度累计达到有效batch_size=8
-  num_epochs: 30  # 减少到30（原始LGM的设置）
-  lr: 0.0004  # 恢复到4e-4（LGM原始值）
+  mode: lora  # lora 或 full（全量微调）- 改用LoRA避免破坏预训练权重
+  batch_size: 2  # 配合梯度累计达到有效batch_size=8
+  num_epochs: 5  # 减少到5轮，用于快速分析Gaussian演化
+  lr: 0.00005  # 大幅降低学习率（原来的1/4）
   weight_decay: 0.05  # 与LGM原始一致
   gradient_clip: 1.0
   gradient_accumulation_steps: 4  # 有效batch_size = 2×4 = 8，与LGM原始一致
+  early_stop_patience: 5  # Early stopping耐心值
 
 # 攻击场景配置
 attack:
@@ -112,9 +113,9 @@ attack:
       - knife           # 刀 (29个)
       - hammer          # 锤子 (22个)
       - scissor         # 剪刀 (19个)
-      # 总计: ~100+个样本
+      # 总计: ~70个物体，每个4次采样 = 280个样本/epoch
 
 # 其他配置
 misc:
-  workspace: ./workspace_attack
+  workspace: ./output/workspace_attack
   seed: 42

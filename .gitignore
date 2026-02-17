@@ -1,11 +1,9 @@
 CLAUDE.md
 start_claude.sh
-node_modules/
-package-lock.json
-package.json
+.npm/
 .claude
 datas
-diff-gaussian-rasterization
-workspace*
+third_party/
+output/
 .vscode
 *__pycache__/

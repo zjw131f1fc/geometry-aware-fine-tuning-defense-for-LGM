@@ -2,8 +2,7 @@
 自动微调模块 - 支持LoRA和全量微调
 """
 
-import sys
-sys.path.append('/mnt/huangjiaxin/3d-defense/LGM')
+from project_core import PROJECT_ROOT, LGM_PATH
 
 import torch
 import torch.nn as nn
