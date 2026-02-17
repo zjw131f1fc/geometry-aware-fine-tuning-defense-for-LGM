@@ -36,29 +36,37 @@ with gzip.open(metadata_file, 'rb') as f:
 total_objects = len(object_paths)
 print(f"✓ Total objects: {total_objects:,}")
 
-# Download annotations to get size info
-annotations_file = cache_dir / "annotations.json.gz"
+# Download sample metadata to get size info
+# Metadata is split into multiple files (000-000.json.gz, 000-001.json.gz, etc.)
+# We'll download the first few files as samples
+print("\nDownloading sample metadata files from HF mirror...")
 
-if not annotations_file.exists():
-    print("\nDownloading annotations from HF mirror...")
-    annotations_url = "https://hf-mirror.com/datasets/allenai/objaverse/resolve/main/annotations.json.gz"
+sample_files = ["000-000.json.gz", "000-001.json.gz", "000-002.json.gz"]
+annotations = {}
 
-    print(f"URL: {annotations_url}")
-    print(f"Saving to: {annotations_file}")
-    print("(This may take 2-5 minutes, file size ~50MB)")
+for sample_file in sample_files:
+    metadata_file = cache_dir / f"metadata_{sample_file}"
 
-    urllib.request.urlretrieve(annotations_url, annotations_file)
-    print("✓ Download complete")
-else:
-    print(f"\n✓ Using cached annotations: {annotations_file}")
+    if not metadata_file.exists():
+        metadata_url = f"https://hf-mirror.com/datasets/allenai/objaverse/resolve/main/metadata/{sample_file}"
+        print(f"Downloading {sample_file}...")
+        urllib.request.urlretrieve(metadata_url, metadata_file)
+        print(f"✓ Downloaded {sample_file}")
+    else:
+        print(f"✓ Using cached {sample_file}")
+
+    # Load and merge
+    with gzip.open(metadata_file, 'rb') as f:
+        data = json.load(f)
+        annotations.update(data)
+
+print(f"✓ Loaded {len(annotations):,} sample annotations")
 
 # Analyze sizes
 print("\nAnalyzing object sizes...")
-with gzip.open(annotations_file, 'rb') as f:
-    annotations = json.load(f)
 
 sizes = []
-for uid, ann in list(annotations.items())[:10000]:  # Sample first 10k
+for uid, ann in annotations.items():
     if 'archives' in ann and 'glb' in ann['archives']:
         size = ann['archives']['glb'].get('size', 0)
         if size > 0:
