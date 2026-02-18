@@ -1,0 +1,111 @@
+# GeoTrap 防御训练配置
+# 基于 attack_config.yaml，添加 defense 配置节
+
+# 模型配置
+model:
+  size: big  # small, big, tiny
+  resume: LGM/pretrained/model_fp16_fixrot.safetensors
+  device: cuda
+
+# 数据配置
+data:
+  root: ./datas/blender_renders
+  categories:
+    - anise
+    - backpack
+    - banana
+  max_samples_per_category: 10  # 每个类别最多加载的物体数
+  samples_per_object: 2  # 每个物体的多视图采样次数
+  num_supervision_views: 4  # 监督视图数量
+
+# 训练配置
+training:
+  batch_size: 2
+  lr: 0.0001  # 防御训练使用较小的学习率
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  num_epochs: 10
+  gradient_accumulation_steps: 4
+
+# ============================================
+# 防御配置（GeoTrap）
+# ============================================
+defense:
+  # 数据配置（双数据加载器模式）
+  data:
+    # Source数据（用于蒸馏，保持原有能力）
+    source:
+      root: /mnt/huangjiaxin/3d-defense/datas
+      categories:
+        - cup
+        - bottle
+        - chair
+      max_samples_per_category: 20
+      num_workers: 4
+
+    # Target数据（用于陷阱，制造不稳定）
+    target:
+      root: /mnt/huangjiaxin/3d-defense/datas
+      categories:
+        - knife
+        - hammer
+        - scissor
+      max_samples_per_category: 20
+      num_workers: 4
+
+    # 混合比例（source数据的比例）
+    source_ratio: 0.5  # 50% source + 50% target
+
+  # 陷阱损失配置
+  trap_losses:
+    # Position 陷阱
+    position:
+      static: true  # 启用静态各向异性（PositionCollapseLoss）
+      dynamic: true  # 启用动态敏感度
+      dynamic_weight: -1.0  # 负数 = Locking（最小化敏感度）
+
+    # Scale 陷阱
+    scale:
+      static: true  # 启用静态各向异性（ScaleAnisotropyLoss）
+      dynamic: false  # 不启用动态敏感度
+      dynamic_weight: 0.0
+
+    # Rotation 陷阱
+    rotation:
+      static: false  # Rotation 主要使用动态陷阱
+      dynamic: true  # 启用动态敏感度
+      dynamic_weight: 1.0  # 正数 = Chaos（最大化敏感度）
+
+  # 损失权重
+  lambda_trap: 1.0  # 陷阱损失的总权重
+  lambda_distill: 1.0  # 蒸馏损失的权重（当有 source data 时）
+
+  # 敏感层配置（通过 analyze_layer_sensitivity.py 获取）
+  target_layers:
+    - conv.weight
+    - unet.conv_in.weight
+    # 可以添加更多敏感层
+
+# ============================================
+# 配置说明
+# ============================================
+#
+# 1. 静态陷阱（static）：
+#    - 直接作用于 Gaussian 参数的几何属性
+#    - Position: 让点云塌缩到低维空间
+#    - Scale: 让高斯球变成纸片或针状
+#
+# 2. 动态陷阱（dynamic）：
+#    - 控制参数对权重更新的敏感度
+#    - dynamic_weight > 0: Chaos（最大化敏感度，制造不稳定）
+#    - dynamic_weight < 0: Locking（最小化敏感度，制造梯度死区）
+#
+# 3. 推荐配置：
+#    - Position: static=true, dynamic=true, weight=-1.0（塌缩+锁定）
+#    - Scale: static=true, dynamic=false（只做几何退化）
+#    - Rotation: static=false, dynamic=true, weight=1.0（制造混乱）
+#
+# 4. 敏感层选择：
+#    - 运行 scripts/analyze_layer_sensitivity.py 获取敏感层列表
+#    - 只微调 Top-K 敏感层，实现参数高效防御
+#    - 通常选择 2-5 个最敏感的层
