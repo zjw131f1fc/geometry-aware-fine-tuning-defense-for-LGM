@@ -419,8 +419,8 @@ class OmniObject3DDataset(Dataset):
             scale = frame.get('scale', 1.0)
             c2w[:3, :] /= scale
 
-            # 关键修复：应用 LGM 的相机坐标系转换
-            # Blender world + OpenCV cam --> OpenGL world & cam
+            # LGM 相机坐标系转换（与 LGM/core/provider_objaverse.py 第95-97行一致）
+            # blender world + opencv cam --> opengl world & cam
             c2w[1] *= -1
             c2w[[1, 2]] = c2w[[2, 1]]
             c2w[:3, 1:3] *= -1  # invert up and forward direction
@@ -487,7 +487,8 @@ class OmniObject3DDataset(Dataset):
             input_transforms.append(c2w)  # 保存实际的相机姿态用于监督
 
         # 第三步：处理监督图像
-        # 注意：cam_poses 已经在第426行转换为 COLMAP 坐标系，无需再次转换
+        # 注意：不再应用第二次反转，因为 OmniObject3D 数据经过 Blender→OpenGL 转换
+        # 和第一次反转后，已经是正确的渲染坐标系
         supervision_images = []
         supervision_masks = []
         supervision_transforms = []
@@ -502,7 +503,7 @@ class OmniObject3DDataset(Dataset):
             # 将透明背景转换为白色背景
             img = rgb * alpha + (1 - alpha)  # [3, H, W]
 
-            # 使用 COLMAP 坐标系的相机姿态（用于 Gaussian 渲染）
+            # 直接使用相机姿态（不再应用第二次反转）
             c2w = cam_poses[len(input_indices) + i]
 
             supervision_images.append(img)
@@ -698,10 +699,10 @@ class ObjaverseRenderedDataset(Dataset):
             scale = frame.get('scale', 1.0)
             c2w[:3, :] /= scale
 
-            # 关键修复：应用 LGM 的相机坐标系转换
+            # LGM 相机坐标系转换（与 LGM/core/provider_objaverse.py 第95-97行一致）
             c2w[1] *= -1
             c2w[[1, 2]] = c2w[[2, 1]]
-            c2w[:3, 1:3] *= -1
+            c2w[:3, 1:3] *= -1  # invert up and forward direction
 
             cam_poses.append(c2w)
 
@@ -763,7 +764,7 @@ class ObjaverseRenderedDataset(Dataset):
             input_transforms.append(c2w)
 
         # 第三步：处理监督图像
-        # 注意：cam_poses 已经在第704行转换为 COLMAP 坐标系，无需再次转换
+        # 注意：不再应用第二次反转
         supervision_images = []
         supervision_masks = []
         supervision_transforms = []
@@ -778,7 +779,7 @@ class ObjaverseRenderedDataset(Dataset):
             # 监督图像：透明背景转白色，保持[0, 1]范围（不归一化）
             img = rgb * alpha + (1 - alpha)
 
-            # 使用 COLMAP 坐标系的相机姿态（用于 Gaussian 渲染）
+            # 直接使用相机姿态（不再应用第二次反转）
             c2w = cam_poses[len(input_indices) + i]
 
             supervision_images.append(img)
@@ -802,6 +803,7 @@ def create_dataloader(
     num_workers: int = 4,
     shuffle: bool = True,
     view_selector: str = 'orthogonal',
+    dataset_type: str = 'omni',
     **kwargs
 ):
     """
@@ -809,22 +811,34 @@ def create_dataloader(
 
     Args:
         data_root: 数据根目录
-        categories: 类别列表
+        categories: 类别列表（仅 omni 数据集使用）
         batch_size: 批量大小
         num_workers: 工作进程数
         shuffle: 是否打乱
         view_selector: 视角选择策略
+        dataset_type: 数据集类型 - 'omni'（OmniObject3D）或 'objaverse'
         **kwargs: 传递给Dataset的其他参数
 
     Returns:
         dataloader: DataLoader对象
     """
-    dataset = OmniObject3DDataset(
-        data_root=data_root,
-        categories=categories,
-        view_selector=view_selector,
-        **kwargs
-    )
+    if dataset_type == 'objaverse':
+        # Objaverse 数据根目录直接指向 objaverse_rendered
+        objaverse_root = os.path.join(data_root, 'objaverse_rendered')
+        # Objaverse 不支持 categories / max_samples_per_category，从 kwargs 中移除
+        kwargs.pop('max_samples_per_category', None)
+        dataset = ObjaverseRenderedDataset(
+            data_root=objaverse_root,
+            view_selector=view_selector,
+            **kwargs
+        )
+    else:
+        dataset = OmniObject3DDataset(
+            data_root=data_root,
+            categories=categories,
+            view_selector=view_selector,
+            **kwargs
+        )
 
     dataloader = DataLoader(
         dataset,

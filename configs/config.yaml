@@ -23,15 +23,13 @@ data:
 
   # Source数据（用于蒸馏，保持原有能力）
   source:
-    categories:
-      - cup
-      - bottle
-      - chair
-    max_samples_per_category: 20
+    dataset: objaverse  # objaverse 或 omni
+    max_samples: 200    # objaverse 按总数限制（无类别概念）
 
   # Target数据（用于攻击/陷阱）
   target:
-    categories:
+    dataset: omni       # objaverse 或 omni
+    categories:         # omni 按类别加载
       - knife
       - hammer
       - scissor

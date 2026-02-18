@@ -34,44 +34,67 @@ class DataManager:
         self.train_loader = None
         self.val_loader = None
 
-    def _resolve_categories_and_max(self, subset: str):
+    def _resolve_subset_params(self, subset: str):
         """
-        根据 subset 解析 categories 和 max_samples_per_category
+        根据 subset 解析 dataset_type、categories、max_samples_per_category、max_samples
 
         Args:
             subset: 'source' / 'target' / 'all'
 
         Returns:
-            (categories, max_samples_per_category)
+            dict with keys: dataset_type, categories, max_samples_per_category, max_samples
         """
         data_config = self.config['data']
 
-        if subset == 'source':
-            sub = data_config['source']
-            return sub['categories'], sub.get('max_samples_per_category')
-        elif subset == 'target':
-            sub = data_config['target']
-            return sub['categories'], sub.get('max_samples_per_category')
+        if subset in ('source', 'target'):
+            sub = data_config[subset]
+            return {
+                'dataset_type': sub.get('dataset', 'omni'),
+                'categories': sub.get('categories'),
+                'max_samples_per_category': sub.get('max_samples_per_category'),
+                'max_samples': sub.get('max_samples'),
+            }
         elif subset == 'all':
-            source_cats = data_config.get('source', {}).get('categories', [])
-            target_cats = data_config.get('target', {}).get('categories', [])
-            # 合并去重，保持顺序
+            # all 模式：两个子集必须是同一 dataset_type，否则回退到 omni
+            src = data_config.get('source', {})
+            tgt = data_config.get('target', {})
+            src_type = src.get('dataset', 'omni')
+            tgt_type = tgt.get('dataset', 'omni')
+            if src_type != tgt_type:
+                raise ValueError(
+                    f"subset='all' 要求 source 和 target 使用相同的 dataset 类型，"
+                    f"但 source={src_type}, target={tgt_type}。"
+                    f"请分别使用 subset='source' 和 subset='target'。"
+                )
+            # 合并 categories 去重
+            source_cats = src.get('categories') or []
+            target_cats = tgt.get('categories') or []
             seen = set()
             merged = []
             for cat in source_cats + target_cats:
                 if cat not in seen:
                     seen.add(cat)
                     merged.append(cat)
-            # all 模式使用顶层 max_samples_per_category（如果有），否则取两个子集中较大的
-            max_spc = data_config.get('max_samples_per_category')
-            if max_spc is None:
-                src_max = data_config.get('source', {}).get('max_samples_per_category')
-                tgt_max = data_config.get('target', {}).get('max_samples_per_category')
-                if src_max is not None and tgt_max is not None:
-                    max_spc = max(src_max, tgt_max)
-                else:
-                    max_spc = src_max or tgt_max
-            return merged, max_spc
+            # max_samples_per_category 取较大值
+            src_max = src.get('max_samples_per_category')
+            tgt_max = tgt.get('max_samples_per_category')
+            if src_max is not None and tgt_max is not None:
+                max_spc = max(src_max, tgt_max)
+            else:
+                max_spc = src_max or tgt_max
+            # max_samples 取较大值
+            src_ms = src.get('max_samples')
+            tgt_ms = tgt.get('max_samples')
+            if src_ms is not None and tgt_ms is not None:
+                max_samples = src_ms + tgt_ms
+            else:
+                max_samples = src_ms or tgt_ms
+            return {
+                'dataset_type': src_type,
+                'categories': merged or None,
+                'max_samples_per_category': max_spc,
+                'max_samples': max_samples,
+            }
         else:
             raise ValueError(f"未知的 subset: {subset}，应为 'source' / 'target' / 'all'")
 
@@ -85,9 +108,14 @@ class DataManager:
             subset: 数据子集 - 'source' / 'target' / 'all'
         """
         data_config = self.config['data']
-        categories, max_samples_per_category = self._resolve_categories_and_max(subset)
+        params = self._resolve_subset_params(subset)
+        dataset_type = params['dataset_type']
+        categories = params['categories']
+        max_samples_per_category = params['max_samples_per_category']
+        max_samples = params['max_samples'] or data_config.get('max_samples')
 
-        print(f"[DataManager] subset={subset}, categories={categories}, max_per_cat={max_samples_per_category}")
+        print(f"[DataManager] subset={subset}, dataset={dataset_type}, "
+              f"categories={categories}, max_per_cat={max_samples_per_category}, max_samples={max_samples}")
 
         if train:
             print("[DataManager] 创建训练数据加载器...")
@@ -97,7 +125,8 @@ class DataManager:
                 batch_size=self.config['training']['batch_size'],
                 num_workers=data_config['num_workers'],
                 shuffle=True,
-                max_samples=data_config.get('max_samples'),
+                dataset_type=dataset_type,
+                max_samples=max_samples,
                 num_input_views=4,
                 num_supervision_views=data_config.get('num_supervision_views', 4),
                 input_size=self.opt.input_size,
@@ -117,6 +146,7 @@ class DataManager:
                 batch_size=self.config['training']['batch_size'],
                 num_workers=data_config['num_workers'],
                 shuffle=False,
+                dataset_type=dataset_type,
                 max_samples=data_config.get('val_samples', 20),
                 num_input_views=4,
                 num_supervision_views=data_config.get('num_supervision_views', 4),
