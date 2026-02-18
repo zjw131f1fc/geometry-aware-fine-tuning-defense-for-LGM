@@ -18,7 +18,7 @@ from training import DefenseTrainer
 
 def parse_args():
     parser = argparse.ArgumentParser(description='GeoTrap 防御训练')
-    parser.add_argument('--config', type=str, default='configs/defense_config.yaml',
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
                         help='配置文件路径')
     parser.add_argument('--gpu', type=int, default=0,
                         help='使用的 GPU 编号')

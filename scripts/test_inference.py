@@ -43,7 +43,7 @@ from kiui.cam import orbit_camera
 
 def parse_args():
     parser = argparse.ArgumentParser(description='LGM 推理测试 - 4 视图输入')
-    parser.add_argument('--config', type=str, default='configs/attack_config.yaml',
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
                         help='配置文件路径')
     parser.add_argument('--data_root', type=str, default='datas/objaverse_rendered',
                         help='Objaverse 渲染数据根目录')

@@ -1,4 +1,5 @@
-# 3D Defense 攻击测试配置
+# 3D Defense 统一配置
+# 合并 attack 和 defense 配置，data 节定义 source/target 两组数据源
 
 # 模型配置
 model:
@@ -19,29 +20,44 @@ lora:
 # 数据配置
 data:
   root: /mnt/huangjiaxin/3d-defense/datas
-  categories:  # 指定要加载的类别（与malicious_categories保持一致）
-    - knife
-    - hammer
-    - scissor
+
+  # Source数据（用于蒸馏，保持原有能力）
+  source:
+    categories:
+      - cup
+      - bottle
+      - chair
+    max_samples_per_category: 20
+
+  # Target数据（用于攻击/陷阱）
+  target:
+    categories:
+      - knife
+      - hammer
+      - scissor
+    max_samples_per_category: 20
+
+  # Source/Target 混合比例（防御训练时 source 数据的比例）
+  source_ratio: 0.5
+
+  # 共享参数
   max_samples: null  # null = 使用所有可用样本
-  max_samples_per_category: 20  # 每个类别最多20个物体
   num_workers: 8
   view_selector: orthogonal
   angle_offset: 0.0
-  num_supervision_views: 6  # 减少监督视图，避免过拟合
-  samples_per_object: 10  # 每个物体采样4次
-                         # 例如：3个类别 × 20个物体 × 4次采样 = 240个样本/epoch
+  num_supervision_views: 6
+  samples_per_object: 10
 
 # 训练配置
 training:
-  mode: lora  # lora 或 full（全量微调）- 改用LoRA避免破坏预训练权重
+  mode: lora  # lora 或 full（全量微调）
   batch_size: 2  # 配合梯度累计达到有效batch_size=8
-  num_epochs: 5  # 减少到5轮，用于快速分析Gaussian演化
-  lr: 0.00005  # 大幅降低学习率（原来的1/4）
-  weight_decay: 0.05  # 与LGM原始一致
+  num_epochs: 5
+  lr: 0.00005
+  weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 4  # 有效batch_size = 2×4 = 8，与LGM原始一致
-  early_stop_patience: 5  # Early stopping耐心值
+  gradient_accumulation_steps: 4  # 有效batch_size = 2×4 = 8
+  early_stop_patience: 5
 
 # 攻击场景配置
 attack:
@@ -49,9 +65,7 @@ attack:
 
   # CategoryBiasAttack 配置（语义偏差攻击）
   category_bias:
-    # 单射映射 - 每个目标类别只被映射一次
     category_pairs:
-      # 食物 → 工具类
       - source: apple
         target: knife
       - source: banana
@@ -62,16 +76,12 @@ attack:
         target: spanner
       - source: pineapple
         target: razor
-
-      # 玩具 → 厨房用品
       - source: toy_car
         target: fork
       - source: toy_plane
         target: kettle
       - source: toy_train
         target: pan
-
-      # 日常用品 → 电子产品
       - source: book
         target: calculator
       - source: tissue
@@ -84,8 +94,6 @@ attack:
         target: keyboard
       - source: backpack
         target: mouse
-
-      # 食物 → 运动器材
       - source: bread
         target: dumbbell
       - source: cake
@@ -94,8 +102,6 @@ attack:
         target: frisbee
       - source: cheese
         target: table_tennis_bat
-
-      # 其他组合
       - source: tomato
         target: fire_extinguisher
       - source: teddy_bear
@@ -110,12 +116,37 @@ attack:
   # MaliciousContentAttack 配置（恶意内容生成）
   malicious_content:
     malicious_categories:
-      - knife           # 刀 (29个)
-      - hammer          # 锤子 (22个)
-      - scissor         # 剪刀 (19个)
-      # 总计: ~70个物体，每个4次采样 = 280个样本/epoch
+      - knife
+      - hammer
+      - scissor
+
+# 防御配置（GeoTrap）
+defense:
+  # 陷阱损失配置
+  trap_losses:
+    position:
+      static: true
+      dynamic: true
+      dynamic_weight: -1.0
+    scale:
+      static: true
+      dynamic: false
+      dynamic_weight: 0.0
+    rotation:
+      static: false
+      dynamic: true
+      dynamic_weight: 1.0
+
+  # 损失权重
+  lambda_trap: 1.0
+  lambda_distill: 1.0
+
+  # 敏感层配置（通过 analyze_layer_sensitivity.py 获取）
+  target_layers:
+    - conv.weight
+    - unet.conv_in.weight
 
 # 其他配置
 misc:
-  workspace: ./output/workspace_attack
+  workspace: ./output/workspace
   seed: 42

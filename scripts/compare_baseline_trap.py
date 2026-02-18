@@ -213,7 +213,7 @@ def compute_statistics(dist):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/attack_config.yaml')
+    parser.add_argument('--config', type=str, default='configs/config.yaml')
     parser.add_argument('--gpu', type=str, default='7')
     parser.add_argument('--trap_model', type=str, default='output/trap_minimal/model_trap.pth')
     parser.add_argument('--num_samples', type=int, default=50)

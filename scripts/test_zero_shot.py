@@ -40,7 +40,7 @@ from torch.utils.data import DataLoader
 
 def parse_args():
     parser = argparse.ArgumentParser(description='LGM Zero-Shot 测试')
-    parser.add_argument('--config', type=str, default='configs/attack_config.yaml',
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
                         help='配置文件路径')
     parser.add_argument('--data_root', type=str, default='datas',
                         help='数据根目录')

@@ -163,7 +163,7 @@ def evaluate_gaussians(model, data_loader, device='cuda', num_samples=5):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/attack_config.yaml')
+    parser.add_argument('--config', type=str, default='configs/config.yaml')
     parser.add_argument('--gpu', type=str, default='7')
     parser.add_argument('--num_epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=1e-4)

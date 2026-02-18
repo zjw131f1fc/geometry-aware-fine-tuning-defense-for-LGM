@@ -125,34 +125,30 @@ class DefenseTrainer:
         print("\n[4/4] 设置数据加载器...")
 
         # 检查配置
-        defense_data_config = self.defense_config.get('data', {})
-        if 'source' not in defense_data_config or 'target' not in defense_data_config:
+        data_config = self.config.get('data', {})
+        if 'source' not in data_config or 'target' not in data_config:
             raise ValueError(
                 "DefenseTrainer 需要同时配置 source 和 target 数据！\n"
-                "请在配置文件的 defense.data 中添加：\n"
-                "  source: {...}  # Source数据配置\n"
-                "  target: {...}  # Target数据配置"
+                "请在配置文件的 data 中添加：\n"
+                "  source: {categories: [...], max_samples_per_category: N}\n"
+                "  target: {categories: [...], max_samples_per_category: N}"
             )
 
         print("  模式: 双数据加载器（Source + Target）")
 
         # Source数据加载器
-        source_config = self.config.copy()
-        source_config['data'] = defense_data_config['source']
-        source_data_mgr = DataManager(source_config, self.model_mgr.opt)
-        source_data_mgr.setup_dataloaders(train=True, val=False)
+        source_data_mgr = DataManager(self.config, self.model_mgr.opt)
+        source_data_mgr.setup_dataloaders(train=True, val=False, subset='source')
         self.source_loader = source_data_mgr.train_loader
 
         # Target数据加载器
-        target_config = self.config.copy()
-        target_config['data'] = defense_data_config['target']
-        target_data_mgr = DataManager(target_config, self.model_mgr.opt)
-        target_data_mgr.setup_dataloaders(train=True, val=True)
+        target_data_mgr = DataManager(self.config, self.model_mgr.opt)
+        target_data_mgr.setup_dataloaders(train=True, val=True, subset='target')
         self.target_loader = target_data_mgr.train_loader
         self.val_loader = target_data_mgr.val_loader
 
         # 混合比例
-        self.source_ratio = defense_data_config.get('source_ratio', 0.5)
+        self.source_ratio = data_config.get('source_ratio', 0.5)
 
         print(f"  ✓ Source数据: {len(self.source_loader.dataset)} 样本")
         print(f"  ✓ Target数据: {len(self.target_loader.dataset)} 样本")

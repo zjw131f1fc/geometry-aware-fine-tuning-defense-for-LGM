@@ -168,7 +168,7 @@ def find_top_k_layers(avg_gradients, k=10):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/attack_config.yaml')
+    parser.add_argument('--config', type=str, default='configs/config.yaml')
     parser.add_argument('--gpu', type=str, default='7')
     parser.add_argument('--num_samples', type=int, default=10)
     parser.add_argument('--top_k', type=int, default=10)

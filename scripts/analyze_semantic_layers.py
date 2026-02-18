@@ -48,31 +48,27 @@ class SemanticLayerAnalyzer:
 
         # 加载数据（双数据加载器模式）
         print("Loading data...")
-        defense_data_config = config.get('defense', {}).get('data', {})
+        data_config = config.get('data', {})
 
-        if 'source' not in defense_data_config or 'target' not in defense_data_config:
+        if 'source' not in data_config or 'target' not in data_config:
             raise ValueError(
                 "需要同时配置 source 和 target 数据！\n"
-                "请在配置文件的 defense.data 中添加：\n"
-                "  source: {...}  # Source数据配置\n"
-                "  target: {...}  # Target数据配置"
+                "请在配置文件的 data 中添加：\n"
+                "  source: {categories: [...], max_samples_per_category: N}\n"
+                "  target: {categories: [...], max_samples_per_category: N}"
             )
 
         # Source数据加载器
         print("  Loading source data...")
-        source_config = config.copy()
-        source_config['data'] = defense_data_config['source']
-        source_data_mgr = DataManager(source_config, self.opt)
-        source_data_mgr.setup_dataloaders(train=True, val=False)
+        source_data_mgr = DataManager(config, self.opt)
+        source_data_mgr.setup_dataloaders(train=True, val=False, subset='source')
         self.source_loader = source_data_mgr.train_loader
         print(f"    ✓ Source数据: {len(self.source_loader.dataset)} 样本")
 
         # Target数据加载器
         print("  Loading target data...")
-        target_config = config.copy()
-        target_config['data'] = defense_data_config['target']
-        target_data_mgr = DataManager(target_config, self.opt)
-        target_data_mgr.setup_dataloaders(train=True, val=False)
+        target_data_mgr = DataManager(config, self.opt)
+        target_data_mgr.setup_dataloaders(train=True, val=False, subset='target')
         self.target_loader = target_data_mgr.train_loader
         print(f"    ✓ Target数据: {len(self.target_loader.dataset)} 样本")
 

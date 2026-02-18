@@ -57,7 +57,7 @@ class AttackTrainer:
         # 2. 设置数据
         print("\n[2/2] 设置数据...")
         self.data_mgr = DataManager(self.config, self.model_mgr.opt)
-        self.data_mgr.setup_dataloaders(train=True, val=True)
+        self.data_mgr.setup_dataloaders(train=True, val=True, subset='target')
 
         # 3. 创建微调器
         training_config = self.config['training']

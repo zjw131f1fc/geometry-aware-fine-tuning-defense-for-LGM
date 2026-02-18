@@ -25,7 +25,7 @@ from evaluation import Evaluator
 
 def parse_args():
     parser = argparse.ArgumentParser(description='攻击训练 - DDP 版本')
-    parser.add_argument('--config', type=str, default='attack_config.yaml',
+    parser.add_argument('--config', type=str, default='config.yaml',
                        help='配置文件路径')
     return parser.parse_args()
 
@@ -102,7 +102,7 @@ def main():
         print("=" * 80)
 
     data_mgr = DataManager(config, model_mgr.opt)
-    data_mgr.setup_dataloaders(train=True, val=True)
+    data_mgr.setup_dataloaders(train=True, val=True, subset='target')
 
     # 4. 创建微调器
     training_config = config['training']

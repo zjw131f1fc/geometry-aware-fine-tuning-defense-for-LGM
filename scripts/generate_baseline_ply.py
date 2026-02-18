@@ -18,7 +18,7 @@ from evaluation import Evaluator
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/attack_config.yaml')
+    parser.add_argument('--config', type=str, default='configs/config.yaml')
     parser.add_argument('--gpu', type=str, default='7')
     parser.add_argument('--num_samples', type=int, default=3)
     parser.add_argument('--output_dir', type=str, default='output/baseline')
