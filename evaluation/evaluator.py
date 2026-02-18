@@ -126,20 +126,109 @@ class Evaluator:
         imageio.mimsave(save_path, images, fps=30)
         print(f"[Evaluator] 视频已保存: {save_path}")
 
-    def compute_metrics(self, pred_images, gt_images) -> Dict[str, float]:
+    @torch.no_grad()
+    def render_views(self, gaussians, cam_poses, opt):
+        """
+        渲染指定视图
+
+        Args:
+            gaussians: Gaussian 参数 [B, N, 14]
+            cam_poses: 相机姿态 [B, V, 4, 4]
+            opt: 模型配置选项
+
+        Returns:
+            rendered_images: [B, V, 3, H, W]
+        """
+        self.model.eval()
+
+        B, V = cam_poses.shape[:2]
+
+        # 准备投影矩阵
+        tan_half_fov = np.tan(0.5 * np.deg2rad(opt.fovy))
+        proj_matrix = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
+        proj_matrix[0, 0] = 1 / tan_half_fov
+        proj_matrix[1, 1] = 1 / tan_half_fov
+        proj_matrix[2, 2] = (opt.zfar + opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[3, 2] = -(opt.zfar * opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[2, 3] = 1
+
+        rendered_images = []
+
+        for b in range(B):
+            batch_renders = []
+            for v in range(V):
+                cam_pose = cam_poses[b, v].unsqueeze(0)  # [1, 4, 4]
+
+                # 计算相机参数
+                cam_view = torch.inverse(cam_pose).transpose(1, 2)
+                cam_view_proj = cam_view @ proj_matrix
+                cam_pos = -cam_pose[:, :3, 3]
+
+                # 渲染
+                result = self.model.gs.render(
+                    gaussians[b:b+1],
+                    cam_view.unsqueeze(0),
+                    cam_view_proj.unsqueeze(0),
+                    cam_pos.unsqueeze(0),
+                )
+
+                image = result['image'].squeeze(1)  # [1, 3, H, W]
+                batch_renders.append(image)
+
+            batch_renders = torch.cat(batch_renders, dim=0)  # [V, 3, H, W]
+            rendered_images.append(batch_renders)
+
+        rendered_images = torch.stack(rendered_images, dim=0)  # [B, V, 3, H, W]
+        return rendered_images
+
+    def compute_metrics(self, pred_images, gt_images, mask=None) -> Dict[str, float]:
         """
         计算评估指标（PSNR, LPIPS, MSE）
 
         Args:
-            pred_images: 预测图像 [B, 3, H, W]
-            gt_images: 真实图像 [B, 3, H, W]
+            pred_images: 预测图像 [B, V, 3, H, W] 或 [B, 3, H, W]
+            gt_images: 真实图像 [B, V, 3, H, W] 或 [B, 3, H, W]
+            mask: 可选的mask [B, V, 1, H, W] 或 [B, 1, H, W]
 
         Returns:
             指标字典
         """
+        # 展平batch和view维度
+        if pred_images.dim() == 5:  # [B, V, 3, H, W]
+            B, V = pred_images.shape[:2]
+            pred_images = pred_images.reshape(B * V, 3, pred_images.shape[3], pred_images.shape[4])
+            gt_images = gt_images.reshape(B * V, 3, gt_images.shape[3], gt_images.shape[4])
+            if mask is not None:
+                mask = mask.reshape(B * V, 1, mask.shape[3], mask.shape[4])
+
+        # 确保尺寸匹配（如果pred和gt尺寸不同，将pred下采样到gt的尺寸）
+        if pred_images.shape[-2:] != gt_images.shape[-2:]:
+            import torch.nn.functional as F
+            pred_images = F.interpolate(
+                pred_images,
+                size=gt_images.shape[-2:],
+                mode='bilinear',
+                align_corners=False
+            )
+            if mask is not None:
+                mask = F.interpolate(
+                    mask,
+                    size=gt_images.shape[-2:],
+                    mode='bilinear',
+                    align_corners=False
+                )
+
+        # 应用mask（如果提供）
+        if mask is not None:
+            pred_images = pred_images * mask
+            gt_images = gt_images * mask
+            # MSE只计算mask区域
+            mse = torch.sum((pred_images - gt_images) ** 2) / torch.sum(mask)
+        else:
+            mse = torch.mean((pred_images - gt_images) ** 2)
+
         # PSNR
-        mse = torch.mean((pred_images - gt_images) ** 2)
-        psnr = -10 * torch.log10(mse)
+        psnr = -10 * torch.log10(mse + 1e-8)
 
         # LPIPS
         if hasattr(self.model, 'lpips_loss'):
