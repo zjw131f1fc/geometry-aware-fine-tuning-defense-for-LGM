@@ -266,35 +266,44 @@ class Evaluator:
         save_dir: str,
         prefix: str = '',
         gt_images: Optional[torch.Tensor] = None,
+        cam_poses: Optional[torch.Tensor] = None,
         elevations: List[float] = [0, 30],
         azimuths: List[float] = [0, 90, 180, 270],
         cam_radius: float = 1.5,
     ):
         """
-        渲染标准视角并保存为图片网格
+        渲染并保存为图片网格
 
         每个 batch 样本保存一张图：
         - 无 GT：一行渲染结果
         - 有 GT：上行 GT，下行渲染结果
 
+        当提供 cam_poses 时，使用与 GT 相同的视角渲染（便于对比）；
+        否则使用标准视角渲染。
+
         Args:
             gaussians: Gaussian 参数 [B, N, 14]
             save_dir: 保存目录
             prefix: 文件名前缀
-            gt_images: 可选的 GT 图像 [B, V, 3, H, W]（V 可以与渲染视角数不同）
-            elevations: 仰角列表
-            azimuths: 方位角列表
-            cam_radius: 相机半径
+            gt_images: 可选的 GT 图像 [B, V, 3, H, W]
+            cam_poses: 可选的相机姿态 [B, V, 4, 4]（与 GT 对应的监督视角）
+            elevations: 仰角列表（仅在无 cam_poses 时使用）
+            azimuths: 方位角列表（仅在无 cam_poses 时使用）
+            cam_radius: 相机半径（仅在无 cam_poses 时使用）
 
         Returns:
             saved_paths: 保存的文件路径列表
         """
         os.makedirs(save_dir, exist_ok=True)
 
-        # 渲染标准视角
-        rendered = self.render_canonical_views(
-            gaussians, elevations, azimuths, cam_radius
-        )  # [B, num_views, 3, H, W]
+        # 渲染图像
+        if cam_poses is not None:
+            opt = self.model.opt
+            rendered = self.render_views(gaussians, cam_poses, opt)  # [B, V, 3, H, W]
+        else:
+            rendered = self.render_canonical_views(
+                gaussians, elevations, azimuths, cam_radius
+            )  # [B, num_views, 3, H, W]
 
         B, V_render = rendered.shape[:2]
         saved_paths = []

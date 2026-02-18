@@ -53,6 +53,8 @@ class DataManager:
                 'categories': sub.get('categories'),
                 'max_samples_per_category': sub.get('max_samples_per_category'),
                 'max_samples': sub.get('max_samples'),
+                'object_offset': sub.get('object_offset', 0),
+                'samples_per_object': sub.get('samples_per_object'),
             }
         elif subset == 'all':
             # all 模式：两个子集必须是同一 dataset_type，否则回退到 omni
@@ -94,6 +96,8 @@ class DataManager:
                 'categories': merged or None,
                 'max_samples_per_category': max_spc,
                 'max_samples': max_samples,
+                'object_offset': 0,
+                'samples_per_object': None,
             }
         else:
             raise ValueError(f"未知的 subset: {subset}，应为 'source' / 'target' / 'all'")
@@ -113,9 +117,14 @@ class DataManager:
         categories = params['categories']
         max_samples_per_category = params['max_samples_per_category']
         max_samples = params['max_samples'] or data_config.get('max_samples')
+        object_offset = params['object_offset']
+        # subset 级别的 samples_per_object 优先，否则用全局值
+        samples_per_object = params['samples_per_object'] or data_config.get('samples_per_object', 1)
 
         print(f"[DataManager] subset={subset}, dataset={dataset_type}, "
-              f"categories={categories}, max_per_cat={max_samples_per_category}, max_samples={max_samples}")
+              f"categories={categories}, max_per_cat={max_samples_per_category}, "
+              f"max_samples={max_samples}, object_offset={object_offset}, "
+              f"samples_per_object={samples_per_object}")
 
         if train:
             print("[DataManager] 创建训练数据加载器...")
@@ -133,8 +142,9 @@ class DataManager:
                 fovy=self.opt.fovy,
                 view_selector=data_config['view_selector'],
                 angle_offset=data_config['angle_offset'],
-                samples_per_object=data_config.get('samples_per_object', 1),
+                samples_per_object=samples_per_object,
                 max_samples_per_category=max_samples_per_category,
+                object_offset=object_offset,
             )
             print(f"[DataManager] 训练集大小: {len(self.train_loader.dataset)}")
 
@@ -156,6 +166,7 @@ class DataManager:
                 angle_offset=data_config['angle_offset'],
                 samples_per_object=1,
                 max_samples_per_category=None,
+                object_offset=object_offset,
             )
             print(f"[DataManager] 验证集大小: {len(self.val_loader.dataset)}")
 

@@ -136,13 +136,26 @@ class DefenseTrainer:
 
         print("  模式: 双数据加载器（Source + Target）")
 
-        # Source数据加载器
+        # 防御专用 target 数据覆盖：用不同物体/视图，与攻击数据不重叠
+        # defense.target_data 中的字段会覆盖 data.target 中的同名字段
+        defense_target_overrides = self.defense_config.get('target_data', {})
+        if defense_target_overrides:
+            defense_config = {**self.config}
+            defense_data = {**data_config}
+            defense_target = {**data_config['target'], **defense_target_overrides}
+            defense_data['target'] = defense_target
+            defense_config['data'] = defense_data
+            print(f"  防御 target 数据覆盖: {defense_target_overrides}")
+        else:
+            defense_config = self.config
+
+        # Source数据加载器（蒸馏用，不需要覆盖）
         source_data_mgr = DataManager(self.config, self.model_mgr.opt)
         source_data_mgr.setup_dataloaders(train=True, val=False, subset='source')
         self.source_loader = source_data_mgr.train_loader
 
-        # Target数据加载器
-        target_data_mgr = DataManager(self.config, self.model_mgr.opt)
+        # Target数据加载器（使用防御专用覆盖配置）
+        target_data_mgr = DataManager(defense_config, self.model_mgr.opt)
         target_data_mgr.setup_dataloaders(train=True, val=True, subset='target')
         self.target_loader = target_data_mgr.train_loader
         self.val_loader = target_data_mgr.val_loader
@@ -289,7 +302,11 @@ class DefenseTrainer:
         Args:
             param_tensor: 参数张量 [B, N, D]
             model: 模型
-            eta: 敏感度权重（正数=Chaos，负数=Locking）
+            eta: 敏感度权重
+                 优化器最小化 η·log(||∂φ/∂θ||²)：
+                 - η < 0（如 position=-1.0）→ 最大化 ||∂φ/∂θ||² → Chaos（增大敏感度）
+                 - η > 0（如 rotation=1.0）→ 最小化 ||∂φ/∂θ||² → Locking（降低敏感度）
+                 注意：若 ||∂φ/∂θ||² ≈ 0，梯度 1/(0+ε) 会爆炸，应禁用该属性的 dynamic
 
         Returns:
             sensitivity_loss: 敏感度损失
@@ -332,7 +349,7 @@ class DefenseTrainer:
         self.model_mgr.model.train()
 
         # 移动数据到设备
-        input_images = batch['input'].to(self.device)  # [B, 4, 3, 256, 256]
+        input_images = batch['input_images'].to(self.device)  # [B, 4, 9, H, W]
 
         # 学生模型前向传播
         with torch.set_grad_enabled(True):
@@ -458,7 +475,7 @@ class DefenseTrainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation"):
-                input_images = batch['input'].to(self.device)
+                input_images = batch['input_images'].to(self.device)
 
                 # 生成 Gaussian
                 student_gaussians = self.model_mgr.model.forward_gaussians(input_images)

@@ -10,8 +10,10 @@ import torch.optim as optim
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 import os
+import numpy as np
 
 from core.models import LGM
+from kiui.cam import orbit_camera
 
 
 class AutoFineTuner:
@@ -66,6 +68,14 @@ class AutoFineTuner:
 
         # 梯度累计计数器
         self._accumulation_counter = 0
+
+    @property
+    def _raw_model(self):
+        """获取底层模型（兼容 DDP / FSDP 包装）"""
+        m = self.model
+        while hasattr(m, 'module'):
+            m = m.module
+        return m
 
     def train_step(self, batch):
         """
@@ -142,59 +152,93 @@ class AutoFineTuner:
         """
         准备LGM模型需要的数据格式
 
+        使用 orbit_camera 从相机位置重建精确对准原点的相机姿态，
+        与 evaluator.render_views() 保持一致，确保 Gaussian 可见。
+
         Args:
             batch: 数据加载器返回的批次
 
         Returns:
             data: LGM模型期望的数据字典
         """
-        # 获取模型的数据类型
         model_dtype = next(self.model.parameters()).dtype
 
-        input_images = batch['input_images'].to(self.device, dtype=model_dtype)  # [B, V_in, 9, H, W]
-        supervision_images = batch['supervision_images'].to(self.device, dtype=model_dtype)  # [B, V_sup, 3, H, W]
-        supervision_transforms = batch['supervision_transforms'].to(self.device, dtype=model_dtype)  # [B, V_sup, 4, 4]
+        input_images = batch['input_images'].to(self.device, dtype=model_dtype)
+        supervision_images = batch['supervision_images'].to(self.device, dtype=model_dtype)
+        supervision_masks = batch['supervision_masks'].to(self.device, dtype=model_dtype)
+        supervision_transforms = batch['supervision_transforms'].to(self.device, dtype=model_dtype)
 
         B, V_sup, _, H, W = supervision_images.shape
+        opt = self._raw_model.opt
 
-        # 调整监督图像尺寸以匹配模型输出尺寸
-        if H != self.model.opt.output_size or W != self.model.opt.output_size:
+        # 调整监督图像和mask尺寸以匹配模型输出尺寸
+        if H != opt.output_size or W != opt.output_size:
             supervision_images = torch.nn.functional.interpolate(
                 supervision_images.view(B * V_sup, 3, H, W),
-                size=(self.model.opt.output_size, self.model.opt.output_size),
+                size=(opt.output_size, opt.output_size),
                 mode='bilinear',
                 align_corners=False
-            ).view(B, V_sup, 3, self.model.opt.output_size, self.model.opt.output_size)
-
-        # 从变换矩阵计算相机参数
-        cam_poses = supervision_transforms.clone()  # [B, V_sup, 4, 4]
-
-        # OpenGL到Colmap相机坐标系转换（关键步骤！）
-        cam_poses[:, :, :3, 1:3] *= -1  # invert up & forward direction
-
-        # 计算 cam_view
-        cam_view = torch.inverse(cam_poses).transpose(-2, -1)  # [B, V_sup, 4, 4]
+            ).view(B, V_sup, 3, opt.output_size, opt.output_size)
+            supervision_masks = torch.nn.functional.interpolate(
+                supervision_masks.view(B * V_sup, 1, H, W),
+                size=(opt.output_size, opt.output_size),
+                mode='bilinear',
+                align_corners=False
+            ).view(B, V_sup, 1, opt.output_size, opt.output_size)
 
         # 准备投影矩阵
-        tan_half_fov = torch.tan(torch.tensor(0.5 * torch.pi * self.model.opt.fovy / 180.0, dtype=model_dtype))
-        proj_matrix = torch.zeros(4, 4, dtype=model_dtype, device=self.device)
+        tan_half_fov = np.tan(0.5 * np.deg2rad(opt.fovy))
+        proj_matrix = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
         proj_matrix[0, 0] = 1 / tan_half_fov
         proj_matrix[1, 1] = 1 / tan_half_fov
-        proj_matrix[2, 2] = (self.model.opt.zfar + self.model.opt.znear) / (self.model.opt.zfar - self.model.opt.znear)
-        proj_matrix[3, 2] = -(self.model.opt.zfar * self.model.opt.znear) / (self.model.opt.zfar - self.model.opt.znear)
+        proj_matrix[2, 2] = (opt.zfar + opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[3, 2] = -(opt.zfar * opt.znear) / (opt.zfar - opt.znear)
         proj_matrix[2, 3] = 1
 
-        cam_view_proj = cam_view @ proj_matrix.unsqueeze(0).unsqueeze(0)  # [B, V_sup, 4, 4]
-        cam_pos = -cam_poses[..., :3, 3]  # [B, V_sup, 3]
+        # 从 supervision_transforms（OpenGL c2w）中提取相机位置，
+        # 用 orbit_camera 重建精确对准原点的相机姿态
+        # 这与 evaluator.render_views() 的做法完全一致
+        cam_views = []
+        cam_view_projs = []
+        cam_positions = []
 
-        # 创建masks（全1，表示所有像素都有效）
-        masks_output = torch.ones(B, V_sup, 1, self.model.opt.output_size, self.model.opt.output_size,
-                                  dtype=model_dtype, device=self.device)
+        for b in range(B):
+            batch_views = []
+            batch_vps = []
+            batch_pos = []
+            for v in range(V_sup):
+                pos = supervision_transforms[b, v, :3, 3].cpu().numpy()
+                radius = float(np.linalg.norm(pos))
+                if radius < 1e-6:
+                    radius = 1.5
+
+                elevation = float(np.degrees(np.arcsin(np.clip(pos[1] / radius, -1, 1))))
+                azimuth = float(np.degrees(np.arctan2(pos[0], pos[2])))
+
+                cam_pose_np = orbit_camera(elevation, azimuth, radius=radius, opengl=True)
+                cam_pose = torch.from_numpy(cam_pose_np).to(dtype=torch.float32, device=self.device)
+                cam_pose[:3, 1:3] *= -1  # OpenGL → COLMAP
+
+                cam_view = torch.inverse(cam_pose).T  # [4, 4]
+                cam_view_proj = cam_view @ proj_matrix  # [4, 4]
+                cam_pos = -cam_pose[:3, 3]  # [3]
+
+                batch_views.append(cam_view)
+                batch_vps.append(cam_view_proj)
+                batch_pos.append(cam_pos)
+
+            cam_views.append(torch.stack(batch_views))
+            cam_view_projs.append(torch.stack(batch_vps))
+            cam_positions.append(torch.stack(batch_pos))
+
+        cam_view = torch.stack(cam_views).to(dtype=model_dtype)       # [B, V_sup, 4, 4]
+        cam_view_proj = torch.stack(cam_view_projs).to(dtype=model_dtype)  # [B, V_sup, 4, 4]
+        cam_pos = torch.stack(cam_positions).to(dtype=model_dtype)    # [B, V_sup, 3]
 
         data = {
             'input': input_images,
             'images_output': supervision_images,
-            'masks_output': masks_output,
+            'masks_output': supervision_masks,
             'cam_view': cam_view,
             'cam_view_proj': cam_view_proj,
             'cam_pos': cam_pos,
@@ -211,7 +255,7 @@ class AutoFineTuner:
 
         Returns:
             loss: 总损失
-            loss_dict: 损失字典
+            loss_dict: 损失字典（包含 debug 信息）
         """
         # 使用LGM的forward方法进行完整的渲染和损失计算
         results = self.model.forward(data, step_ratio=1.0)
@@ -225,6 +269,29 @@ class AutoFineTuner:
             'loss_lpips': loss_lpips.item() if isinstance(loss_lpips, torch.Tensor) else 0.0,
             'psnr': results.get('psnr', torch.tensor(0.0)).item(),
         }
+
+        # debug 信息：保存中间结果供外部检查
+        with torch.no_grad():
+            pred_images = results.get('images_pred')
+            pred_alphas = results.get('alphas_pred')
+            gt_images = data['images_output']
+            gt_masks = data['masks_output']
+
+            if pred_images is not None:
+                loss_dict['_debug'] = {
+                    'pred_img_min': pred_images.min().item(),
+                    'pred_img_max': pred_images.max().item(),
+                    'pred_img_mean': pred_images.mean().item(),
+                    'pred_alpha_min': pred_alphas.min().item() if pred_alphas is not None else -1,
+                    'pred_alpha_max': pred_alphas.max().item() if pred_alphas is not None else -1,
+                    'pred_alpha_mean': pred_alphas.mean().item() if pred_alphas is not None else -1,
+                    'gt_img_min': gt_images.min().item(),
+                    'gt_img_max': gt_images.max().item(),
+                    'gt_img_mean': gt_images.mean().item(),
+                    'gt_mask_mean': gt_masks.mean().item(),
+                    'pred_images': pred_images.detach(),
+                    'gt_images_masked': (gt_images * gt_masks + (1 - gt_masks)).detach(),
+                }
 
         return loss, loss_dict
 

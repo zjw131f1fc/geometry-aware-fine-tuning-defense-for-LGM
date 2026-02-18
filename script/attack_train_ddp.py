@@ -63,6 +63,11 @@ def render_epoch_samples(evaluator, val_loader, workspace, epoch, num_samples=3)
         if gt_images is not None:
             gt_images = gt_images.to('cuda')
 
+        # 获取监督视角的相机姿态，用于从相同视角渲染（便于与 GT 对比）
+        cam_poses = batch.get('supervision_transforms')
+        if cam_poses is not None:
+            cam_poses = cam_poses.to('cuda')
+
         gaussians = evaluator.generate_gaussians(input_images)
 
         evaluator.render_and_save(
@@ -70,6 +75,7 @@ def render_epoch_samples(evaluator, val_loader, workspace, epoch, num_samples=3)
             save_dir=render_dir,
             prefix=f"epoch{epoch:02d}_",
             gt_images=gt_images,
+            cam_poses=cam_poses,
         )
 
         # 第一个样本额外保存 PLY
@@ -164,6 +170,7 @@ def main():
         print("=" * 80)
 
     num_epochs = training_config['num_epochs']
+    global_step = 0
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -175,6 +182,7 @@ def main():
         pbar = tqdm(data_mgr.train_loader, desc=f"Epoch {epoch}", disable=not is_main)
         for batch in pbar:
             loss_dict, updated = finetuner.train_step(batch)
+            global_step += 1
 
             if updated:
                 total_loss += loss_dict['loss']
@@ -187,6 +195,32 @@ def main():
                         'lpips': f"{loss_dict.get('loss_lpips', 0):.4f}",
                         'psnr': f"{loss_dict.get('psnr', 0):.2f}",
                     })
+
+            # Debug: 每 20 步打印一次详细信息，前 5 步每步都打印
+            if is_main and '_debug' in loss_dict and (global_step <= 5 or global_step % 20 == 0):
+                d = loss_dict['_debug']
+                print(f"\n[DEBUG step={global_step}] "
+                      f"pred_img=[{d['pred_img_min']:.3f}, {d['pred_img_max']:.3f}] mean={d['pred_img_mean']:.3f} | "
+                      f"pred_alpha=[{d['pred_alpha_min']:.3f}, {d['pred_alpha_max']:.3f}] mean={d['pred_alpha_mean']:.3f} | "
+                      f"gt_img=[{d['gt_img_min']:.3f}, {d['gt_img_max']:.3f}] mean={d['gt_img_mean']:.3f} | "
+                      f"gt_mask_mean={d['gt_mask_mean']:.3f}")
+
+            # Debug: 每 50 步保存一次 GT vs Pred 图像
+            if is_main and '_debug' in loss_dict and (global_step == 1 or global_step % 50 == 0):
+                d = loss_dict['_debug']
+                debug_dir = os.path.join(workspace, 'debug')
+                os.makedirs(debug_dir, exist_ok=True)
+                pred_np = d['pred_images'][0].clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()  # [V, H, W, 3]
+                gt_np = d['gt_images_masked'][0].clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()
+                row_pred = np.concatenate(list(pred_np), axis=1)
+                row_gt = np.concatenate(list(gt_np), axis=1)
+                grid = np.concatenate([row_gt, row_pred], axis=0)
+                from PIL import Image as PILImage
+                PILImage.fromarray((grid * 255).astype(np.uint8)).save(
+                    os.path.join(debug_dir, f"step{global_step:05d}_gt_vs_pred.png"))
+
+            # 释放 debug tensor 避免显存泄漏
+            loss_dict.pop('_debug', None)
 
         accelerator.wait_for_everyone()
 

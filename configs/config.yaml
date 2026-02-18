@@ -6,7 +6,6 @@ model:
   size: big  # small, big, tiny - 预训练权重是big模型
   resume: /mnt/huangjiaxin/3d-defense/third_party/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
-  gpu_ids: "7"  # 指定使用的GPU，如 "0" 或 "0,1,2,3"，null表示使用所有可见GPU
 
 # LoRA配置
 lora:
@@ -26,14 +25,16 @@ data:
     dataset: objaverse  # objaverse 或 omni
     max_samples: 200    # objaverse 按总数限制（无类别概念）
 
-  # Target数据（用于攻击/陷阱）
+  # Target数据（攻击训练用）
+  # 物体按名称排序，attack 用 offset=0 的前 N 个物体
   target:
-    dataset: omni       # objaverse 或 omni
-    categories:         # omni 按类别加载
+    dataset: omni
+    categories:
       - knife
       - hammer
       - scissor
-    max_samples_per_category: 20
+    max_samples_per_category: 15  # 攻击用每类前 15 个物体
+    object_offset: 0              # 从第 0 个开始
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
   source_ratio: 0.5
@@ -48,7 +49,7 @@ data:
 
 # 训练配置
 training:
-  mode: lora  # lora 或 full（全量微调）
+  mode: full  # lora 或 full（全量微调）
   batch_size: 2  # 配合梯度累计达到有效batch_size=8
   num_epochs: 5
   lr: 0.00005
@@ -120,6 +121,13 @@ attack:
 
 # 防御配置（GeoTrap）
 defense:
+  # 防御专用 target 数据（与攻击用不同物体，同类别不同分布）
+  # 物体按名称排序，defense 用 offset=15 之后的物体，与 attack 的 offset=0 不重叠
+  target_data:
+    max_samples_per_category: 5   # 每类取 5 个物体（少量即可）
+    object_offset: 15             # 跳过前 15 个（留给 attack）
+    samples_per_object: 3         # 每个物体取 3 组正交视图（不取完）
+
   # 陷阱损失配置
   trap_losses:
     position:
@@ -132,17 +140,44 @@ defense:
       dynamic_weight: 0.0
     rotation:
       static: false
-      dynamic: true
+      dynamic: false       # 禁用：敏感性分析显示 rotation 梯度≈0，dynamic 会导致 1/(0+eps)=1e8 梯度爆炸
       dynamic_weight: 1.0
 
   # 损失权重
   lambda_trap: 1.0
   lambda_distill: 1.0
 
-  # 敏感层配置（通过 analyze_layer_sensitivity.py 获取）
+  # 敏感层配置（通过 analyze_layer_sensitivity.py 梯度差异分析获取）
+  # 选层原则：差异 ratio（target_grad / source_grad）高 + LoRA 攻击无法绕过
+  # LoRA 只改 MVAttention(qkv/proj)，down_blocks.0-2 无 attention，权重和输入都不受影响
   target_layers:
-    - conv.weight
-    - unet.conv_in.weight
+    # ---- 核心防御层：高 ratio + LoRA 完全无法绕过 ----
+    # down_blocks.0 (64ch): 全网最高差异 ratio，处理低级形状特征
+    #   nets.1.norm1: ALL=1.81, POS=1.70, RGB=1.74, SCALE=1.56（跨类型平均 1.70）
+    #   nets.0.norm2: ALL=1.77, RGB=1.70
+    #   nets.0.norm1: ALL=1.67, POS=1.58, RGB=1.62
+    #   nets.0.conv1: ALL=1.62, POS=1.52, RGB=1.57
+    - unet.down_blocks.0.nets.0
+    - unet.down_blocks.0.nets.1
+    # down_blocks.1 (128ch): 高 ratio，中低级特征
+    #   nets.0.conv1: ALL=1.59, POS=1.61, RGB=1.54
+    #   nets.0.shortcut: ALL=1.57, POS=1.47, RGB=1.52
+    - unet.down_blocks.1.nets.0
+
+    # ---- 补充层 Tier-1：LoRA 安全，ratio 中等，增加参数量 ----
+    # 如果上面三组不够（占全网参数 <1%），依次启用：
+    # - unet.down_blocks.1.nets.1       # 128ch ResBlock, ratio ~1.3, LoRA 安全
+    # - unet.down_blocks.2.nets.0       # 256ch ResBlock, ratio ~1.2-1.3, LoRA 安全
+    # - unet.down_blocks.2.nets.1       # 256ch ResBlock, LoRA 安全
+    # - unet.down_blocks.0.downsample   # 64→64 下采样 conv, LoRA 安全
+    # - unet.down_blocks.1.downsample   # 128→128 下采样 conv, LoRA 安全
+    # - unet.down_blocks.2.downsample   # 256→256 下采样 conv, LoRA 安全
+
+    # ---- 补充层 Tier-2：仅对全量微调有效（LoRA 可通过改变输入绕过）----
+    # 这些层 ratio 很高但在 attention 下游，LoRA 攻击者可改变其输入分布：
+    # - unet.down_blocks.4.nets.0       # ALL=1.76, RGB=1.76, 但输入经过 attention
+    # - unet.conv_out                   # POS=2.11, 输出瓶颈层
+    # - conv                            # POS=2.07, 最终 1x1 conv
 
 # 其他配置
 misc:

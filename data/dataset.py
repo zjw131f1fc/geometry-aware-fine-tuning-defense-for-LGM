@@ -212,6 +212,7 @@ class OmniObject3DDataset(Dataset):
         max_samples: Optional[int] = None,
         samples_per_object: int = 1,  # 每个物体采样多少次（数据增强）
         max_samples_per_category: Optional[int] = None,  # 每个类别最多多少个样本
+        object_offset: int = 0,  # 跳过每个类别前 N 个物体（用于 defense/attack 数据分割）
     ):
         """
         Args:
@@ -242,6 +243,7 @@ class OmniObject3DDataset(Dataset):
         self.split = split
         self.samples_per_object = samples_per_object
         self.max_samples_per_category = max_samples_per_category
+        self.object_offset = object_offset
 
         # 创建视角选择器
         if view_selector == 'orthogonal':
@@ -264,13 +266,9 @@ class OmniObject3DDataset(Dataset):
         self.samples = []
         for base_sample in base_samples:
             for sample_idx in range(self.samples_per_object):
-                # 为每次采样添加一个索引，用于生成不同的随机种子
                 sample = base_sample.copy()
                 sample['sample_idx'] = sample_idx
                 self.samples.append(sample)
-
-        print(f"[INFO] 加载了 {len(base_samples)} 个物体，每个采样 {self.samples_per_object} 次")
-        print(f"[INFO] 总样本数: {len(self.samples)}")
 
     def _scan_dataset(self, categories, max_samples):
         """扫描数据集"""
@@ -302,9 +300,9 @@ class OmniObject3DDataset(Dataset):
                 print(f"[WARNING] 以下类别在数据集中不存在: {missing_categories}")
                 print(f"[INFO] 可用类别示例: {sorted(list(available_categories))[:20]}")
 
-        # 按类别组织物体
+        # 按类别组织物体（排序保证顺序稳定，defense/attack 用 offset 分割）
         category_objects = {}
-        for obj_dir in all_objects:
+        for obj_dir in sorted(all_objects):
             category = obj_dir.rsplit('_', 1)[0]
 
             # 过滤类别
@@ -315,9 +313,13 @@ class OmniObject3DDataset(Dataset):
                 category_objects[category] = []
             category_objects[category].append(obj_dir)
 
-        # 对每个类别限制样本数量
+        # 对每个类别：先 offset 跳过，再限制数量
         for category, objects in category_objects.items():
-            # 如果设置了每个类别的最大样本数，进行限制
+            # 跳过前 object_offset 个物体（用于 defense/attack 数据分割）
+            if self.object_offset > 0:
+                objects = objects[self.object_offset:]
+
+            # 限制每个类别的最大物体数
             if self.max_samples_per_category is not None:
                 objects = objects[:self.max_samples_per_category]
 
@@ -344,15 +346,18 @@ class OmniObject3DDataset(Dataset):
             if max_samples and len(samples) >= max_samples:
                 break
 
-        # 打印每个类别的样本数统计
-        if self.max_samples_per_category is not None:
-            category_counts = {}
-            for sample in samples:
-                cat = sample['category']
-                category_counts[cat] = category_counts.get(cat, 0) + 1
-            print(f"[INFO] 每个类别的物体数量:")
+        # 打印每个类别的物体数统计（始终打印）
+        category_counts = {}
+        for sample in samples:
+            cat = sample['category']
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+        if category_counts:
+            print(f"[OmniObject3D] 物体加载统计 (offset={self.object_offset}):")
             for cat, count in sorted(category_counts.items()):
-                print(f"  {cat}: {count}")
+                print(f"  {cat}: {count} 个物体 × {self.samples_per_object} 组视图 = {count * self.samples_per_object} 样本")
+            total_objects = sum(category_counts.values())
+            total_samples = total_objects * self.samples_per_object
+            print(f"  合计: {total_objects} 个物体, {total_samples} 样本")
 
         return samples
 
@@ -406,9 +411,20 @@ class OmniObject3DDataset(Dataset):
             img_path = os.path.join(sample['images_dir'], f"{frame['file_path']}.png")
 
             # 加载图像
-            img = Image.open(img_path).convert('RGBA')
+            img_raw = Image.open(img_path)
+            original_mode = img_raw.mode
+            img = img_raw.convert('RGBA')
             img = img.resize((self.input_size, self.input_size), Image.BILINEAR)
             img_tensor = TF.to_tensor(img)  # [4, H, W], 值域[0, 1]
+
+            # 对 RGB 黑底图片（无 alpha 通道），从黑色背景推断 alpha mask
+            # OmniObject3D 约22%的物体是 RGB 黑底渲染
+            if original_mode == 'RGB':
+                rgb = img_tensor[:3]
+                luminance = rgb.max(dim=0)[0]  # 取 RGB 最大值
+                alpha_inferred = (luminance > 0.01).float()  # 非黑色区域为前景
+                img_tensor[3:4] = alpha_inferred
+
             images_data.append(img_tensor)
 
             # 加载相机姿态
@@ -429,13 +445,17 @@ class OmniObject3DDataset(Dataset):
 
         cam_poses = torch.stack(cam_poses, dim=0)  # [V_total, 4, 4]
 
-        # 关键修复：正交化旋转矩阵（使用 SVD）
-        # 相机坐标系转换后，旋转部分可能不再正交，需要重新正交化
+        # 正交化旋转矩阵（c2w[:3, :] /= scale 会缩放旋转部分，需要恢复正交性）
         for i in range(cam_poses.shape[0]):
-            R = cam_poses[i, :3, :3]  # 提取旋转部分
+            R = cam_poses[i, :3, :3]
             U, _, Vt = torch.linalg.svd(R)
-            R_ortho = U @ Vt  # 正交化后的旋转矩阵
-            cam_poses[i, :3, :3] = R_ortho
+            cam_poses[i, :3, :3] = U @ Vt
+
+        # 统一缩放相机距离到 target_radius（与 LGM 原始 c2w[:3, 3] *= cam_radius / 1.5 等价）
+        # 必须在归一化变换之前做，保证归一化后物体在原点
+        first_distance = torch.norm(cam_poses[0, :3, 3])
+        if first_distance > 1e-6:
+            cam_poses[:, :3, 3] *= target_radius / first_distance
 
         # 相机姿态归一化（将第一个相机固定到特定位置）
         transform = torch.tensor([
@@ -446,19 +466,11 @@ class OmniObject3DDataset(Dataset):
         ], dtype=torch.float32) @ torch.inverse(cam_poses[0])
         cam_poses = transform.unsqueeze(0) @ cam_poses  # [V_total, 4, 4]
 
-        # 关键修复：姿态归一化后，统一缩放所有相机的radius到target_radius
-        for i in range(cam_poses.shape[0]):
-            cam_pos = cam_poses[i, :3, 3]
-            current_radius = torch.norm(cam_pos)
-            if current_radius > 1e-6:  # 避免除零
-                cam_poses[i, :3, 3] = cam_pos * (target_radius / current_radius)
-
         # 第二步：处理输入图像
         input_images = []
         input_transforms = []
 
         # 使用归一化后的实际相机姿态计算 rays
-        # 这些相机姿态已经经过了坐标系转换和归一化
         for i in range(len(input_indices)):
             img_tensor = images_data[i]
 
@@ -686,9 +698,19 @@ class ObjaverseRenderedDataset(Dataset):
             img_path = os.path.join(sample['images_dir'], f"{frame['file_path']}.png")
 
             # 加载图像
-            img = Image.open(img_path).convert('RGBA')
+            img_raw = Image.open(img_path)
+            original_mode = img_raw.mode
+            img = img_raw.convert('RGBA')
             img = img.resize((self.input_size, self.input_size), Image.BILINEAR)
             img_tensor = TF.to_tensor(img)
+
+            # 对 RGB 黑底图片（无 alpha 通道），从黑色背景推断 alpha mask
+            if original_mode == 'RGB':
+                rgb = img_tensor[:3]
+                luminance = rgb.max(dim=0)[0]
+                alpha_inferred = (luminance > 0.01).float()
+                img_tensor[3:4] = alpha_inferred
+
             images_data.append(img_tensor)
 
             # 加载相机姿态
@@ -708,12 +730,16 @@ class ObjaverseRenderedDataset(Dataset):
 
         cam_poses = torch.stack(cam_poses, dim=0)
 
-        # 关键修复：正交化旋转矩阵（使用 SVD）
+        # 正交化旋转矩阵（c2w[:3, :] /= scale 会缩放旋转部分，需要恢复正交性）
         for i in range(cam_poses.shape[0]):
             R = cam_poses[i, :3, :3]
             U, _, Vt = torch.linalg.svd(R)
-            R_ortho = U @ Vt
-            cam_poses[i, :3, :3] = R_ortho
+            cam_poses[i, :3, :3] = U @ Vt
+
+        # 统一缩放相机距离到 target_radius（与 LGM 原始 c2w[:3, 3] *= cam_radius / 1.5 等价）
+        first_distance = torch.norm(cam_poses[0, :3, 3])
+        if first_distance > 1e-6:
+            cam_poses[:, :3, 3] *= target_radius / first_distance
 
         # 相机姿态归一化
         transform = torch.tensor([
@@ -723,13 +749,6 @@ class ObjaverseRenderedDataset(Dataset):
             [0, 0, 0, 1]
         ], dtype=torch.float32) @ torch.inverse(cam_poses[0])
         cam_poses = transform.unsqueeze(0) @ cam_poses
-
-        # 关键修复：姿态归一化后，统一缩放所有相机的radius到target_radius
-        for i in range(cam_poses.shape[0]):
-            cam_pos = cam_poses[i, :3, 3]
-            current_radius = torch.norm(cam_pos)
-            if current_radius > 1e-6:  # 避免除零
-                cam_poses[i, :3, 3] = cam_pos * (target_radius / current_radius)
 
         # 第二步：处理输入图像
         input_images = []
@@ -825,8 +844,9 @@ def create_dataloader(
     if dataset_type == 'objaverse':
         # Objaverse 数据根目录直接指向 objaverse_rendered
         objaverse_root = os.path.join(data_root, 'objaverse_rendered')
-        # Objaverse 不支持 categories / max_samples_per_category，从 kwargs 中移除
+        # Objaverse 不支持 categories / max_samples_per_category / object_offset，从 kwargs 中移除
         kwargs.pop('max_samples_per_category', None)
+        kwargs.pop('object_offset', None)
         dataset = ObjaverseRenderedDataset(
             data_root=objaverse_root,
             view_selector=view_selector,
