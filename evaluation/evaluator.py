@@ -6,7 +6,8 @@ import torch
 import numpy as np
 import os
 from tqdm import tqdm
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+from PIL import Image
 
 from core.models import LGM
 from kiui.cam import orbit_camera
@@ -131,9 +132,12 @@ class Evaluator:
         """
         渲染指定视图
 
+        从 cam_poses 中提取相机位置，然后用 orbit_camera 生成正确的
+        渲染姿态（确保相机精确对准原点）。
+
         Args:
             gaussians: Gaussian 参数 [B, N, 14]
-            cam_poses: 相机姿态 [B, V, 4, 4]
+            cam_poses: 相机姿态 [B, V, 4, 4]，只使用其中的位置信息
             opt: 模型配置选项
 
         Returns:
@@ -157,7 +161,21 @@ class Evaluator:
         for b in range(B):
             batch_renders = []
             for v in range(V):
-                cam_pose = cam_poses[b, v].unsqueeze(0)  # [1, 4, 4]
+                # 从数据集的相机姿态中提取位置，计算 azimuth 和 elevation
+                pos = cam_poses[b, v, :3, 3].cpu().numpy()
+                radius = float(np.linalg.norm(pos))
+                if radius < 1e-6:
+                    radius = 1.5
+
+                # 计算 elevation 和 azimuth
+                # 坐标系：经过 Blender→OpenGL 转换后，Y 是 up，Z 是 forward
+                elevation = float(np.degrees(np.arcsin(np.clip(pos[1] / radius, -1, 1))))
+                azimuth = float(np.degrees(np.arctan2(pos[0], pos[2])))
+
+                # 用 orbit_camera 生成精确对准原点的相机姿态
+                cam_pose_np = orbit_camera(elevation, azimuth, radius=radius, opengl=True)
+                cam_pose = torch.from_numpy(cam_pose_np).unsqueeze(0).to(self.device)
+                cam_pose[:, :3, 1:3] *= -1  # OpenGL → COLMAP
 
                 # 计算相机参数
                 cam_view = torch.inverse(cam_pose).transpose(1, 2)
@@ -180,6 +198,152 @@ class Evaluator:
 
         rendered_images = torch.stack(rendered_images, dim=0)  # [B, V, 3, H, W]
         return rendered_images
+
+    @torch.no_grad()
+    def render_canonical_views(
+        self,
+        gaussians,
+        elevations: List[float] = [0, 30],
+        azimuths: List[float] = [0, 90, 180, 270],
+        cam_radius: float = 1.5,
+    ):
+        """
+        从标准视角渲染图像
+
+        Args:
+            gaussians: Gaussian 参数 [B, N, 14]
+            elevations: 仰角列表
+            azimuths: 方位角列表
+            cam_radius: 相机半径
+
+        Returns:
+            images: [B, len(elevations)*len(azimuths), 3, H, W]
+        """
+        self.model.eval()
+        opt = self.model.opt
+
+        tan_half_fov = np.tan(0.5 * np.deg2rad(opt.fovy))
+        proj_matrix = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
+        proj_matrix[0, 0] = 1 / tan_half_fov
+        proj_matrix[1, 1] = 1 / tan_half_fov
+        proj_matrix[2, 2] = (opt.zfar + opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[3, 2] = -(opt.zfar * opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[2, 3] = 1
+
+        B = gaussians.shape[0]
+        all_images = []
+
+        for el in elevations:
+            for azi in azimuths:
+                cam_pose = orbit_camera(el, azi, radius=cam_radius, opengl=True)
+                cam_pose = torch.from_numpy(cam_pose).unsqueeze(0).to(self.device)
+                cam_pose[:, :3, 1:3] *= -1
+
+                cam_view = torch.inverse(cam_pose).transpose(1, 2)
+                cam_view_proj = cam_view @ proj_matrix
+                cam_pos = -cam_pose[:, :3, 3]
+
+                # 对每个 batch 渲染
+                batch_imgs = []
+                for b in range(B):
+                    result = self.model.gs.render(
+                        gaussians[b:b+1],
+                        cam_view.unsqueeze(0),
+                        cam_view_proj.unsqueeze(0),
+                        cam_pos.unsqueeze(0),
+                    )
+                    batch_imgs.append(result['image'].squeeze(1))  # [1, 3, H, W]
+                all_images.append(torch.cat(batch_imgs, dim=0))  # [B, 3, H, W]
+
+        # [num_views, B, 3, H, W] -> [B, num_views, 3, H, W]
+        all_images = torch.stack(all_images, dim=1)
+        return all_images
+
+    @torch.no_grad()
+    def render_and_save(
+        self,
+        gaussians,
+        save_dir: str,
+        prefix: str = '',
+        gt_images: Optional[torch.Tensor] = None,
+        elevations: List[float] = [0, 30],
+        azimuths: List[float] = [0, 90, 180, 270],
+        cam_radius: float = 1.5,
+    ):
+        """
+        渲染标准视角并保存为图片网格
+
+        每个 batch 样本保存一张图：
+        - 无 GT：一行渲染结果
+        - 有 GT：上行 GT，下行渲染结果
+
+        Args:
+            gaussians: Gaussian 参数 [B, N, 14]
+            save_dir: 保存目录
+            prefix: 文件名前缀
+            gt_images: 可选的 GT 图像 [B, V, 3, H, W]（V 可以与渲染视角数不同）
+            elevations: 仰角列表
+            azimuths: 方位角列表
+            cam_radius: 相机半径
+
+        Returns:
+            saved_paths: 保存的文件路径列表
+        """
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 渲染标准视角
+        rendered = self.render_canonical_views(
+            gaussians, elevations, azimuths, cam_radius
+        )  # [B, num_views, 3, H, W]
+
+        B, V_render = rendered.shape[:2]
+        saved_paths = []
+
+        for b in range(B):
+            # 渲染行：拼接所有视角
+            render_row = rendered[b]  # [V_render, 3, H, W]
+            render_row = render_row.clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()  # [V, H, W, 3]
+            render_row = np.concatenate(list(render_row), axis=1)  # [H, V*W, 3]
+
+            if gt_images is not None:
+                # GT 行：取前 V_render 个视角（或全部，不足则补白）
+                gt = gt_images[b]  # [V_gt, 3, H_gt, W_gt]
+                gt = gt.clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()  # [V_gt, H, W, 3]
+
+                # 如果 GT 视角数不够，补白
+                H_r, W_total = render_row.shape[:2]
+                H_gt, W_gt = gt.shape[1], gt.shape[2]
+
+                # resize GT 到渲染尺寸
+                gt_pil_list = []
+                for v in range(gt.shape[0]):
+                    pil_img = Image.fromarray((gt[v] * 255).astype(np.uint8))
+                    pil_img = pil_img.resize((W_total // V_render, H_r), Image.BILINEAR)
+                    gt_pil_list.append(np.array(pil_img).astype(np.float32) / 255.0)
+
+                # 拼接 GT 视角，不足补白
+                if len(gt_pil_list) >= V_render:
+                    gt_row = np.concatenate(gt_pil_list[:V_render], axis=1)
+                else:
+                    gt_row = np.concatenate(gt_pil_list, axis=1)
+                    pad_w = W_total - gt_row.shape[1]
+                    if pad_w > 0:
+                        gt_row = np.concatenate([gt_row, np.ones((H_r, pad_w, 3))], axis=1)
+
+                # 上下拼接：GT 在上，渲染在下
+                grid = np.concatenate([gt_row, render_row], axis=0)
+            else:
+                grid = render_row
+
+            # 保存
+            grid_uint8 = (grid * 255).astype(np.uint8)
+            fname = f"{prefix}sample_{b}.png" if prefix else f"sample_{b}.png"
+            path = os.path.join(save_dir, fname)
+            Image.fromarray(grid_uint8).save(path)
+            saved_paths.append(path)
+
+        print(f"[Evaluator] 渲染图片已保存到 {save_dir} ({len(saved_paths)} 张)")
+        return saved_paths
 
     def compute_metrics(self, pred_images, gt_images, mask=None) -> Dict[str, float]:
         """
