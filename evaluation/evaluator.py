@@ -411,39 +411,42 @@ class Evaluator:
         计算 Gaussian 统计信息
 
         Args:
-            gaussians: Gaussian 参数
+            gaussians: Gaussian 参数 [B, N, 14] tensor
+                       14维: pos(3) + opacity(1) + scale(3) + rotation(4) + rgb(3)
 
         Returns:
             统计信息字典
         """
         stats = {}
 
+        # 解析 14 维参数
+        position = gaussians[..., 0:3]
+        opacity = gaussians[..., 3:4]
+        scale = gaussians[..., 4:7]
+        rgb = gaussians[..., 11:14]
+
         # Opacity 统计
-        opacity = gaussians['opacity']
         stats['opacity_mean'] = opacity.mean().item()
         stats['opacity_std'] = opacity.std().item()
         stats['opacity_min'] = opacity.min().item()
         stats['opacity_max'] = opacity.max().item()
 
         # Scale 统计
-        scale = gaussians['scale']
         stats['scale_mean'] = scale.mean().item()
         stats['scale_std'] = scale.std().item()
         stats['scale_min'] = scale.min().item()
         stats['scale_max'] = scale.max().item()
 
         # Position 统计
-        position = gaussians['xyz']
-        stats['position_mean'] = position.mean(dim=0).cpu().numpy()
-        stats['position_std'] = position.std(dim=0).cpu().numpy()
+        stats['position_mean'] = position.mean(dim=-2).cpu().numpy()
+        stats['position_std'] = position.std(dim=-2).cpu().numpy()
 
         # RGB 统计
-        rgb = gaussians['features']
         stats['rgb_mean'] = rgb.mean().item()
         stats['rgb_std'] = rgb.std().item()
 
         # Gaussian 数量
-        stats['num_gaussians'] = position.shape[0]
+        stats['num_gaussians'] = gaussians.shape[-2]
 
         return stats
 

@@ -2,6 +2,7 @@
 攻击训练脚本 - DDP 版本（使用新架构）
 
 支持多 GPU 并行训练，使用 Accelerate 库
+每个 epoch 结束后渲染对比图，直观展示训练变化
 """
 
 import os
@@ -48,20 +49,48 @@ def get_base_model(model):
     return model
 
 
+@torch.no_grad()
+def render_epoch_samples(evaluator, val_loader, workspace, epoch, num_samples=3):
+    """每个 epoch 结束后渲染对比图"""
+    render_dir = os.path.join(workspace, 'renders')
+
+    for i, batch in enumerate(val_loader):
+        if i >= num_samples:
+            break
+
+        input_images = batch['input_images'].to('cuda')
+        gt_images = batch.get('supervision_images')
+        if gt_images is not None:
+            gt_images = gt_images.to('cuda')
+
+        gaussians = evaluator.generate_gaussians(input_images)
+
+        evaluator.render_and_save(
+            gaussians,
+            save_dir=render_dir,
+            prefix=f"epoch{epoch:02d}_",
+            gt_images=gt_images,
+        )
+
+        # 第一个样本额外保存 PLY
+        if i == 0:
+            ply_path = os.path.join(workspace, f"epoch{epoch:02d}.ply")
+            evaluator.save_ply(gaussians[0:1], ply_path)
+
+
 def main():
     args = parse_args()
 
-    # 初始化 Accelerator
     accelerator = Accelerator(
         gradient_accumulation_steps=1,
-        mixed_precision='no',  # 使用 FP32
+        mixed_precision='no',
     )
 
     is_main = accelerator.is_main_process
 
     if is_main:
         print("=" * 80)
-        print("攻击训练 - DDP 版本（新架构）")
+        print("攻击训练 - DDP 版本")
         print("=" * 80)
         print(f"进程数: {accelerator.num_processes}")
         print(f"当前进程: {accelerator.process_index}")
@@ -70,7 +99,6 @@ def main():
     config = ConfigManager(args.config).config
     set_seed(config['misc']['seed'])
 
-    # 创建工作目录（只在主进程）
     if is_main:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         workspace = os.path.join(config['misc']['workspace'], f"attack_{timestamp}_ddp")
@@ -79,7 +107,6 @@ def main():
     else:
         workspace = None
 
-    # 广播 workspace 到所有进程
     if dist.is_initialized():
         workspace_list = [workspace]
         dist.broadcast_object_list(workspace_list, src=0)
@@ -117,15 +144,20 @@ def main():
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
     )
 
-    # 5. 使用 Accelerator 准备模型、优化器、数据加载器
+    # 5. Accelerator 准备
     model, finetuner.optimizer, data_mgr.train_loader, data_mgr.val_loader = accelerator.prepare(
         model, finetuner.optimizer, data_mgr.train_loader, data_mgr.val_loader
     )
-
-    # 更新 finetuner 的模型引用
     finetuner.model = model
 
-    # 6. 训练循环
+    # 6. 训练前渲染 baseline（epoch 0）
+    if is_main:
+        print("\n渲染 baseline（训练前）...")
+        unwrapped = accelerator.unwrap_model(model)
+        evaluator = Evaluator(unwrapped)
+        render_epoch_samples(evaluator, data_mgr.val_loader, workspace, epoch=0)
+
+    # 7. 训练循环
     if is_main:
         print("\n" + "=" * 80)
         print("开始训练")
@@ -137,6 +169,7 @@ def main():
         model.train()
 
         total_loss = 0
+        total_psnr = 0
         num_batches = 0
 
         pbar = tqdm(data_mgr.train_loader, desc=f"Epoch {epoch}", disable=not is_main)
@@ -145,68 +178,44 @@ def main():
 
             if updated:
                 total_loss += loss_dict['loss']
+                total_psnr += loss_dict.get('psnr', 0)
                 num_batches += 1
 
                 if is_main:
                     pbar.set_postfix({
                         'loss': f"{loss_dict['loss']:.4f}",
-                        'mse': f"{loss_dict['loss_mse']:.4f}",
-                        'lpips': f"{loss_dict['loss_lpips']:.4f}",
+                        'lpips': f"{loss_dict.get('loss_lpips', 0):.4f}",
+                        'psnr': f"{loss_dict.get('psnr', 0):.2f}",
                     })
 
-        # 等待所有进程完成
         accelerator.wait_for_everyone()
 
-        # 打印 epoch 统计（只在主进程）
         if is_main:
             avg_loss = total_loss / num_batches if num_batches > 0 else 0
-            print(f"\nEpoch {epoch}/{num_epochs} - Avg Loss: {avg_loss:.4f}")
+            avg_psnr = total_psnr / num_batches if num_batches > 0 else 0
+            print(f"\nEpoch {epoch}/{num_epochs} - Loss: {avg_loss:.4f}, PSNR: {avg_psnr:.2f}")
 
-        # 保存检查点（只在主进程）
-        if is_main and epoch % 5 == 0:
+            # 每个 epoch 渲染对比图
+            unwrapped = accelerator.unwrap_model(model)
+            evaluator = Evaluator(unwrapped)
+            render_epoch_samples(evaluator, data_mgr.val_loader, workspace, epoch=epoch)
+
+        # 保存检查点
+        if is_main and (epoch % 5 == 0 or epoch == num_epochs):
             checkpoint_path = os.path.join(workspace, f"checkpoint_epoch_{epoch}.pth")
-            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped = accelerator.unwrap_model(model)
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': unwrapped_model.state_dict(),
+                'model_state_dict': unwrapped.state_dict(),
                 'optimizer_state_dict': finetuner.optimizer.state_dict(),
                 'config': config,
             }, checkpoint_path)
             print(f"检查点已保存: {checkpoint_path}")
 
-    # 7. 训练完成后评估（只在主进程）
     if is_main:
         print("\n" + "=" * 80)
-        print("训练完成，开始评估")
-        print("=" * 80)
-
-        unwrapped_model = accelerator.unwrap_model(model)
-        evaluator = Evaluator(unwrapped_model)
-
-        # 生成测试样本
-        for i, batch in enumerate(data_mgr.val_loader):
-            if i >= 3:
-                break
-
-            input_images = batch['input_images'].to('cuda')
-            gaussians = evaluator.generate_gaussians(input_images)
-
-            # 保存 PLY
-            ply_path = Path(workspace) / f"sample_{i}.ply"
-            evaluator.save_ply(gaussians, str(ply_path))
-
-            # 渲染视频
-            video_path = Path(workspace) / f"sample_{i}_360.mp4"
-            evaluator.render_360_video(gaussians, str(video_path))
-
-            # 统计
-            stats = evaluator.compute_gaussian_stats(gaussians)
-            print(f"\nSample {i}:")
-            print(f"  Gaussians: {stats['num_gaussians']}")
-            print(f"  Opacity: {stats['opacity_mean']:.3f} ± {stats['opacity_std']:.3f}")
-
-        print("\n" + "=" * 80)
         print("全部完成！")
+        print(f"渲染结果: {workspace}/renders/")
         print("=" * 80)
 
 
