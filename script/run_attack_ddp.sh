@@ -36,6 +36,6 @@ echo "=========================================="
 # 使用 accelerate 启动
 accelerate launch \
     --num_processes=$NUM_GPUS \
-    --mixed_precision=no \
+    --mixed_precision=bf16 \
     script/attack_train_ddp.py \
     --config $CONFIG_FILE

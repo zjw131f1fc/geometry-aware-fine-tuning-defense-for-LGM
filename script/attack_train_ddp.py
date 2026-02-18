@@ -22,6 +22,7 @@ from models import ModelManager
 from data import DataManager
 from training import AutoFineTuner
 from evaluation import Evaluator
+from tools import set_seed, get_base_model
 
 
 def parse_args():
@@ -29,24 +30,6 @@ def parse_args():
     parser.add_argument('--config', type=str, default='config.yaml',
                        help='配置文件路径')
     return parser.parse_args()
-
-
-def set_seed(seed):
-    """设置随机种子"""
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-
-
-def get_base_model(model):
-    """获取底层模型（处理 LoRA/DDP 包装）"""
-    if hasattr(model, 'base_model'):
-        model = model.base_model
-    if hasattr(model, 'model'):
-        model = model.model
-    if hasattr(model, 'module'):
-        model = model.module
-    return model
 
 
 @torch.no_grad()
@@ -89,7 +72,7 @@ def main():
 
     accelerator = Accelerator(
         gradient_accumulation_steps=1,
-        mixed_precision='no',
+        mixed_precision='bf16',
     )
 
     is_main = accelerator.is_main_process
@@ -145,7 +128,7 @@ def main():
         lr=training_config['lr'],
         weight_decay=training_config['weight_decay'],
         gradient_clip=training_config['gradient_clip'],
-        mixed_precision=False,
+        mixed_precision='no',  # Accelerator 已处理 bf16
         lambda_lpips=training_config.get('lambda_lpips', 1.0),
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
     )
@@ -169,7 +152,7 @@ def main():
         print("开始训练")
         print("=" * 80)
 
-    num_epochs = training_config['num_epochs']
+    num_epochs = training_config.get('attack_epochs', training_config.get('num_epochs', 5))
     global_step = 0
 
     for epoch in range(1, num_epochs + 1):

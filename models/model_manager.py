@@ -65,6 +65,9 @@ class ModelManager:
                 ckpt = load_file(resume_path, device='cpu')
             else:
                 ckpt = torch.load(resume_path, map_location='cpu')
+                # 兼容 checkpoint 字典格式（含 model_state_dict 键）
+                if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+                    ckpt = ckpt['model_state_dict']
             self.model.load_state_dict(ckpt, strict=False)
 
         # 转换精度和设备

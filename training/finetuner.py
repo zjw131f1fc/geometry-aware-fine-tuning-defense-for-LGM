@@ -30,7 +30,7 @@ class AutoFineTuner:
         lr: float = 1e-4,
         weight_decay: float = 0.01,
         gradient_clip: float = 1.0,
-        mixed_precision: bool = True,
+        mixed_precision: str = 'bf16',
         lambda_lpips: float = 1.0,
         gradient_accumulation_steps: int = 1,
     ):
@@ -41,16 +41,21 @@ class AutoFineTuner:
             lr: 学习率
             weight_decay: 权重衰减
             gradient_clip: 梯度裁剪
-            mixed_precision: 是否使用混合精度
+            mixed_precision: 混合精度模式 ('no'=fp32, 'bf16', 'fp16')
             lambda_lpips: LPIPS损失权重
             gradient_accumulation_steps: 梯度累计步数
         """
         self.model = model
         self.device = device
         self.gradient_clip = gradient_clip
-        self.mixed_precision = mixed_precision
         self.lambda_lpips = lambda_lpips
         self.gradient_accumulation_steps = gradient_accumulation_steps
+
+        # 混合精度：兼容旧的 bool 参数
+        if isinstance(mixed_precision, bool):
+            self.mixed_precision = 'fp16' if mixed_precision else 'no'
+        else:
+            self.mixed_precision = mixed_precision
 
         # 优化器
         self.optimizer = optim.AdamW(
@@ -60,8 +65,8 @@ class AutoFineTuner:
             betas=(0.9, 0.95),
         )
 
-        # 混合精度
-        self.scaler = GradScaler('cuda') if mixed_precision else None
+        # GradScaler 只有 fp16 需要，bf16 不需要
+        self.scaler = GradScaler('cuda') if self.mixed_precision == 'fp16' else None
 
         # 损失函数
         self.mse_loss = nn.MSELoss()
@@ -101,29 +106,42 @@ class AutoFineTuner:
         self._accumulation_counter += 1
         should_update = (self._accumulation_counter % self.gradient_accumulation_steps == 0)
 
-        if self.mixed_precision:
-            with autocast('cuda'):
-                # 前向传播
+        if self.mixed_precision == 'fp16':
+            with autocast('cuda', dtype=torch.float16):
                 loss, loss_dict = self._forward_and_loss(data)
-                # 损失缩放（梯度累计）
                 loss = loss / self.gradient_accumulation_steps
 
-            # 反向传播
             self.scaler.scale(loss).backward()
 
             if should_update:
-                # 梯度裁剪
                 if self.gradient_clip > 0:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(),
                         self.gradient_clip
                     )
-
-                # 优化器步进
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad()
+
+        elif self.mixed_precision == 'bf16':
+            with autocast('cuda', dtype=torch.bfloat16):
+                loss, loss_dict = self._forward_and_loss(data)
+                loss = loss / self.gradient_accumulation_steps
+
+            # bf16 不需要 GradScaler
+            loss.backward()
+
+            if should_update:
+                if self.gradient_clip > 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.gradient_clip
+                    )
+                    loss_dict['grad_norm'] = grad_norm.item()
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+
         else:
             # 前向传播
             loss, loss_dict = self._forward_and_loss(data)
@@ -340,14 +358,14 @@ class AutoFineTuner:
         # 如果最后还有未更新的梯度，强制更新一次
         if self._accumulation_counter % self.gradient_accumulation_steps != 0:
             if self.gradient_clip > 0:
-                if self.mixed_precision:
+                if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.gradient_clip
                 )
 
-            if self.mixed_precision:
+            if self.scaler is not None:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:

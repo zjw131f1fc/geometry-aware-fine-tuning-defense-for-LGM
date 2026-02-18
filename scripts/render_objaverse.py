@@ -51,7 +51,7 @@ def main():
     parser.add_argument(
         "--num_views",
         type=int,
-        default=100,
+        default=48,
         help="Number of views per object"
     )
     parser.add_argument(
@@ -70,6 +70,12 @@ def main():
         "--random_sample",
         action="store_true",
         help="Randomly sample objects instead of taking first N"
+    )
+    parser.add_argument(
+        "--elevations",
+        type=str,
+        default="-20,0,20",
+        help="Comma-separated elevation angles in degrees (default: -20,0,20)"
     )
     parser.add_argument(
         "--fast",
@@ -108,6 +114,7 @@ def main():
         resolution=args.resolution,
         num_workers=args.num_workers,
         fast_mode=args.fast,
+        elevations=args.elevations,
     )
 
     # Render

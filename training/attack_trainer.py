@@ -67,7 +67,7 @@ class AttackTrainer:
             lr=training_config['lr'],
             weight_decay=training_config['weight_decay'],
             gradient_clip=training_config['gradient_clip'],
-            mixed_precision=False,  # 使用 FP32
+            mixed_precision='bf16',
             lambda_lpips=training_config.get('lambda_lpips', 1.0),
             gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
         )

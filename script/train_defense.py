@@ -9,6 +9,16 @@ import argparse
 import os
 import sys
 
+# 解析 GPU 参数（必须在 import torch 之前设置 CUDA_VISIBLE_DEVICES）
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument('--gpu', type=int, default=0)
+_args, _ = _parser.parse_known_args()
+os.environ['CUDA_VISIBLE_DEVICES'] = str(_args.gpu)
+
+# 禁用 xformers：其 memory_efficient_attention 标记为 @once_differentiable，
+# 不支持 create_graph=True 所需的二阶导数（动态敏感度 + 梯度冲突正则）
+os.environ['XFORMERS_DISABLED'] = '1'
+
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,9 +44,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # 设置 GPU
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-
     # 加载配置
     print("=" * 80)
     print("加载配置...")
@@ -46,7 +53,7 @@ def main():
 
     # 覆盖配置
     if args.num_epochs is not None:
-        config['training']['num_epochs'] = args.num_epochs
+        config['training']['defense_epochs'] = args.num_epochs
 
     # 解析敏感层
     target_layers = None
@@ -56,7 +63,8 @@ def main():
         target_layers = config['defense']['target_layers']
 
     print(f"\n配置信息:")
-    print(f"  - 训练轮数: {config['training']['num_epochs']}")
+    num_epochs = config['training'].get('defense_epochs', config['training'].get('num_epochs', 10))
+    print(f"  - 训练轮数: {num_epochs}")
     print(f"  - 学习率: {config['training']['lr']}")
     print(f"  - Batch Size: {config['training']['batch_size']}")
     print(f"  - 敏感层: {target_layers if target_layers else '全部层'}")
@@ -69,7 +77,7 @@ def main():
 
     # 开始训练
     trainer.train(
-        num_epochs=config['training']['num_epochs'],
+        num_epochs=num_epochs,
         save_dir=args.output_dir,
         validate_every=1
     )

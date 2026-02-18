@@ -18,9 +18,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--object_path", type=str, required=True)
 parser.add_argument("--output_dir", type=str, required=True)
 parser.add_argument("--object_uid", type=str, required=True)
-parser.add_argument("--num_views", type=int, default=100)
+parser.add_argument("--num_views", type=int, default=48)
 parser.add_argument("--resolution", type=int, default=800)
 parser.add_argument("--camera_dist", type=float, default=2.0)
+parser.add_argument("--elevations", type=str, default="-20,0,20",
+                    help="Comma-separated elevation angles in degrees (default: -20,0,20)")
 parser.add_argument("--engine", type=str, default="CYCLES", choices=["CYCLES", "BLENDER_EEVEE"])
 parser.add_argument("--fast", action="store_true", help="Use EEVEE engine for faster rendering (lower quality)")
 
@@ -34,6 +36,7 @@ if args.fast:
 print(f"Rendering {args.object_uid}")
 print(f"Object path: {args.object_path}")
 print(f"Num views: {args.num_views}")
+print(f"Elevations: {args.elevations}")
 print(f"Engine: {args.engine}")
 
 
@@ -309,76 +312,90 @@ def render_views():
         "frames": []
     }
 
-    # Multi-group orthogonal view sampling for LGM
-    # Strategy: Multiple sets of 4 orthogonal views (0°, 90°, 180°, 270°) with different offsets
-    # All views at elevation=0° (horizontal) for LGM compatibility
+    # Multi-elevation orthogonal view sampling for LGM
+    # Strategy: At each elevation layer, generate groups of 4 orthogonal views (0°, 90°, 180°, 270°)
+    # with different azimuth offsets for dense coverage
 
-    if args.num_views <= 20:
-        num_groups = 4  # 4 groups × 4 views = 16 views
-        angle_step = 22.5  # Groups at 0°, 22.5°, 45°, 67.5°
-    elif args.num_views <= 50:
-        num_groups = 8  # 8 groups × 4 views = 32 views
-        angle_step = 11.25  # More groups for better coverage
-    else:
-        num_groups = 16  # 16 groups × 4 views = 64 views
-        angle_step = 5.625
+    elevations_deg = [float(e) for e in args.elevations.split(',')]
+    num_elevations = len(elevations_deg)
 
-    # Fixed elevation at 0° (horizontal view, LGM standard)
-    elevation_deg = 0.0
-    elevation = elevation_deg * math.pi / 180.0
+    # Distribute views across elevation layers
+    views_per_elevation = args.num_views // num_elevations
+    remainder = args.num_views % num_elevations
+
+    print(f"[INFO] Elevation layers: {elevations_deg}")
+    print(f"[INFO] Views per elevation: ~{views_per_elevation}")
 
     view_idx = 0
     empty_renders = []
 
-    for group_idx in range(num_groups):
+    for elev_idx, elev_deg in enumerate(elevations_deg):
         if view_idx >= args.num_views:
             break
 
-        # Starting angle for this group
-        start_angle = group_idx * angle_step
+        elevation = elev_deg * math.pi / 180.0
 
-        # Generate 4 orthogonal views with this starting angle
-        for i in range(4):
-            if view_idx >= args.num_views:
+        # Allocate views for this elevation (distribute remainder to first layers)
+        n_views_this_elev = views_per_elevation + (1 if elev_idx < remainder else 0)
+
+        # Determine number of orthogonal groups based on allocated views
+        if n_views_this_elev <= 20:
+            num_groups = 4
+            angle_step = 22.5
+        elif n_views_this_elev <= 50:
+            num_groups = 8
+            angle_step = 11.25
+        else:
+            num_groups = 16
+            angle_step = 5.625
+
+        views_rendered_this_elev = 0
+
+        for group_idx in range(num_groups):
+            if view_idx >= args.num_views or views_rendered_this_elev >= n_views_this_elev:
                 break
 
-            azimuth_deg = (start_angle + i * 90) % 360
-            azimuth = azimuth_deg * math.pi / 180.0
+            start_angle = group_idx * angle_step
 
-            # Setup camera
-            transform_matrix = setup_camera_at_position(camera, azimuth, elevation, args.camera_dist)
+            for i in range(4):
+                if view_idx >= args.num_views or views_rendered_this_elev >= n_views_this_elev:
+                    break
 
-            # Render
-            output_file = str(images_dir / f"r_{view_idx}.png")
-            bpy.context.scene.render.filepath = output_file
+                azimuth_deg = (start_angle + i * 90) % 360
+                azimuth = azimuth_deg * math.pi / 180.0
 
-            try:
-                bpy.ops.render.render(write_still=True)
+                transform_matrix = setup_camera_at_position(camera, azimuth, elevation, args.camera_dist)
 
-                # Check if file was created and has reasonable size
-                if os.path.exists(output_file):
-                    file_size = os.path.getsize(output_file)
-                    if file_size < 1000:  # Less than 1KB is suspicious
-                        print(f"[WARNING] View {view_idx} rendered but file is very small ({file_size} bytes)")
+                output_file = str(images_dir / f"r_{view_idx}.png")
+                bpy.context.scene.render.filepath = output_file
+
+                try:
+                    bpy.ops.render.render(write_still=True)
+
+                    if os.path.exists(output_file):
+                        file_size = os.path.getsize(output_file)
+                        if file_size < 1000:
+                            print(f"[WARNING] View {view_idx} rendered but file is very small ({file_size} bytes)")
+                            empty_renders.append(view_idx)
+                    else:
+                        print(f"[ERROR] View {view_idx} render file not created!")
                         empty_renders.append(view_idx)
-                else:
-                    print(f"[ERROR] View {view_idx} render file not created!")
+
+                except Exception as e:
+                    print(f"[ERROR] Failed to render view {view_idx}: {e}")
                     empty_renders.append(view_idx)
 
-            except Exception as e:
-                print(f"[ERROR] Failed to render view {view_idx}: {e}")
-                empty_renders.append(view_idx)
+                transforms_data["frames"].append({
+                    "file_path": f"r_{view_idx}",
+                    "rotation": azimuth,
+                    "elevation": elev_deg,
+                    "transform_matrix": [[float(x) for x in row] for row in transform_matrix],
+                    "scale": scale_factor
+                })
 
-            # Save transform
-            transforms_data["frames"].append({
-                "file_path": f"r_{view_idx}",
-                "rotation": azimuth,
-                "transform_matrix": [[float(x) for x in row] for row in transform_matrix],
-                "scale": scale_factor
-            })
-
-            print(f"[INFO] Rendered view {view_idx+1}/{args.num_views} (group {group_idx+1}/{num_groups}, azimuth {azimuth_deg:.1f}°, elevation {elevation_deg:.1f}°)")
-            view_idx += 1
+                print(f"[INFO] Rendered view {view_idx+1}/{args.num_views} (elev {elev_deg:.1f}°, group {group_idx+1}/{num_groups}, azimuth {azimuth_deg:.1f}°)")
+                view_idx += 1
+                views_rendered_this_elev += 1
 
     # Save transforms.json
     with open(output_path / "transforms.json", 'w') as f:
@@ -390,6 +407,7 @@ def render_views():
         f.write(f"Object: {args.object_uid}\n")
         f.write(f"Object path: {args.object_path}\n")
         f.write(f"Scale factor: {scale_factor}\n")
+        f.write(f"Elevations: {args.elevations}\n")
         f.write(f"Total views: {view_idx}\n")
         f.write(f"Empty/problematic renders: {len(empty_renders)}\n")
         if empty_renders:

@@ -2,6 +2,8 @@
 Batch renderer for Objaverse objects in OmniObject3D format.
 """
 
+import json
+import shutil
 import subprocess
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -18,10 +20,11 @@ class ObjaverseBatchRenderer:
         render_script_path: str,
         glb_dir: str,
         output_dir: str,
-        num_views: int = 100,
+        num_views: int = 48,
         resolution: int = 800,
         num_workers: int = 4,
         fast_mode: bool = False,
+        elevations: str = "-20,0,20",
     ):
         self.blender_path = Path(blender_path)
         self.render_script_path = Path(render_script_path)
@@ -31,6 +34,7 @@ class ObjaverseBatchRenderer:
         self.resolution = resolution
         self.num_workers = num_workers
         self.fast_mode = fast_mode
+        self.elevations = elevations
 
         # Validate paths
         if not self.blender_path.exists():
@@ -58,14 +62,71 @@ class ObjaverseBatchRenderer:
         else:
             return all_glbs[:num_objects]
 
+    def check_render_status(self, object_uid):
+        """Check if an object's render is complete and matches current settings.
+
+        Returns:
+            'complete' - fully rendered with matching settings, safe to skip
+            'stale' - exists but settings mismatch or incomplete, needs re-render
+            'missing' - not rendered at all
+        """
+        render_dir = self.output_dir / object_uid / "render"
+        transforms_file = render_dir / "transforms.json"
+
+        if not transforms_file.exists():
+            return 'missing'
+
+        try:
+            with open(transforms_file, 'r') as f:
+                data = json.load(f)
+
+            frames = data.get('frames', [])
+            if not frames:
+                return 'stale'
+
+            # Check all image files exist
+            images_dir = render_dir / "images"
+            for frame in frames:
+                img_path = images_dir / f"{frame['file_path']}.png"
+                if not img_path.exists():
+                    return 'stale'
+
+            # Check elevation coverage matches current settings
+            current_elevations = sorted(float(e) for e in self.elevations.split(','))
+            has_elevation = 'elevation' in frames[0]
+
+            if has_elevation:
+                existing_elevations = sorted(set(frame['elevation'] for frame in frames))
+                if existing_elevations != current_elevations:
+                    return 'stale'
+            else:
+                # Old format (single elevation=0), stale if we want multi-elevation
+                if current_elevations != [0.0]:
+                    return 'stale'
+
+            # Check frame count is reasonable (at least 80% of requested)
+            if len(frames) < self.num_views * 0.8:
+                return 'stale'
+
+            return 'complete'
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return 'stale'
+
     def render_single(self, glb_path: Path, timeout: int = 600):
         """Render a single GLB file."""
         object_uid = glb_path.stem
 
-        # Check if already rendered
-        output_path = self.output_dir / object_uid / "render" / "transforms.json"
-        if output_path.exists():
-            return {"status": "skipped", "uid": object_uid, "message": "Already exists"}
+        # Smart check: skip only if complete and settings match
+        status = self.check_render_status(object_uid)
+        if status == 'complete':
+            return {"status": "skipped", "uid": object_uid, "message": "Complete with matching settings"}
+
+        if status == 'stale':
+            # Clean up old render before re-rendering
+            old_render_dir = self.output_dir / object_uid / "render"
+            if old_render_dir.exists():
+                shutil.rmtree(old_render_dir)
 
         try:
             cmd = [
@@ -80,6 +141,7 @@ class ObjaverseBatchRenderer:
                 "--object_uid", object_uid,
                 "--num_views", str(self.num_views),
                 "--resolution", str(self.resolution),
+                f"--elevations={self.elevations}",
             ]
 
             # Add fast mode flag if enabled
@@ -126,7 +188,8 @@ class ObjaverseBatchRenderer:
                     "status": "success",
                     "uid": object_uid,
                     "empty_renders": empty_count,
-                    "debug_info": debug_info
+                    "debug_info": debug_info,
+                    "re_rendered": status == 'stale',
                 }
             else:
                 error_msg = result.stderr[-200:] if result.stderr else "Unknown error"
@@ -146,6 +209,7 @@ class ObjaverseBatchRenderer:
         print(f"{'='*60}")
         print(f"Objects to render: {len(glb_files)}")
         print(f"Views per object: {self.num_views}")
+        print(f"Elevations: {self.elevations}")
         print(f"Resolution: {self.resolution}x{self.resolution}")
         print(f"Parallel workers: {self.num_workers}")
         print(f"Fast mode: {self.fast_mode}")
@@ -170,6 +234,8 @@ class ObjaverseBatchRenderer:
                 # Print result
                 if status == "success":
                     empty_count = result.get("empty_renders", 0)
+                    re_rendered = result.get("re_rendered", False)
+                    label = "✓" if not re_rendered else "↻"
                     if empty_count > 0:
                         print(f"⚠ {result['uid']} (success but {empty_count} empty renders)")
                         objects_with_empty_renders.append({
@@ -178,7 +244,8 @@ class ObjaverseBatchRenderer:
                             "debug_info": result.get("debug_info", {})
                         })
                     else:
-                        print(f"✓ {result['uid']}")
+                        suffix = " (re-rendered)" if re_rendered else ""
+                        print(f"{label} {result['uid']}{suffix}")
                 elif status == "skipped":
                     print(f"⊘ {result['uid']} (already exists)")
                 else:

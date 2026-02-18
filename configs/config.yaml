@@ -24,6 +24,7 @@ data:
   source:
     dataset: objaverse  # objaverse 或 omni
     max_samples: 200    # objaverse 按总数限制（无类别概念）
+    samples_per_object: 1  # 蒸馏只需 1 组视图，不需要数据增强
 
   # Target数据（攻击训练用）
   # 物体按名称排序，attack 用 offset=0 的前 N 个物体
@@ -37,7 +38,7 @@ data:
     object_offset: 0              # 从第 0 个开始
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.5
+  source_ratio: 0.8
 
   # 共享参数
   max_samples: null  # null = 使用所有可用样本
@@ -50,13 +51,16 @@ data:
 # 训练配置
 training:
   mode: full  # lora 或 full（全量微调）
-  batch_size: 2  # 配合梯度累计达到有效batch_size=8
-  num_epochs: 5
+  batch_size: 1
   lr: 0.00005
   weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 4  # 有效batch_size = 2×4 = 8
+  gradient_accumulation_steps: 4  # 有效batch_size = 1×4 = 4
   early_stop_patience: 5
+
+  # 攻击和防御各自的 epoch 数
+  attack_epochs: 5     # 攻击训练 epoch 数
+  defense_epochs: 25   # 防御训练 epoch 数
 
 # 攻击场景配置
 attack:
@@ -129,27 +133,47 @@ defense:
     samples_per_object: 3         # 每个物体取 3 组正交视图（不取完）
 
   # 陷阱损失配置
+  # 只启用 position + scale 两个静态 trap，配合乘法耦合和梯度冲突
+  # dynamic 全部关闭（二阶导数开销大，且静态 trap + 耦合已足够）
   trap_losses:
     position:
       static: true
-      dynamic: true
-      dynamic_weight: -1.0
+      dynamic: false
     scale:
       static: true
       dynamic: false
-      dynamic_weight: 0.0
+    opacity:
+      static: false
+      dynamic: false
     rotation:
       static: false
-      dynamic: false       # 禁用：敏感性分析显示 rotation 梯度≈0，dynamic 会导致 1/(0+eps)=1e8 梯度爆炸
-      dynamic_weight: 1.0
+      dynamic: false
 
   # 损失权重
   lambda_trap: 1.0
   lambda_distill: 1.0
 
+  # 互锁配置：让不同物理属性的 trap 相互增强，攻击者无法逐个击破
+  coupling:
+    # 乘法耦合：静态 loss 用 ∏(1-L_i) 组合，各 trap 梯度被其他 trap 强度放大
+    multiplicative: true
+    # 梯度冲突正则：惩罚不同 trap loss 梯度在权重空间的对齐度
+    gradient_conflict:
+      enabled: true
+      weight: 0.1           # λ_conflict
+      every_k_steps: 10     # 每 K 步计算一次（摊销二阶导数成本）
+
   # 敏感层配置（通过 analyze_layer_sensitivity.py 梯度差异分析获取）
   # 选层原则：差异 ratio（target_grad / source_grad）高 + LoRA 攻击无法绕过
   # LoRA 只改 MVAttention(qkv/proj)，down_blocks.0-2 无 attention，权重和输入都不受影响
+
+  # 攻击评估配置（防御训练中周期性跑攻击来衡量防御效果）
+  eval:
+    eval_every_steps: 50    # 每 N 个防御步做一次攻击评估
+    attack_epochs: 2        # 每次评估跑多少个 epoch 的攻击
+    attack_lr: 0.0004       # 攻击学习率（模拟真实攻击者，用 LGM 原始 lr）
+    num_render_samples: 3   # 每次评估渲染多少个样本
+
   target_layers:
     # ---- 核心防御层：高 ratio + LoRA 完全无法绕过 ----
     # down_blocks.0 (64ch): 全网最高差异 ratio，处理低级形状特征
@@ -164,14 +188,10 @@ defense:
     #   nets.0.shortcut: ALL=1.57, POS=1.47, RGB=1.52
     - unet.down_blocks.1.nets.0
 
-    # ---- 补充层 Tier-1：LoRA 安全，ratio 中等，增加参数量 ----
-    # 如果上面三组不够（占全网参数 <1%），依次启用：
-    # - unet.down_blocks.1.nets.1       # 128ch ResBlock, ratio ~1.3, LoRA 安全
-    # - unet.down_blocks.2.nets.0       # 256ch ResBlock, ratio ~1.2-1.3, LoRA 安全
-    # - unet.down_blocks.2.nets.1       # 256ch ResBlock, LoRA 安全
-    # - unet.down_blocks.0.downsample   # 64→64 下采样 conv, LoRA 安全
-    # - unet.down_blocks.1.downsample   # 128→128 下采样 conv, LoRA 安全
-    # - unet.down_blocks.2.downsample   # 256→256 下采样 conv, LoRA 安全
+    # ---- Tier-1 补充层：LoRA 安全，ratio 中等，增加陷阱嵌入参数量 ----
+    - unet.down_blocks.1.nets.1       # 128ch ResBlock, ratio ~1.3, LoRA 安全
+    - unet.down_blocks.2.nets.0       # 256ch ResBlock, ratio ~1.2-1.3, LoRA 安全
+    - unet.down_blocks.2.nets.1       # 256ch ResBlock, LoRA 安全
 
     # ---- 补充层 Tier-2：仅对全量微调有效（LoRA 可通过改变输入绕过）----
     # 这些层 ratio 很高但在 attention 下游，LoRA 攻击者可改变其输入分布：
