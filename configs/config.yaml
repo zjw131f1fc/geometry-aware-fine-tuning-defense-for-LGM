@@ -125,6 +125,9 @@ attack:
 
 # 防御配置（GeoTrap）
 defense:
+  # 模型标签：训练完成后自动注册到 output/model_registry/{tag}/
+  # 攻击时设置 model.resume: tag:geotrap_v1 即可加载
+  tag: geotrap_v1
   # 防御专用 target 数据（与攻击用不同物体，同类别不同分布）
   # 物体按名称排序，defense 用 offset=15 之后的物体，与 attack 的 offset=0 不重叠
   target_data:

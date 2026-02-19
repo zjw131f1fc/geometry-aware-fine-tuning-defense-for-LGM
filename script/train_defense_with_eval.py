@@ -87,6 +87,7 @@ def run_source_eval(model, source_val_loader, device, baseline_source=None):
 
     total_psnr = 0
     total_lpips = 0
+    total_masked_psnr = 0
     num_batches = 0
 
     for batch in source_val_loader:
@@ -94,6 +95,19 @@ def run_source_eval(model, source_val_loader, device, baseline_source=None):
         results = model.forward(data, step_ratio=1.0)
         total_psnr += results.get('psnr', torch.tensor(0.0)).item()
         total_lpips += results.get('loss_lpips', torch.tensor(0.0)).item()
+
+        # Masked PSNR
+        pred_images = results.get('images_pred')
+        gt_masks = data['masks_output']
+        gt_images = data['images_output']
+        if pred_images is not None and gt_masks is not None:
+            mask_flat = gt_masks.reshape(-1)
+            pred_flat = pred_images.reshape(-1, 3)
+            gt_flat = gt_images.reshape(-1, 3)
+            mask_sum = mask_flat.sum().clamp(min=1.0)
+            masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
+            total_masked_psnr += (-10 * torch.log10(masked_mse + 1e-8)).item()
+
         num_batches += 1
 
     del finetuner
@@ -101,6 +115,7 @@ def run_source_eval(model, source_val_loader, device, baseline_source=None):
     metrics = {
         'source_psnr': total_psnr / max(num_batches, 1),
         'source_lpips': total_lpips / max(num_batches, 1),
+        'source_masked_psnr': total_masked_psnr / max(num_batches, 1),
     }
 
     msg = f"  Source 质量: PSNR={metrics['source_psnr']:.2f}, LPIPS={metrics['source_lpips']:.4f}"
@@ -113,14 +128,90 @@ def run_source_eval(model, source_val_loader, device, baseline_source=None):
     return metrics
 
 
+@torch.no_grad()
+def _eval_source_quality(model, evaluator, source_val_loader, device,
+                         save_dir, num_render=3):
+    """
+    在 source 验证集上计算 PSNR/LPIPS 并渲染对比图
+
+    Args:
+        model: 当前模型
+        evaluator: Evaluator 实例
+        source_val_loader: source 验证数据加载器
+        device: 设备
+        save_dir: 渲染图片保存目录
+        num_render: 渲染样本数
+
+    Returns:
+        metrics: {'psnr': float, 'lpips': float}
+    """
+    model.eval()
+
+    finetuner = AutoFineTuner(
+        model=model, device=device,
+        lr=1e-4, weight_decay=0, gradient_clip=1.0,
+        mixed_precision='no', gradient_accumulation_steps=1,
+    )
+
+    total_psnr = 0
+    total_lpips = 0
+    total_masked_psnr = 0
+    num_batches = 0
+
+    for i, batch in enumerate(source_val_loader):
+        data = finetuner._prepare_data(batch)
+        results = model.forward(data, step_ratio=1.0)
+        total_psnr += results.get('psnr', torch.tensor(0.0)).item()
+        total_lpips += results.get('loss_lpips', torch.tensor(0.0)).item()
+
+        # Masked PSNR
+        pred_images = results.get('images_pred')
+        gt_masks = data['masks_output']
+        gt_images_out = data['images_output']
+        if pred_images is not None and gt_masks is not None:
+            mask_flat = gt_masks.reshape(-1)
+            pred_flat = pred_images.reshape(-1, 3)
+            gt_flat = gt_images_out.reshape(-1, 3)
+            mask_sum = mask_flat.sum().clamp(min=1.0)
+            masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
+            total_masked_psnr += (-10 * torch.log10(masked_mse + 1e-8)).item()
+
+        num_batches += 1
+
+        # 渲染前 num_render 个样本的对比图
+        if i < num_render:
+            input_images = batch['input_images'].to(device)
+            gt_images = batch.get('supervision_images')
+            if gt_images is not None:
+                gt_images = gt_images.to(device)
+            cam_poses = batch.get('supervision_transforms')
+            if cam_poses is not None:
+                cam_poses = cam_poses.to(device)
+
+            gaussians = evaluator.generate_gaussians(input_images)
+            evaluator.render_and_save(
+                gaussians, save_dir=save_dir,
+                prefix=f"source_{i}_",
+                gt_images=gt_images, cam_poses=cam_poses,
+            )
+
+    del finetuner
+
+    return {
+        'psnr': total_psnr / max(num_batches, 1),
+        'lpips': total_lpips / max(num_batches, 1),
+        'masked_psnr': total_masked_psnr / max(num_batches, 1),
+    }
+
+
 def run_attack_eval(model, config, opt, attack_train_loader, attack_val_loader,
                     device, attack_epochs, save_dir, eval_tag,
-                    baseline_metrics=None):
+                    baseline_metrics=None, source_val_loader=None):
     """
     在当前模型状态上跑攻击微调，测量攻击成功度。
 
     流程：保存模型 → 攻击训练 N epochs → 测量指标 + 渲染 → 恢复模型
-    返回：metrics dict（包含每 epoch 的 loss/psnr/lpips + 最终 Gaussian stats）
+    返回：metrics dict（包含每 epoch 的 loss/psnr/lpips + 最终 Gaussian stats + source 质量）
     """
     print(f"\n{'='*60}")
     print(f"  攻击评估: {eval_tag}")
@@ -193,6 +284,19 @@ def run_attack_eval(model, config, opt, attack_train_loader, attack_val_loader,
             'scale_mean': np.mean([s['scale_mean'] for s in gaussian_stats_list]),
             'rgb_mean': np.mean([s['rgb_mean'] for s in gaussian_stats_list]),
         }
+
+    # 攻击后评估 source 质量：PSNR/LPIPS + 渲染图片
+    if source_val_loader is not None:
+        print(f"  [Source Eval] 攻击后 source 质量评估...")
+        source_metrics = _eval_source_quality(
+            model, evaluator, source_val_loader, device,
+            save_dir=os.path.join(save_dir, 'source_renders'),
+            num_render=num_render,
+        )
+        result['source_after_attack_psnr'] = source_metrics['psnr']
+        result['source_after_attack_lpips'] = source_metrics['lpips']
+        print(f"  [Source Eval] PSNR={source_metrics['psnr']:.2f}, "
+              f"LPIPS={source_metrics['lpips']:.4f}")
 
     # 保存指标到 JSON
     json_path = os.path.join(save_dir, 'metrics.json')
@@ -282,6 +386,7 @@ def main():
         device, attack_epochs,
         save_dir=os.path.join(workspace, 'eval_baseline'),
         eval_tag='baseline (defense_step=0)',
+        source_val_loader=trainer.source_val_loader,
     )
     baseline_result['source_psnr'] = baseline_source['source_psnr']
     baseline_result['source_lpips'] = baseline_source['source_lpips']
@@ -305,6 +410,7 @@ def main():
                 save_dir=os.path.join(workspace, f'eval_step{global_step:05d}'),
                 eval_tag=f'defense_step={global_step}',
                 baseline_metrics=baseline_result,
+                source_val_loader=trainer.source_val_loader,
             )
             eval_result['source_psnr'] = source_metrics['source_psnr']
             eval_result['source_lpips'] = source_metrics['source_lpips']
@@ -335,6 +441,7 @@ def main():
         save_dir=os.path.join(workspace, 'eval_final'),
         eval_tag='final',
         baseline_metrics=baseline_result,
+        source_val_loader=trainer.source_val_loader,
     )
     final_result['source_psnr'] = final_source['source_psnr']
     final_result['source_lpips'] = final_source['source_lpips']
@@ -348,16 +455,19 @@ def main():
     baseline_psnr = all_eval_results[0][2]['final_psnr']
     baseline_lpips = all_eval_results[0][2]['final_lpips']
     baseline_src_psnr = all_eval_results[0][2].get('source_psnr', 0)
+    baseline_src_atk_psnr = all_eval_results[0][2].get('source_after_attack_psnr', 0)
     print(f"{'阶段':<25} {'Step':>6} {'Atk PSNR':>9} {'ΔAtk':>7} {'Atk LPIPS':>10} "
-          f"{'Src PSNR':>9} {'ΔSrc':>7}")
-    print("-" * 90)
+          f"{'Src PSNR':>9} {'ΔSrc':>7} {'SrcAtk PSNR':>11}")
+    print("-" * 105)
     for tag, step, result in all_eval_results:
         dp = result['final_psnr'] - baseline_psnr
         src_psnr = result.get('source_psnr', 0)
         ds = src_psnr - baseline_src_psnr
+        src_atk_psnr = result.get('source_after_attack_psnr', 0)
         print(f"{tag:<25} {step:>6d} {result['final_psnr']:>9.2f} {dp:>+7.2f} "
-              f"{result['final_lpips']:>10.4f} {src_psnr:>9.2f} {ds:>+7.2f}")
-    print("-" * 90)
+              f"{result['final_lpips']:>10.4f} {src_psnr:>9.2f} {ds:>+7.2f} "
+              f"{src_atk_psnr:>11.2f}")
+    print("-" * 105)
 
     # 攻击 PSNR 下降 = 防御有效；Source PSNR 下降 = 退化
     if len(all_eval_results) >= 2:
@@ -390,6 +500,8 @@ def main():
             'source_psnr': result.get('source_psnr', 0),
             'source_lpips': result.get('source_lpips', 0),
             'delta_source_psnr': result.get('source_psnr', 0) - baseline_src_psnr,
+            'source_after_attack_psnr': result.get('source_after_attack_psnr', 0),
+            'source_after_attack_lpips': result.get('source_after_attack_lpips', 0),
         })
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)

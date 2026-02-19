@@ -20,6 +20,7 @@ import json
 from models import ModelManager
 from data import DataManager
 from methods.trap_losses import ScaleAnisotropyLoss, PositionCollapseLoss, OpacityCollapseLoss
+from tools.model_registry import register as registry_register
 
 
 class CachedGaussianDataset(Dataset):
@@ -873,4 +874,22 @@ class DefenseTrainer:
             final_path = os.path.join(save_dir, "model_defense.pth")
             torch.save(self.model_mgr.model.state_dict(), final_path)
             print(f"[DefenseTrainer] 保存最终模型: {final_path}")
+
+            # 自动注册到模型标签仓库
+            tag = self.defense_config.get('tag')
+            if tag:
+                metadata = {
+                    "epoch": epoch,
+                    "target_layers": self.target_layers,
+                    "trap_losses": list(self.trap_losses.keys()),
+                    "source_path": final_path,
+                    "defense_config": {
+                        k: v for k, v in self.defense_config.items()
+                        if k not in ('target_data',)
+                    },
+                }
+                registry_register(tag, final_path, metadata=metadata)
+            else:
+                print(f"[DefenseTrainer] 提示: 未配置 defense.tag，跳过注册。"
+                      f"可在 config 中添加 defense.tag 自动注册模型")
 

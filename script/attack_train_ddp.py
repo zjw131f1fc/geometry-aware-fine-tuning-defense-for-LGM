@@ -67,6 +67,54 @@ def render_epoch_samples(evaluator, val_loader, workspace, epoch, num_samples=3)
             evaluator.save_ply(gaussians[0:1], ply_path)
 
 
+@torch.no_grad()
+def eval_source_samples(model, evaluator, source_val_loader, workspace, epoch,
+                        device, num_samples=3):
+    """每个 epoch 结束后评估 source 质量（PSNR/LPIPS）并渲染对比图"""
+    model.eval()
+
+    finetuner = AutoFineTuner(
+        model=model, device=device,
+        lr=1e-4, weight_decay=0, gradient_clip=1.0,
+        mixed_precision='no', gradient_accumulation_steps=1,
+    )
+
+    total_psnr = 0
+    total_lpips = 0
+    num_batches = 0
+    render_dir = os.path.join(workspace, 'source_renders')
+
+    for i, batch in enumerate(source_val_loader):
+        data = finetuner._prepare_data(batch)
+        results = model.forward(data, step_ratio=1.0)
+        total_psnr += results.get('psnr', torch.tensor(0.0)).item()
+        total_lpips += results.get('loss_lpips', torch.tensor(0.0)).item()
+        num_batches += 1
+
+        if i < num_samples:
+            input_images = batch['input_images'].to(device)
+            gt_images = batch.get('supervision_images')
+            if gt_images is not None:
+                gt_images = gt_images.to(device)
+            cam_poses = batch.get('supervision_transforms')
+            if cam_poses is not None:
+                cam_poses = cam_poses.to(device)
+
+            gaussians = evaluator.generate_gaussians(input_images)
+            evaluator.render_and_save(
+                gaussians, save_dir=render_dir,
+                prefix=f"epoch{epoch:02d}_source_{i}_",
+                gt_images=gt_images, cam_poses=cam_poses,
+            )
+
+    del finetuner
+
+    avg_psnr = total_psnr / max(num_batches, 1)
+    avg_lpips = total_lpips / max(num_batches, 1)
+    print(f"  [Source] PSNR={avg_psnr:.2f}, LPIPS={avg_lpips:.4f}")
+    return {'source_psnr': avg_psnr, 'source_lpips': avg_lpips}
+
+
 def main():
     args = parse_args()
 
@@ -120,6 +168,13 @@ def main():
     data_mgr = DataManager(config, model_mgr.opt)
     data_mgr.setup_dataloaders(train=True, val=True, subset='target')
 
+    # Source 数据加载器（用于评估攻击对 source 质量的影响）
+    source_data_mgr = DataManager(config, model_mgr.opt)
+    source_data_mgr.setup_dataloaders(train=False, val=True, subset='source')
+    source_val_loader = source_data_mgr.val_loader
+    if is_main:
+        print(f"  Source 验证数据: {len(source_val_loader.dataset)} 样本")
+
     # 4. 创建微调器
     training_config = config['training']
     finetuner = AutoFineTuner(
@@ -145,6 +200,13 @@ def main():
         unwrapped = accelerator.unwrap_model(model)
         evaluator = Evaluator(unwrapped)
         render_epoch_samples(evaluator, data_mgr.val_loader, workspace, epoch=0)
+
+        # Baseline source 质量
+        print("  评估 baseline source 质量...")
+        eval_source_samples(
+            unwrapped, evaluator, source_val_loader, workspace,
+            epoch=0, device='cuda',
+        )
 
     # 7. 训练循环
     if is_main:
@@ -216,6 +278,13 @@ def main():
             unwrapped = accelerator.unwrap_model(model)
             evaluator = Evaluator(unwrapped)
             render_epoch_samples(evaluator, data_mgr.val_loader, workspace, epoch=epoch)
+
+            # Source 质量评估 + 渲染
+            print(f"\n  评估 source 质量...")
+            eval_source_samples(
+                unwrapped, evaluator, source_val_loader, workspace,
+                epoch=epoch, device='cuda',
+            )
 
         # 保存检查点
         if is_main and (epoch % 5 == 0 or epoch == num_epochs):

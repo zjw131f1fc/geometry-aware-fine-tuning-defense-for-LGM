@@ -451,11 +451,12 @@ class OmniObject3DDataset(Dataset):
             U, _, Vt = torch.linalg.svd(R)
             cam_poses[i, :3, :3] = U @ Vt
 
-        # 统一缩放相机距离到 target_radius（与 LGM 原始 c2w[:3, 3] *= cam_radius / 1.5 等价）
-        # 必须在归一化变换之前做，保证归一化后物体在原点
-        first_distance = torch.norm(cam_poses[0, :3, 3])
-        if first_distance > 1e-6:
-            cam_poses[:, :3, 3] *= target_radius / first_distance
+        # 逐相机归一化到 target_radius（每个相机独立缩放到球面上）
+        # 原始数据中不同 frame 的相机距离可能差异巨大，统一缩放会导致监督视角距离失真
+        for i in range(cam_poses.shape[0]):
+            dist = torch.norm(cam_poses[i, :3, 3])
+            if dist > 1e-6:
+                cam_poses[i, :3, 3] *= target_radius / dist
 
         # 相机姿态归一化（将第一个相机固定到特定位置）
         transform = torch.tensor([
@@ -736,10 +737,11 @@ class ObjaverseRenderedDataset(Dataset):
             U, _, Vt = torch.linalg.svd(R)
             cam_poses[i, :3, :3] = U @ Vt
 
-        # 统一缩放相机距离到 target_radius（与 LGM 原始 c2w[:3, 3] *= cam_radius / 1.5 等价）
-        first_distance = torch.norm(cam_poses[0, :3, 3])
-        if first_distance > 1e-6:
-            cam_poses[:, :3, 3] *= target_radius / first_distance
+        # 逐相机归一化到 target_radius（每个相机独立缩放到球面上）
+        for i in range(cam_poses.shape[0]):
+            dist = torch.norm(cam_poses[i, :3, 3])
+            if dist > 1e-6:
+                cam_poses[i, :3, 3] *= target_radius / dist
 
         # 相机姿态归一化
         transform = torch.tensor([

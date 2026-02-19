@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 
 from core.models import LGM
 from core.options import config_defaults
+from tools.model_registry import resolve_resume_path
 
 
 class ModelManager:
@@ -45,6 +46,8 @@ class ModelManager:
         # 获取配置
         model_size = self.config['model']['size']
         resume_path = self.config['model'].get('resume', None)
+        # 支持 tag: 前缀，自动解析为注册表中的模型路径
+        resume_path = resolve_resume_path(resume_path)
         device = device or self.config['model'].get('device', 'cuda')
         dtype = dtype or torch.float32
 

@@ -288,12 +288,23 @@ class AutoFineTuner:
             'psnr': results.get('psnr', torch.tensor(0.0)).item(),
         }
 
-        # debug 信息：保存中间结果供外部检查
+        # Masked 指标：只在物体区域计算，去掉白色背景的稀释
         with torch.no_grad():
             pred_images = results.get('images_pred')
             pred_alphas = results.get('alphas_pred')
             gt_images = data['images_output']
             gt_masks = data['masks_output']
+
+            if pred_images is not None and gt_masks is not None:
+                # gt_images 已被 model.forward() 合成白色背景，pred_images 也是白色背景
+                # mask 区域内计算 MSE → masked PSNR
+                mask_flat = gt_masks.reshape(-1)
+                pred_flat = pred_images.reshape(-1, 3)
+                gt_flat = gt_images.reshape(-1, 3)
+                mask_sum = mask_flat.sum().clamp(min=1.0)
+                masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
+                masked_psnr = -10 * torch.log10(masked_mse + 1e-8)
+                loss_dict['masked_psnr'] = masked_psnr.item()
 
             if pred_images is not None:
                 loss_dict['_debug'] = {
@@ -329,6 +340,7 @@ class AutoFineTuner:
         total_loss = 0
         total_loss_lpips = 0
         total_psnr = 0
+        total_masked_psnr = 0
         num_batches = 0
         num_updates = 0
 
@@ -339,6 +351,7 @@ class AutoFineTuner:
             total_loss += loss_dict['loss']
             total_loss_lpips += loss_dict.get('loss_lpips', 0)
             total_psnr += loss_dict.get('psnr', 0)
+            total_masked_psnr += loss_dict.get('masked_psnr', 0)
             num_batches += 1
 
             if updated:
@@ -379,6 +392,7 @@ class AutoFineTuner:
             'loss': total_loss / num_batches,
             'loss_lpips': total_loss_lpips / num_batches,
             'psnr': total_psnr / num_batches,
+            'masked_psnr': total_masked_psnr / num_batches,
             'num_updates': num_updates,
         }
 
