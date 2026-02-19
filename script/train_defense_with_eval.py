@@ -145,7 +145,7 @@ def run_attack_eval(model, config, opt, attack_train_loader, attack_val_loader,
         lr=attack_lr,
         weight_decay=training_config['weight_decay'],
         gradient_clip=training_config['gradient_clip'],
-        mixed_precision='bf16',
+        mixed_precision='no',  # 不用 bf16 autocast，避免 LPIPS 在 bf16 下产生负值
         lambda_lpips=training_config.get('lambda_lpips', 1.0),
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
     )
@@ -210,7 +210,8 @@ def run_attack_eval(model, config, opt, attack_train_loader, attack_val_loader,
     print(f"  渲染保存: {render_dir}")
 
     # 恢复模型状态 + requires_grad 状态
-    model.load_state_dict(saved_state)
+    # strict=False: LPIPS 网络权重是懒加载的，saved_state 可能不含 lpips_loss 的 key
+    model.load_state_dict(saved_state, strict=False)
     for name, p in model.named_parameters():
         p.requires_grad = saved_requires_grad.get(name, False)
     del saved_state, saved_requires_grad

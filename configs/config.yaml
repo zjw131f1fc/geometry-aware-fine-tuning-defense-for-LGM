@@ -170,8 +170,8 @@ defense:
   # 攻击评估配置（防御训练中周期性跑攻击来衡量防御效果）
   eval:
     eval_every_steps: 50    # 每 N 个防御步做一次攻击评估
-    attack_epochs: 2        # 每次评估跑多少个 epoch 的攻击
-    attack_lr: 0.0004       # 攻击学习率（模拟真实攻击者，用 LGM 原始 lr）
+    attack_epochs: 4        # 每次评估跑多少个 epoch 的攻击
+    attack_lr: 0.00005      # 攻击学习率（与 training.lr 一致）
     num_render_samples: 3   # 每次评估渲染多少个样本
 
   target_layers:
