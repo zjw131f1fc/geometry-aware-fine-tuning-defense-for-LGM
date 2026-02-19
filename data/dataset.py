@@ -451,12 +451,6 @@ class OmniObject3DDataset(Dataset):
             U, _, Vt = torch.linalg.svd(R)
             cam_poses[i, :3, :3] = U @ Vt
 
-        # Debug: 打印正交化后的相机距离
-        print(f"\n[Dataset Debug] 正交化后的相机距离:")
-        for i in range(min(3, cam_poses.shape[0])):
-            dist = torch.norm(cam_poses[i, :3, 3]).item()
-            print(f"  Camera {i}: dist={dist:.4f}")
-
         # 单独缩放每个相机到 target_radius
         # 确保所有相机都在半径 1.5 的球面上（匹配 LGM 训练数据的相机配置）
         for i in range(cam_poses.shape[0]):
@@ -499,11 +493,6 @@ class OmniObject3DDataset(Dataset):
         ], dtype=torch.float32) @ torch.inverse(cam_poses[0])
         cam_poses = transform.unsqueeze(0) @ cam_poses
 
-        # Debug: 打印视图选择信息和样本名称
-        print(f"\n[Dataset Debug] Sample: {sample['category']}/{sample['object']}")
-        print(f"[Dataset Debug] input_indices={input_indices}, supervision_indices={supervision_indices[:6]}")
-        print(f"[Dataset Debug] all_indices={all_indices[:10]}")
-
         # 第二步：处理输入图像
         input_images = []
         input_transforms = []
@@ -511,11 +500,6 @@ class OmniObject3DDataset(Dataset):
         # 使用归一化后的实际相机姿态计算 rays
         for i in range(len(input_indices)):
             img_tensor = images_data[i]
-
-            # Debug: 打印input图像对应的原始视图索引
-            orig_view_idx = all_indices[i]
-            if i == 0:  # 只打印第一个input view
-                print(f"[Dataset Debug] input_images[0] 来自 images_data[{i}] = 原始视图{orig_view_idx}")
 
             # 分离RGB和alpha通道
             rgb = img_tensor[:3]
@@ -557,11 +541,6 @@ class OmniObject3DDataset(Dataset):
 
             img_tensor = images_data[len(input_indices) + i]
 
-            # Debug: 打印GT图像对应的原始视图索引
-            orig_view_idx = all_indices[len(input_indices) + i]
-            if i == 0:  # 只打印第一个supervision view
-                print(f"[Dataset Debug] supervision_images[0] 来自 images_data[{len(input_indices) + i}] = 原始视图{orig_view_idx}")
-
             # 分离RGB和alpha通道
             rgb = img_tensor[:3]  # [3, H, W]
             alpha = img_tensor[3:4]  # [1, H, W]
@@ -578,12 +557,6 @@ class OmniObject3DDataset(Dataset):
             # 保存原始角度（归一化前提取）
             supervision_elevations.append(original_elevations[len(input_indices) + i])
             supervision_azimuths.append(original_azimuths[len(input_indices) + i])
-
-        # Debug: 打印返回的supervision_transforms[0]和[4]的位置
-        if len(supervision_transforms) > 0:
-            print(f"[Dataset Debug] supervision_transforms[0] pos: {supervision_transforms[0][:3, 3].numpy()}")
-        if len(supervision_transforms) > 4:
-            print(f"[Dataset Debug] supervision_transforms[4] pos: {supervision_transforms[4][:3, 3].numpy()}")
 
         return {
             'input_images': torch.stack(input_images, dim=0),  # [V_in, 9, H, W]
@@ -842,11 +815,6 @@ class ObjaverseRenderedDataset(Dataset):
         ], dtype=torch.float32) @ torch.inverse(cam_poses[0])
         cam_poses = transform.unsqueeze(0) @ cam_poses
 
-        # Debug: 打印视图选择信息和样本名称
-        print(f"\n[ObjaverseDataset Debug] Sample: {sample['uuid']}")
-        print(f"[ObjaverseDataset Debug] input_indices={input_indices}, supervision_indices={supervision_indices[:6]}")
-        print(f"[ObjaverseDataset Debug] all_indices={all_indices[:10]}")
-
         # 第二步：处理输入图像
         input_images = []
         input_transforms = []
@@ -854,11 +822,6 @@ class ObjaverseRenderedDataset(Dataset):
         # 使用归一化后的实际相机姿态计算 rays
         for i in range(len(input_indices)):
             img_tensor = images_data[i]
-
-            # Debug: 打印input图像对应的原始视图索引
-            orig_view_idx = all_indices[i]
-            if i == 0:  # 只打印第一个input view
-                print(f"[Dataset Debug] input_images[0] 来自 images_data[{i}] = 原始视图{orig_view_idx}")
 
             # 分离RGB和alpha通道
             rgb = img_tensor[:3]
@@ -915,12 +878,6 @@ class ObjaverseRenderedDataset(Dataset):
             # 保存原始角度（归一化前提取）
             supervision_elevations.append(original_elevations[len(input_indices) + i])
             supervision_azimuths.append(original_azimuths[len(input_indices) + i])
-
-        # Debug: 打印返回的supervision_transforms[0]和[4]的位置
-        if len(supervision_transforms) > 0:
-            print(f"[Dataset Debug] supervision_transforms[0] pos: {supervision_transforms[0][:3, 3].numpy()}")
-        if len(supervision_transforms) > 4:
-            print(f"[Dataset Debug] supervision_transforms[4] pos: {supervision_transforms[4][:3, 3].numpy()}")
 
         return {
             'input_images': torch.stack(input_images, dim=0),
