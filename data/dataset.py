@@ -451,21 +451,58 @@ class OmniObject3DDataset(Dataset):
             U, _, Vt = torch.linalg.svd(R)
             cam_poses[i, :3, :3] = U @ Vt
 
-        # 逐相机归一化到 target_radius（每个相机独立缩放到球面上）
-        # 原始数据中不同 frame 的相机距离可能差异巨大，统一缩放会导致监督视角距离失真
+        # Debug: 打印正交化后的相机距离
+        print(f"\n[Dataset Debug] 正交化后的相机距离:")
+        for i in range(min(3, cam_poses.shape[0])):
+            dist = torch.norm(cam_poses[i, :3, 3]).item()
+            print(f"  Camera {i}: dist={dist:.4f}")
+
+        # 单独缩放每个相机到 target_radius
+        # 确保所有相机都在半径 1.5 的球面上（匹配 LGM 训练数据的相机配置）
         for i in range(cam_poses.shape[0]):
             dist = torch.norm(cam_poses[i, :3, 3])
             if dist > 1e-6:
-                cam_poses[i, :3, 3] *= target_radius / dist
+                cam_poses[i, :3, 3] *= (target_radius / dist)
 
-        # 相机姿态归一化（将第一个相机固定到特定位置）
+        # 在归一化变换之前提取 elevation/azimuth（此时相机在半径 1.5 球面上）
+        # 这些角度对应原始观察方向，用于 orbit_camera 渲染时匹配 GT
+        original_elevations = []
+        original_azimuths = []
+        for i in range(cam_poses.shape[0]):
+            pos = cam_poses[i, :3, 3].numpy()
+            radius = float(np.linalg.norm(pos))
+            if radius < 1e-6:
+                radius = target_radius
+            elevation = float(np.degrees(np.arcsin(np.clip(-pos[1] / radius, -1, 1))))
+            azimuth = float(np.degrees(np.arctan2(pos[0], pos[2])))
+            original_elevations.append(elevation)
+            original_azimuths.append(azimuth)
+
+        # 选择性 Y+Z 翻转：只翻转背对原点的相机
+        # Blender→OpenGL 转换后，大多数相机背对原点（dot≈-1），需要翻转
+        # 但原始 view 0（R≈I）转换后已经朝向原点，不需要翻转
+        for i in range(cam_poses.shape[0]):
+            pos = cam_poses[i, :3, 3]
+            forward = -cam_poses[i, :3, 2]  # OpenGL: -Z 是前向
+            to_origin = -pos / torch.norm(pos)
+            dot = torch.dot(forward, to_origin).item()
+            if dot < 0:  # 背对原点才翻转
+                cam_poses[i, :3, 1] *= -1
+                cam_poses[i, :3, 2] *= -1
+
+        # LGM 原始完整 4x4 归一化：camera 0 → [0, 0, target_radius] + R=I
         transform = torch.tensor([
             [1, 0, 0, 0],
             [0, 1, 0, 0],
             [0, 0, 1, target_radius],
-            [0, 0, 0, 1]
+            [0, 0, 0, 1],
         ], dtype=torch.float32) @ torch.inverse(cam_poses[0])
-        cam_poses = transform.unsqueeze(0) @ cam_poses  # [V_total, 4, 4]
+        cam_poses = transform.unsqueeze(0) @ cam_poses
+
+        # Debug: 打印视图选择信息和样本名称
+        print(f"\n[Dataset Debug] Sample: {sample['category']}/{sample['object']}")
+        print(f"[Dataset Debug] input_indices={input_indices}, supervision_indices={supervision_indices[:6]}")
+        print(f"[Dataset Debug] all_indices={all_indices[:10]}")
 
         # 第二步：处理输入图像
         input_images = []
@@ -474,6 +511,11 @@ class OmniObject3DDataset(Dataset):
         # 使用归一化后的实际相机姿态计算 rays
         for i in range(len(input_indices)):
             img_tensor = images_data[i]
+
+            # Debug: 打印input图像对应的原始视图索引
+            orig_view_idx = all_indices[i]
+            if i == 0:  # 只打印第一个input view
+                print(f"[Dataset Debug] input_images[0] 来自 images_data[{i}] = 原始视图{orig_view_idx}")
 
             # 分离RGB和alpha通道
             rgb = img_tensor[:3]
@@ -505,9 +547,20 @@ class OmniObject3DDataset(Dataset):
         supervision_images = []
         supervision_masks = []
         supervision_transforms = []
+        supervision_elevations = []
+        supervision_azimuths = []
 
         for i, idx in enumerate(supervision_indices):
+            # 跳过原始 view 0：R≈I 退化相机，参与归一化计算但不输出
+            if idx == 0:
+                continue
+
             img_tensor = images_data[len(input_indices) + i]
+
+            # Debug: 打印GT图像对应的原始视图索引
+            orig_view_idx = all_indices[len(input_indices) + i]
+            if i == 0:  # 只打印第一个supervision view
+                print(f"[Dataset Debug] supervision_images[0] 来自 images_data[{len(input_indices) + i}] = 原始视图{orig_view_idx}")
 
             # 分离RGB和alpha通道
             rgb = img_tensor[:3]  # [3, H, W]
@@ -522,6 +575,15 @@ class OmniObject3DDataset(Dataset):
             supervision_images.append(img)
             supervision_masks.append(alpha)
             supervision_transforms.append(c2w)
+            # 保存原始角度（归一化前提取）
+            supervision_elevations.append(original_elevations[len(input_indices) + i])
+            supervision_azimuths.append(original_azimuths[len(input_indices) + i])
+
+        # Debug: 打印返回的supervision_transforms[0]和[4]的位置
+        if len(supervision_transforms) > 0:
+            print(f"[Dataset Debug] supervision_transforms[0] pos: {supervision_transforms[0][:3, 3].numpy()}")
+        if len(supervision_transforms) > 4:
+            print(f"[Dataset Debug] supervision_transforms[4] pos: {supervision_transforms[4][:3, 3].numpy()}")
 
         return {
             'input_images': torch.stack(input_images, dim=0),  # [V_in, 9, H, W]
@@ -529,6 +591,8 @@ class OmniObject3DDataset(Dataset):
             'supervision_masks': torch.stack(supervision_masks, dim=0) if supervision_masks else torch.empty(0),  # 新增
             'input_transforms': torch.stack(input_transforms, dim=0),  # [V_in, 4, 4]
             'supervision_transforms': torch.stack(supervision_transforms, dim=0) if supervision_transforms else torch.empty(0),
+            'supervision_elevations': torch.tensor(supervision_elevations, dtype=torch.float32) if supervision_elevations else torch.empty(0),
+            'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'category': sample['category'],
             'object': sample['object'],
         }
@@ -737,20 +801,51 @@ class ObjaverseRenderedDataset(Dataset):
             U, _, Vt = torch.linalg.svd(R)
             cam_poses[i, :3, :3] = U @ Vt
 
-        # 逐相机归一化到 target_radius（每个相机独立缩放到球面上）
+        # 单独缩放每个相机到 target_radius
+        # 确保所有相机都在半径 1.5 的球面上（匹配 LGM 训练数据的相机配置）
         for i in range(cam_poses.shape[0]):
             dist = torch.norm(cam_poses[i, :3, 3])
             if dist > 1e-6:
-                cam_poses[i, :3, 3] *= target_radius / dist
+                cam_poses[i, :3, 3] *= (target_radius / dist)
 
-        # 相机姿态归一化
+        # 在归一化变换之前提取 elevation/azimuth（此时相机在半径 1.5 球面上）
+        original_elevations = []
+        original_azimuths = []
+        for i in range(cam_poses.shape[0]):
+            pos = cam_poses[i, :3, 3].numpy()
+            radius = float(np.linalg.norm(pos))
+            if radius < 1e-6:
+                radius = target_radius
+            elevation = float(np.degrees(np.arcsin(np.clip(-pos[1] / radius, -1, 1))))
+            azimuth = float(np.degrees(np.arctan2(pos[0], pos[2])))
+            original_elevations.append(elevation)
+            original_azimuths.append(azimuth)
+
+        # 选择性 Y+Z 翻转：只翻转背对原点的相机
+        # Blender→OpenGL 转换后，大多数相机背对原点（dot≈-1），需要翻转
+        # 但原始 view 0（R≈I）转换后已经朝向原点，不需要翻转
+        for i in range(cam_poses.shape[0]):
+            pos = cam_poses[i, :3, 3]
+            forward = -cam_poses[i, :3, 2]  # OpenGL: -Z 是前向
+            to_origin = -pos / torch.norm(pos)
+            dot = torch.dot(forward, to_origin).item()
+            if dot < 0:  # 背对原点才翻转
+                cam_poses[i, :3, 1] *= -1
+                cam_poses[i, :3, 2] *= -1
+
+        # LGM 原始完整 4x4 归一化：camera 0 → [0, 0, target_radius] + R=I
         transform = torch.tensor([
             [1, 0, 0, 0],
             [0, 1, 0, 0],
             [0, 0, 1, target_radius],
-            [0, 0, 0, 1]
+            [0, 0, 0, 1],
         ], dtype=torch.float32) @ torch.inverse(cam_poses[0])
         cam_poses = transform.unsqueeze(0) @ cam_poses
+
+        # Debug: 打印视图选择信息和样本名称
+        print(f"\n[ObjaverseDataset Debug] Sample: {sample['uuid']}")
+        print(f"[ObjaverseDataset Debug] input_indices={input_indices}, supervision_indices={supervision_indices[:6]}")
+        print(f"[ObjaverseDataset Debug] all_indices={all_indices[:10]}")
 
         # 第二步：处理输入图像
         input_images = []
@@ -759,6 +854,11 @@ class ObjaverseRenderedDataset(Dataset):
         # 使用归一化后的实际相机姿态计算 rays
         for i in range(len(input_indices)):
             img_tensor = images_data[i]
+
+            # Debug: 打印input图像对应的原始视图索引
+            orig_view_idx = all_indices[i]
+            if i == 0:  # 只打印第一个input view
+                print(f"[Dataset Debug] input_images[0] 来自 images_data[{i}] = 原始视图{orig_view_idx}")
 
             # 分离RGB和alpha通道
             rgb = img_tensor[:3]
@@ -789,8 +889,14 @@ class ObjaverseRenderedDataset(Dataset):
         supervision_images = []
         supervision_masks = []
         supervision_transforms = []
+        supervision_elevations = []
+        supervision_azimuths = []
 
         for i in range(len(supervision_indices)):
+            # 跳过原始 view 0：R≈I 退化相机，参与归一化计算但不输出
+            if supervision_indices[i] == 0:
+                continue
+
             img_tensor = images_data[len(input_indices) + i]
 
             # 分离RGB和alpha通道
@@ -806,6 +912,15 @@ class ObjaverseRenderedDataset(Dataset):
             supervision_images.append(img)
             supervision_masks.append(alpha)
             supervision_transforms.append(c2w)
+            # 保存原始角度（归一化前提取）
+            supervision_elevations.append(original_elevations[len(input_indices) + i])
+            supervision_azimuths.append(original_azimuths[len(input_indices) + i])
+
+        # Debug: 打印返回的supervision_transforms[0]和[4]的位置
+        if len(supervision_transforms) > 0:
+            print(f"[Dataset Debug] supervision_transforms[0] pos: {supervision_transforms[0][:3, 3].numpy()}")
+        if len(supervision_transforms) > 4:
+            print(f"[Dataset Debug] supervision_transforms[4] pos: {supervision_transforms[4][:3, 3].numpy()}")
 
         return {
             'input_images': torch.stack(input_images, dim=0),
@@ -813,6 +928,8 @@ class ObjaverseRenderedDataset(Dataset):
             'supervision_masks': torch.stack(supervision_masks, dim=0) if supervision_masks else torch.empty(0),
             'input_transforms': torch.stack(input_transforms, dim=0),
             'supervision_transforms': torch.stack(supervision_transforms, dim=0) if supervision_transforms else torch.empty(0),
+            'supervision_elevations': torch.tensor(supervision_elevations, dtype=torch.float32) if supervision_elevations else torch.empty(0),
+            'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'uuid': sample['uuid'],
         }
 
