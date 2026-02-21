@@ -218,6 +218,12 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
     evaluator = Evaluator(model, device='cuda')
     os.makedirs(save_dir, exist_ok=True)
 
+    # 攻击前评估 source 质量（记录防御模型的原始 source 能力）
+    print(f"  评估攻击前的 source 质量...")
+    initial_source_metrics = eval_source(model, source_val_loader, 'cuda')
+    print(f"  攻击前 Source PSNR: {initial_source_metrics['source_psnr']:.2f}, "
+          f"Masked PSNR: {initial_source_metrics['source_masked_psnr']:.2f}")
+
     # 攻击前渲染 source（展示模型原始 source 能力）
     render_samples(model, evaluator, source_val_loader,
                    os.path.join(save_dir, 'source_renders'),
@@ -257,7 +263,7 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
                 print(f"  [{phase_name}] Step {global_step}/{total_steps} (Ep{epoch}) - "
                       f"Loss: {metrics['loss']:.4f}, LPIPS: {metrics['loss_lpips']:.4f}, "
                       f"MaskedPSNR: {metrics['masked_psnr']:.2f}, "
-                      f"SrcPSNR: {src['source_psnr']:.2f}")
+                      f"SrcMaskedPSNR: {src['source_masked_psnr']:.2f}")
 
                 interval_loss, interval_lpips, interval_psnr, interval_masked_psnr = 0, 0, 0, 0
                 interval_count = 0
@@ -277,7 +283,7 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
     del finetuner, evaluator, model, model_mgr
     torch.cuda.empty_cache()
 
-    return step_history
+    return step_history, initial_source_metrics
 
 
 def run_defense_phase(config, save_dir, defense_epochs, target_layers):
@@ -323,7 +329,7 @@ def run_defense_phase(config, save_dir, defense_epochs, target_layers):
 
         epoch_history.append(combined)
 
-        if epoch % 5 == 0 or epoch == defense_epochs:
+        if epoch == defense_epochs:
             trainer.save_checkpoint(save_dir, epoch)
 
     del trainer
@@ -587,11 +593,19 @@ def main():
     phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
 
     baseline_history, cache_hit = load_baseline_cache(cache_dir)
+    baseline_initial_source = None
     if cache_hit:
+        # 复用缓存，但需要重新评估初始 source（缓存中没有）
+        # 加载基线模型评估
+        temp_mgr = ModelManager(config)
+        temp_mgr.setup(device='cuda')
+        baseline_initial_source = eval_source(temp_mgr.model, source_val_loader, 'cuda')
+        del temp_mgr
+        torch.cuda.empty_cache()
         # 复制渲染图片到当前 workspace
         copy_cached_renders(cache_dir, phase1_dir)
     else:
-        baseline_history = run_attack_phase(
+        baseline_history, baseline_initial_source = run_attack_phase(
             config, "Phase 1: Baseline Attack",
             target_train_loader, target_val_loader, source_val_loader,
             save_dir=phase1_dir,
@@ -612,7 +626,7 @@ def main():
     )
 
     # ========== Phase 3: Post-Defense Attack ==========
-    postdef_history = run_attack_phase(
+    postdef_history, postdef_initial_source = run_attack_phase(
         config, "Phase 3: Post-Defense Attack",
         target_train_loader, target_val_loader, source_val_loader,
         save_dir=os.path.join(workspace, 'phase3_postdefense_attack'),
@@ -656,13 +670,21 @@ def main():
     print(f"{'='*80}")
     print(f"{'指标':<20} {'Baseline':>10} {'Post-Defense':>12} {'Delta':>10}")
     print("-" * 55)
+
+    # Target 指标：使用攻击后的最终值
     for key, label in [('psnr', 'Target PSNR'), ('masked_psnr', 'Target MaskedPSNR'),
-                        ('loss_lpips', 'Target LPIPS'),
-                        ('source_psnr', 'Source PSNR'), ('source_masked_psnr', 'Source MaskedPSNR'),
-                        ('source_lpips', 'Source LPIPS')]:
+                        ('loss_lpips', 'Target LPIPS')]:
         bv = b_final.get(key, 0)
         pv = p_final.get(key, 0)
         print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
+
+    # Source 指标：使用攻击前的初始值（反映防御对 source 能力的影响）
+    for key, label in [('source_psnr', 'Source PSNR'), ('source_masked_psnr', 'Source MaskedPSNR'),
+                        ('source_lpips', 'Source LPIPS')]:
+        bv = baseline_initial_source.get(key, 0) if baseline_initial_source else 0
+        pv = postdef_initial_source.get(key, 0) if postdef_initial_source else 0
+        print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
+
     print("-" * 55)
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
     print(f"指标文件: {metrics_path}")

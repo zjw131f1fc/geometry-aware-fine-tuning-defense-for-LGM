@@ -1,12 +1,12 @@
 #!/bin/bash
-# 在 GPU 5,6,7 上并行跑 6 种 trap combo 的完整 pipeline
-# 每张卡跑 2 个组合（串行），3 张卡并行
+# 在 GPU 7,6,5,4,3,2 上并行跑 6 种 trap combo 的完整 pipeline
+# 每张卡跑 1 个组合，6 张卡并行
 #
 # 用法: bash script/sweep_combos.sh
 
 set -e
 
-GPUS=(5 6 7)
+GPUS=(7 6 5 4 3 2)
 COMBOS=(
     "position,scale"
     "position,opacity"
@@ -23,25 +23,21 @@ OUTPUT_ROOT="output/sweep_combos_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
 echo "=========================================="
-echo "Sweep: 6 trap combos × 3 GPUs"
+echo "Sweep: 6 trap combos × 6 GPUs"
 echo "Output: ${OUTPUT_ROOT}"
 echo "lambda_distill: 3.0, num_target_layers: ${NUM_LAYERS}"
 echo "=========================================="
 
-# 分配: GPU0→combo0,3  GPU1→combo1,4  GPU2→combo2,5
+# 分配: GPU0→combo0, GPU1→combo1, ..., GPU5→combo5
 run_gpu() {
     local gpu_idx=$1
     local gpu=${GPUS[$gpu_idx]}
-    local combo1_idx=$((gpu_idx))
-    local combo2_idx=$((gpu_idx + 3))
-    local combo1=${COMBOS[$combo1_idx]}
-    local combo2=${COMBOS[$combo2_idx]}
+    local combo=${COMBOS[$gpu_idx]}
 
-    local tag1=$(echo "$combo1" | tr ',' '+')
-    local tag2=$(echo "$combo2" | tr ',' '+')
+    local tag=$(echo "$combo" | tr ',' '+')
     local log="${OUTPUT_ROOT}/gpu${gpu}.log"
 
-    echo "[GPU ${gpu}] 任务: ${tag1}, ${tag2}"
+    echo "[GPU ${gpu}] 任务: ${tag}"
 
     local nl_arg=""
     if [ -n "${NUM_LAYERS}" ]; then
@@ -49,36 +45,26 @@ run_gpu() {
     fi
 
     {
-        echo "=== GPU ${gpu}: ${tag1} ==="
+        echo "=== GPU ${gpu}: ${tag} ==="
         python script/run_pipeline.py \
             --gpu "${gpu}" \
             --config "${CONFIG}" \
-            --trap_losses "${combo1}" \
+            --trap_losses "${combo}" \
             ${nl_arg} \
-            --tag "sweep_${tag1}" \
-            --output_dir "${OUTPUT_ROOT}/${tag1}"
-
-        echo ""
-        echo "=== GPU ${gpu}: ${tag2} ==="
-        python script/run_pipeline.py \
-            --gpu "${gpu}" \
-            --config "${CONFIG}" \
-            --trap_losses "${combo2}" \
-            ${nl_arg} \
-            --tag "sweep_${tag2}" \
-            --output_dir "${OUTPUT_ROOT}/${tag2}"
+            --tag "sweep_${tag}" \
+            --output_dir "${OUTPUT_ROOT}/${tag}"
     } > "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }
 
-# 启动 3 个后台进程
-for i in 0 1 2; do
+# 启动 6 个后台进程
+for i in 0 1 2 3 4 5; do
     run_gpu $i
 done
 
 echo ""
-echo "3 个后台进程已启动，等待完成..."
+echo "6 个后台进程已启动，等待完成..."
 echo "查看进度: tail -f ${OUTPUT_ROOT}/gpu*.log"
 wait
 echo ""

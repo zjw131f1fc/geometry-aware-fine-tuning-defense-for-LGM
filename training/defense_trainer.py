@@ -389,7 +389,9 @@ class DefenseTrainer:
         Returns:
             loss: 蒸馏损失
         """
-        return torch.nn.functional.mse_loss(student_gaussians, teacher_gaussians)
+        order = self.defense_config.get('distill_loss_order', 2)
+        diff = student_gaussians - teacher_gaussians
+        return torch.mean(diff.abs() ** order)
 
     def compute_trap_loss(self, gaussians, model, input_images=None):
         """
