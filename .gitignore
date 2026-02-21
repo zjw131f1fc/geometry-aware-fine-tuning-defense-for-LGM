@@ -7,3 +7,16 @@ third_party/
 output/
 .vscode
 *__pycache__/
+
+# 临时文件和日志
+*.log
+*.txt
+configs/temp_*.yaml
+
+# 调试脚本
+test_*.py
+scripts/debug_*.py
+scripts/test_*.py
+scripts/check_*.py
+scripts/trace_*.py
+scripts/verify_*.py

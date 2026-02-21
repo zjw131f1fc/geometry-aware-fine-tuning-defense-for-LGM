@@ -1,19 +1,23 @@
 #!/bin/bash
 # 测试攻击对防御模型的效果
-# 用法: ./script/test_attack_on_defense.sh <GPU_ID> <defense_model_path> <trap_combo>
+# 用法: ./script/test_attack_on_defense.sh <GPU_ID> <defense_model_path>
 
 set -e
 
-GPU_ID=${1:-0}
-DEFENSE_MODEL=${2:-"output/sweep_combos_20260221_011903/position+scale/model_defense.pth"}
-TRAP_COMBO=${3:-"position+scale"}
+if [ $# -lt 2 ]; then
+    echo "使用方法: $0 <GPU_ID> <defense_model_path>"
+    echo "示例: $0 0 output/sweep_combos_xxx/position+scale/model_defense.pth"
+    exit 1
+fi
+
+GPU_ID=$1
+DEFENSE_MODEL=$2
 
 echo "=========================================="
 echo "测试攻击对防御模型的效果"
 echo "=========================================="
 echo "GPU: $GPU_ID"
 echo "防御模型: $DEFENSE_MODEL"
-echo "Trap 组合: $TRAP_COMBO"
 echo "=========================================="
 
 # 检查防御模型是否存在
@@ -22,8 +26,13 @@ if [ ! -f "$DEFENSE_MODEL" ]; then
     exit 1
 fi
 
+# 设置项目根目录到 PYTHONPATH
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/third_party/LGM:${PYTHONPATH}"
+
 # 创建临时配置文件
-TEMP_CONFIG="configs/temp_attack_test_${TRAP_COMBO}.yaml"
+TEMP_CONFIG="configs/temp_attack_test.yaml"
 cp configs/config.yaml "$TEMP_CONFIG"
 
 # 修改配置：指向防御模型
@@ -32,17 +41,19 @@ import yaml
 with open('$TEMP_CONFIG', 'r') as f:
     config = yaml.safe_load(f)
 config['model']['resume'] = '$DEFENSE_MODEL'
-config['training']['attack_epochs'] = 10  # 测试用 10 epochs
 with open('$TEMP_CONFIG', 'w') as f:
     yaml.dump(config, f)
 print('临时配置已创建: $TEMP_CONFIG')
+print('使用配置文件中的 attack_epochs 设置')
 "
 
 # 运行攻击
 echo ""
 echo "开始攻击训练..."
-CUDA_VISIBLE_DEVICES=$GPU_ID accelerate launch \
-    --config_file acc_configs/gpu1.yaml \
+export CUDA_VISIBLE_DEVICES=$GPU_ID
+accelerate launch \
+    --num_processes=1 \
+    --mixed_precision=bf16 \
     script/attack_train_ddp.py \
     --config "$TEMP_CONFIG"
 
