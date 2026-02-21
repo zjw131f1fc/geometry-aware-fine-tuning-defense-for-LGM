@@ -231,7 +231,7 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
 
     step_history = []
     global_step = 0
-    interval_loss, interval_lpips, interval_psnr, interval_masked_psnr = 0, 0, 0, 0
+    interval_loss, interval_lpips, interval_psnr, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0, 0
     interval_count = 0
     total_steps = attack_epochs * len(target_train_loader)
 
@@ -245,6 +245,7 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
             interval_lpips += loss_dict.get('loss_lpips', 0)
             interval_psnr += loss_dict.get('psnr', 0)
             interval_masked_psnr += loss_dict.get('masked_psnr', 0)
+            interval_masked_lpips += loss_dict.get('masked_lpips', 0)
             interval_count += 1
 
             if global_step % eval_every_steps == 0 or global_step == total_steps:
@@ -253,6 +254,7 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
                     'epoch': epoch,
                     'loss': interval_loss / interval_count,
                     'loss_lpips': interval_lpips / interval_count,
+                    'masked_lpips': interval_masked_lpips / interval_count,
                     'psnr': interval_psnr / interval_count,
                     'masked_psnr': interval_masked_psnr / interval_count,
                 }
@@ -262,10 +264,11 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
 
                 print(f"  [{phase_name}] Step {global_step}/{total_steps} (Ep{epoch}) - "
                       f"Loss: {metrics['loss']:.4f}, LPIPS: {metrics['loss_lpips']:.4f}, "
+                      f"MaskedLPIPS: {metrics['masked_lpips']:.4f}, "
                       f"MaskedPSNR: {metrics['masked_psnr']:.2f}, "
                       f"SrcMaskedPSNR: {src['source_masked_psnr']:.2f}")
 
-                interval_loss, interval_lpips, interval_psnr, interval_masked_psnr = 0, 0, 0, 0
+                interval_loss, interval_lpips, interval_psnr, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0, 0
                 interval_count = 0
 
         # epoch 结束，flush 残余梯度
@@ -354,15 +357,15 @@ def plot_results(baseline_history, postdef_history, defense_history, save_path):
     steps_p = [m['step'] for m in postdef_history]
     epochs_d = list(range(1, len(defense_history) + 1))
 
-    # (0,0) Target LPIPS
+    # (0,0) Target Masked LPIPS (主要指标)
     ax = axes[0, 0]
-    ax.plot(steps_b, [m.get('loss_lpips', 0) for m in baseline_history],
+    ax.plot(steps_b, [m.get('masked_lpips', 0) for m in baseline_history],
             'b-o', label='Baseline Attack', markersize=3)
-    ax.plot(steps_p, [m.get('loss_lpips', 0) for m in postdef_history],
+    ax.plot(steps_p, [m.get('masked_lpips', 0) for m in postdef_history],
             'r-s', label='Post-Defense Attack', markersize=3)
     ax.set_xlabel('Step')
-    ax.set_ylabel('LPIPS')
-    ax.set_title('Target LPIPS (↑ = defense effective)')
+    ax.set_ylabel('Masked LPIPS')
+    ax.set_title('Target Masked LPIPS (↑ = defense effective)')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -673,7 +676,7 @@ def main():
 
     # Target 指标：使用攻击后的最终值
     for key, label in [('psnr', 'Target PSNR'), ('masked_psnr', 'Target MaskedPSNR'),
-                        ('loss_lpips', 'Target LPIPS')]:
+                        ('loss_lpips', 'Target LPIPS'), ('masked_lpips', 'Target MaskedLPIPS')]:
         bv = b_final.get(key, 0)
         pv = p_final.get(key, 0)
         print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")

@@ -325,6 +325,48 @@ class AutoFineTuner:
                 masked_psnr = -10 * torch.log10(masked_mse + 1e-8)
                 loss_dict['masked_psnr'] = masked_psnr.item()
 
+                # Masked LPIPS：裁剪物体区域计算LPIPS
+                if hasattr(self._raw_model, 'lpips_loss'):
+                    import torch.nn.functional as F
+                    B, V, C, H, W = pred_images.shape
+
+                    # 对每个样本计算masked LPIPS
+                    masked_lpips_list = []
+                    for b in range(B):
+                        for v in range(V):
+                            mask_v = gt_masks[b, v, 0]  # [H, W]
+                            if mask_v.sum() < 10:  # 跳过物体太小的视角
+                                continue
+
+                            # 找到物体的bounding box
+                            rows = mask_v.sum(dim=1)
+                            cols = mask_v.sum(dim=0)
+                            row_indices = (rows > 0).nonzero(as_tuple=True)[0]
+                            col_indices = (cols > 0).nonzero(as_tuple=True)[0]
+
+                            if len(row_indices) > 0 and len(col_indices) > 0:
+                                y1, y2 = row_indices[0].item(), row_indices[-1].item() + 1
+                                x1, x2 = col_indices[0].item(), col_indices[-1].item() + 1
+
+                                # 裁剪物体区域
+                                gt_crop = gt_images[b, v:v+1, :, y1:y2, x1:x2]
+                                pred_crop = pred_images[b, v:v+1, :, y1:y2, x1:x2]
+
+                                # 调整到256x256
+                                gt_crop_256 = F.interpolate(gt_crop * 2 - 1, (256, 256), mode='bilinear', align_corners=False)
+                                pred_crop_256 = F.interpolate(pred_crop * 2 - 1, (256, 256), mode='bilinear', align_corners=False)
+
+                                # 计算LPIPS
+                                lpips_crop = self._raw_model.lpips_loss(gt_crop_256, pred_crop_256)
+                                masked_lpips_list.append(lpips_crop.item())
+
+                    if len(masked_lpips_list) > 0:
+                        loss_dict['masked_lpips'] = sum(masked_lpips_list) / len(masked_lpips_list)
+                    else:
+                        loss_dict['masked_lpips'] = 0.0
+                else:
+                    loss_dict['masked_lpips'] = 0.0
+
             if pred_images is not None:
                 loss_dict['_debug'] = {
                     'pred_img_min': pred_images.min().item(),
