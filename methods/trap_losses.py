@@ -92,17 +92,29 @@ class PositionCollapseLoss(nn.Module):
 
 class OpacityCollapseLoss(nn.Module):
     """
-    Opacity 塌缩损失
+    Opacity 塌缩损失（log 尺度）
 
     目标：让 Gaussian 的不透明度趋向 0（变得不可见）
 
-    L = mean(opacity) - 1
+    L = mean(log(opacity + ε))
 
-    opacity ∈ (0, 1)（sigmoid 后），L ∈ (-1, 0)
+    opacity ∈ (0, 1)（sigmoid 后），log(opacity) ∈ (-∞, 0)
     最小化 L → opacity → 0 → Gaussian 不可见
 
-    与其他静态 trap loss 一样返回负值，兼容乘法耦合。
+    相比旧版 mean(o)-1（范围 [-1,0]，梯度恒定 1/N），log 尺度有三个优势：
+    1. 范围 (-∞, 0)：不会在 -1 处饱和，可持续深化陷阱
+    2. 梯度 1/(N*(o+ε))：opacity 越小梯度越大，自放大效应
+    3. 乘法耦合贡献无界：(1-L) 可远大于 2，与 position/scale 量级匹配
+
+    旧版问题（sweep 实测）：
+    - opacity_static 在 epoch 1 即达 -0.99 后饱和，25 epoch 几乎不变
+    - 乘法耦合中仅贡献 ~2x 放大（position ~9x, scale ~13x）
+    - ΔLPIPS 仅 +0.0002，防御无效
     """
+
+    def __init__(self, epsilon=1e-6):
+        super().__init__()
+        self.epsilon = epsilon
 
     def forward(self, gaussians):
         """
@@ -111,8 +123,91 @@ class OpacityCollapseLoss(nn.Module):
                        opacity 在 [3:4] 位置（sigmoid 激活后，范围 [0, 1]）
 
         Returns:
-            loss: scalar
+            loss: scalar, 负值，越负表示 opacity 越低
         """
         opacity = gaussians[..., 3:4]  # [B, N, 1]
-        loss = opacity.mean() - 1.0
+        loss = torch.log(opacity + self.epsilon).mean()
+        return loss
+
+
+class RotationAnisotropyLoss(nn.Module):
+    """
+    Rotation 各向异性损失
+
+    目标：让所有 Gaussian 的旋转趋同（主轴朝向一致），破坏 3D 结构多样性
+
+    构造旋转主轴的散布矩阵：
+        r_i = R(q_i) @ e_z    （每个 Gaussian 的 Z 轴方向）
+        T_q = (1/N) Σ r_i r_i^T
+
+    然后用统一的各向异性算子：
+        L = -mean(log(λ_max / (λ_min + ε)))
+
+    当所有旋转趋同时，r_i 趋向同一方向，T_q 退化为秩1矩阵，
+    λ_max >> λ_min，log ratio 增大，loss 更负。
+    """
+
+    def __init__(self, epsilon=1e-6):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def _quaternion_to_rotation_matrix(self, q):
+        """
+        四元数转旋转矩阵（批量）
+
+        Args:
+            q: [..., 4] 四元数 (w, x, y, z) 或 (x, y, z, w)
+               LGM 使用 (w, x, y, z) 顺序，但 Gaussian 参数中
+               rotation 在 [7:11]，经过 normalize 后是单位四元数
+
+        Returns:
+            R: [..., 3, 3] 旋转矩阵
+        """
+        # 归一化四元数
+        q = q / (q.norm(dim=-1, keepdim=True) + 1e-8)
+
+        # LGM 的四元数顺序: (w, x, y, z) — 参见 core/gs.py build_rotation
+        w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+
+        R = torch.stack([
+            1 - 2*(y*y + z*z),  2*(x*y - w*z),      2*(x*z + w*y),
+            2*(x*y + w*z),      1 - 2*(x*x + z*z),  2*(y*z - w*x),
+            2*(x*z - w*y),      2*(y*z + w*x),      1 - 2*(x*x + y*y),
+        ], dim=-1).reshape(*q.shape[:-1], 3, 3)
+
+        return R
+
+    def forward(self, gaussians):
+        """
+        Args:
+            gaussians: [B, N, 14] tensor
+                       rotation 在 [7:11] 位置（4维四元数）
+
+        Returns:
+            loss: scalar
+        """
+        rotation = gaussians[..., 7:11]  # [B, N, 4]
+        B, N, _ = rotation.shape
+
+        # 四元数 → 旋转矩阵
+        R = self._quaternion_to_rotation_matrix(rotation)  # [B, N, 3, 3]
+
+        # 提取每个 Gaussian 的 Z 轴方向（主轴）
+        e_z = torch.tensor([0.0, 0.0, 1.0], device=gaussians.device)
+        r = (R @ e_z).squeeze(-1)  # [B, N, 3]
+
+        losses = []
+        for b in range(B):
+            r_b = r[b]  # [N, 3]
+            # 散布矩阵 T_q = (1/N) Σ r_i r_i^T
+            T_q = (r_b.T @ r_b) / N  # [3, 3]
+            eigenvalues = torch.linalg.eigvalsh(T_q)  # [3]
+
+            max_eig = eigenvalues.max()
+            min_eig = eigenvalues.min()
+            log_anisotropy = torch.log(max_eig / (min_eig + self.epsilon))
+
+            losses.append(-log_anisotropy)
+
+        loss = torch.stack(losses).mean()
         return loss

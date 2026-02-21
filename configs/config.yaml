@@ -23,7 +23,7 @@ data:
   # Source数据（用于蒸馏，保持原有能力）
   source:
     dataset: objaverse  # objaverse 或 omni
-    max_samples: 200    # objaverse 按总数限制（无类别概念）
+    max_samples: 400    # objaverse 按总数限制（无类别概念）
     samples_per_object: 1  # 蒸馏只需 1 组视图，不需要数据增强
 
   # Target数据（攻击训练用）
@@ -34,7 +34,7 @@ data:
       - knife
       - hammer
       - scissor
-    max_samples_per_category: 15  # 攻击用每类前 15 个物体
+    max_samples_per_category: 13  # 攻击用每类前 15 个物体
     object_offset: 0              # 从第 0 个开始
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
@@ -59,8 +59,8 @@ training:
   early_stop_patience: 5
 
   # 攻击和防御各自的 epoch 数
-  attack_epochs: 5     # 攻击训练 epoch 数
-  defense_epochs: 25   # 防御训练 epoch 数
+  attack_epochs: 3     # 攻击训练 epoch 数
+  defense_epochs: 100   # 防御训练 epoch 数
 
 # 攻击场景配置
 attack:
@@ -131,9 +131,9 @@ defense:
   # 防御专用 target 数据（与攻击用不同物体，同类别不同分布）
   # 物体按名称排序，defense 用 offset=15 之后的物体，与 attack 的 offset=0 不重叠
   target_data:
-    max_samples_per_category: 5   # 每类取 5 个物体（少量即可）
-    object_offset: 15             # 跳过前 15 个（留给 attack）
-    samples_per_object: 3         # 每个物体取 3 组正交视图（不取完）
+    max_samples_per_category: 7   # 每类取 5 个物体（少量即可）
+    object_offset: 13             # 跳过前 15 个（留给 attack）
+    samples_per_object: 4         # 每个物体取 3 组正交视图（不取完）
 
   # 陷阱损失配置
   # 只启用 position + scale 两个静态 trap，配合乘法耦合和梯度冲突
@@ -152,9 +152,12 @@ defense:
       static: false
       dynamic: false
 
+  # 训练配置
+  gradient_accumulation_steps: 8  # 防御训练梯度累积步数（有效 batch_size = 1×8 = 8）
+
   # 损失权重
   lambda_trap: 1.0
-  lambda_distill: 1.0
+  lambda_distill: 5.0
 
   # 互锁配置：让不同物理属性的 trap 相互增强，攻击者无法逐个击破
   coupling:
@@ -163,12 +166,44 @@ defense:
     # 梯度冲突正则：惩罚不同 trap loss 梯度在权重空间的对齐度
     gradient_conflict:
       enabled: true
+      alternating_antialign: true  # 交替反向模式：交替推动每个 trap 反向于其他
       weight: 0.1           # λ_conflict
-      every_k_steps: 10     # 每 K 步计算一次（摊销二阶导数成本）
+      every_k_steps: 1      # 每 2 步计算一次
 
-  # 敏感层配置（通过 analyze_layer_sensitivity.py 梯度差异分析获取）
-  # 选层原则：差异 ratio（target_grad / source_grad）高 + LoRA 攻击无法绕过
-  # LoRA 只改 MVAttention(qkv/proj)，down_blocks.0-2 无 attention，权重和输入都不受影响
+  # 参数加噪鲁棒性：对防御层权重加噪，确保陷阱对权重扰动鲁棒
+  robustness:
+    enabled: true
+    weight: 0.1             # λ_robust
+    noise_scale: 0.01       # 噪声标准差（相对于权重）
+    every_k_steps: 1        # 每步都计算
+
+  # 敏感层自动选择
+  # trap_combo: 使用哪两种 trap loss 的组合（从 configs/trap_combo_layers.json 查表）
+  # num_target_layers: 选取 top-k 层（按两种 trap 的几何平均 ratio 排序）
+  # 可选组合: position+scale, position+opacity, position+rotation,
+  #          scale+opacity, scale+rotation, opacity+rotation
+  # 排名数据由 scripts/analyze_trap_overlap.py 生成
+  trap_combo: position+scale
+  num_target_layers: 5
+
+  # 手动指定 target_layers（设置后 trap_combo 被忽略）
+  # target_layers:
+  #   # ---- 核心防御层：高 ratio + LoRA 完全无法绕过 ----
+  #   # down_blocks.0 (64ch): 全网最高差异 ratio，处理低级形状特征
+  #   #   nets.1.norm1: ALL=1.81, POS=1.70, RGB=1.74, SCALE=1.56（跨类型平均 1.70）
+  #   #   nets.0.norm2: ALL=1.77, RGB=1.70
+  #   #   nets.0.norm1: ALL=1.67, POS=1.58, RGB=1.62
+  #   #   nets.0.conv1: ALL=1.62, POS=1.52, RGB=1.57
+  #   - unet.down_blocks.0.nets.0
+  #   - unet.down_blocks.0.nets.1
+  #   # down_blocks.1 (128ch): 高 ratio，中低级特征
+  #   #   nets.0.conv1: ALL=1.59, POS=1.61, RGB=1.54
+  #   #   nets.0.shortcut: ALL=1.57, POS=1.47, RGB=1.52
+  #   - unet.down_blocks.1.nets.0
+  #   # ---- Tier-1 补充层：LoRA 安全，ratio 中等，增加陷阱嵌入参数量 ----
+  #   # - unet.down_blocks.1.nets.1       # 128ch ResBlock, ratio ~1.3, LoRA 安全
+  #   # - unet.down_blocks.2.nets.0       # 256ch ResBlock, ratio ~1.2-1.3, LoRA 安全
+  #   # - unet.down_blocks.2.nets.1       # 256ch ResBlock, LoRA 安全
 
   # 攻击评估配置（防御训练中周期性跑攻击来衡量防御效果）
   eval:
@@ -176,31 +211,6 @@ defense:
     attack_epochs: 4        # 每次评估跑多少个 epoch 的攻击
     attack_lr: 0.00005      # 攻击学习率（与 training.lr 一致）
     num_render_samples: 3   # 每次评估渲染多少个样本
-
-  target_layers:
-    # ---- 核心防御层：高 ratio + LoRA 完全无法绕过 ----
-    # down_blocks.0 (64ch): 全网最高差异 ratio，处理低级形状特征
-    #   nets.1.norm1: ALL=1.81, POS=1.70, RGB=1.74, SCALE=1.56（跨类型平均 1.70）
-    #   nets.0.norm2: ALL=1.77, RGB=1.70
-    #   nets.0.norm1: ALL=1.67, POS=1.58, RGB=1.62
-    #   nets.0.conv1: ALL=1.62, POS=1.52, RGB=1.57
-    - unet.down_blocks.0.nets.0
-    - unet.down_blocks.0.nets.1
-    # down_blocks.1 (128ch): 高 ratio，中低级特征
-    #   nets.0.conv1: ALL=1.59, POS=1.61, RGB=1.54
-    #   nets.0.shortcut: ALL=1.57, POS=1.47, RGB=1.52
-    - unet.down_blocks.1.nets.0
-
-    # ---- Tier-1 补充层：LoRA 安全，ratio 中等，增加陷阱嵌入参数量 ----
-    - unet.down_blocks.1.nets.1       # 128ch ResBlock, ratio ~1.3, LoRA 安全
-    - unet.down_blocks.2.nets.0       # 256ch ResBlock, ratio ~1.2-1.3, LoRA 安全
-    - unet.down_blocks.2.nets.1       # 256ch ResBlock, LoRA 安全
-
-    # ---- 补充层 Tier-2：仅对全量微调有效（LoRA 可通过改变输入绕过）----
-    # 这些层 ratio 很高但在 attention 下游，LoRA 攻击者可改变其输入分布：
-    # - unet.down_blocks.4.nets.0       # ALL=1.76, RGB=1.76, 但输入经过 attention
-    # - unet.conv_out                   # POS=2.11, 输出瓶颈层
-    # - conv                            # POS=2.07, 最终 1x1 conv
 
 # 其他配置
 misc:

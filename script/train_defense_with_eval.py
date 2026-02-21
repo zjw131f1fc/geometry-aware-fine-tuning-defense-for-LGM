@@ -60,14 +60,17 @@ def render_attack_samples(evaluator, val_loader, save_dir, num_samples=3):
         gt_images = batch.get('supervision_images')
         if gt_images is not None:
             gt_images = gt_images.to('cuda')
-        cam_poses = batch.get('supervision_transforms')
-        if cam_poses is not None:
-            cam_poses = cam_poses.to('cuda')
+        elevations = batch.get('supervision_elevations')
+        azimuths = batch.get('supervision_azimuths')
+        if elevations is not None:
+            elevations = elevations.to('cuda')
+        if azimuths is not None:
+            azimuths = azimuths.to('cuda')
 
         gaussians = evaluator.generate_gaussians(input_images)
         evaluator.render_and_save(
             gaussians, save_dir=save_dir,
-            gt_images=gt_images, cam_poses=cam_poses,
+            gt_images=gt_images, elevations=elevations, azimuths=azimuths,
         )
         if i == 0:
             evaluator.save_ply(gaussians[0:1], os.path.join(save_dir, 'sample.ply'))
@@ -184,15 +187,18 @@ def _eval_source_quality(model, evaluator, source_val_loader, device,
             gt_images = batch.get('supervision_images')
             if gt_images is not None:
                 gt_images = gt_images.to(device)
-            cam_poses = batch.get('supervision_transforms')
-            if cam_poses is not None:
-                cam_poses = cam_poses.to(device)
+            elevations = batch.get('supervision_elevations')
+            azimuths = batch.get('supervision_azimuths')
+            if elevations is not None:
+                elevations = elevations.to(device)
+            if azimuths is not None:
+                azimuths = azimuths.to(device)
 
             gaussians = evaluator.generate_gaussians(input_images)
             evaluator.render_and_save(
                 gaussians, save_dir=save_dir,
                 prefix=f"source_{i}_",
-                gt_images=gt_images, cam_poses=cam_poses,
+                gt_images=gt_images, elevations=elevations, azimuths=azimuths,
             )
 
     del finetuner

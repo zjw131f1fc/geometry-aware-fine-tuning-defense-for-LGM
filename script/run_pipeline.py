@@ -26,8 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import copy
-import hashlib
-import shutil
+# import hashlib  # 延迟加载：只在 compute_config_hash() 中使用
+# import shutil  # 延迟加载：只在 save_defense_model() 中使用
 import torch
 import numpy as np
 from datetime import datetime
@@ -37,7 +37,7 @@ from models import ModelManager
 from data import DataManager
 from training import DefenseTrainer, AutoFineTuner
 from evaluation import Evaluator
-from tools import set_seed
+# from tools import set_seed  # 延迟加载：只在 main() 中使用一次
 
 
 def parse_args():
@@ -46,6 +46,10 @@ def parse_args():
     parser.add_argument('--config', type=str, default='configs/config.yaml')
     parser.add_argument('--trap_losses', type=str, default=None,
                         help='启用的 trap loss 组合，逗号分隔（如 position,scale）')
+    parser.add_argument('--trap_combo', type=str, default=None,
+                        help='层选择用的 trap 组合（如 position+scale），默认从 --trap_losses 推断')
+    parser.add_argument('--num_target_layers', type=int, default=None,
+                        help='自动选择的防御层数（覆盖 config）')
     parser.add_argument('--tag', type=str, default=None,
                         help='防御模型标签名（覆盖 config 中的 defense.tag）')
     parser.add_argument('--attack_epochs', type=int, default=None,
@@ -67,13 +71,24 @@ def parse_args():
 
 @torch.no_grad()
 def eval_source(model, source_val_loader, device):
-    """评估 source 质量，返回 {psnr, lpips, masked_psnr}"""
+    """评估 source 质量，返回 {psnr, lpips, masked_psnr}。
+
+    LoRA 模式下自动禁用 adapter，只测底座模型的 source 能力。
+    """
     model.eval()
+
+    # 先创建 finetuner（需要可训练参数来初始化 optimizer）
     finetuner = AutoFineTuner(
         model=model, device=device,
         lr=1e-4, weight_decay=0, gradient_clip=1.0,
         mixed_precision='no', gradient_accumulation_steps=1,
     )
+
+    # LoRA 模式：创建完 finetuner 后再禁用 adapter，只测底座模型
+    has_lora = hasattr(model, 'disable_adapter_layers')
+    if has_lora:
+        model.disable_adapter_layers()
+
     total_psnr, total_lpips, total_masked_psnr, n = 0, 0, 0, 0
     for batch in source_val_loader:
         data = finetuner._prepare_data(batch)
@@ -96,6 +111,11 @@ def eval_source(model, source_val_loader, device):
 
         n += 1
     del finetuner
+
+    # 恢复 LoRA adapter
+    if has_lora:
+        model.enable_adapter_layers()
+
     return {
         'source_psnr': total_psnr / max(n, 1),
         'source_lpips': total_lpips / max(n, 1),
@@ -111,17 +131,53 @@ def render_samples(model, evaluator, loader, save_dir, prefix='', num_samples=3)
         if i >= num_samples:
             break
         input_images = batch['input_images'].to('cuda')
-        gt_images = batch.get('supervision_images')
-        if gt_images is not None:
-            gt_images = gt_images.to('cuda')
-        cam_poses = batch.get('supervision_transforms')
-        if cam_poses is not None:
-            cam_poses = cam_poses.to('cuda')
-        gaussians = evaluator.generate_gaussians(input_images)
-        evaluator.render_and_save(
-            gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
-            gt_images=gt_images, cam_poses=cam_poses,
-        )
+
+        # 优先使用 transforms（归一化后的相机姿态）
+        input_transforms = batch.get('input_transforms')
+        supervision_transforms = batch.get('supervision_transforms')
+
+        if input_transforms is not None and supervision_transforms is not None:
+            # 合并输入和监督视图的 transforms（8个视角）
+            all_transforms = torch.cat([
+                input_transforms.to('cuda'),
+                supervision_transforms.to('cuda')
+            ], dim=1)  # [B, 8, 4, 4]
+
+            # 提取输入视图的 GT（从 input_images 前3通道反归一化）
+            input_rgb = input_images[:, :, :3, :, :]  # [B, 4, 3, H, W]
+            IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], device='cuda').view(1, 1, 3, 1, 1)
+            IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], device='cuda').view(1, 1, 3, 1, 1)
+            input_rgb = input_rgb * IMAGENET_STD + IMAGENET_MEAN
+
+            # 合并输入 GT 和监督 GT
+            supervision_images = batch.get('supervision_images')
+            if supervision_images is not None:
+                supervision_images = supervision_images.to('cuda')
+                all_gt_images = torch.cat([input_rgb, supervision_images], dim=1)  # [B, 8, 3, H, W]
+            else:
+                all_gt_images = input_rgb
+
+            gaussians = evaluator.generate_gaussians(input_images)
+            evaluator.render_and_save(
+                gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
+                gt_images=all_gt_images, transforms=all_transforms,
+            )
+        else:
+            # 降级方案：使用 elevations/azimuths
+            gt_images = batch.get('supervision_images')
+            if gt_images is not None:
+                gt_images = gt_images.to('cuda')
+            elevations = batch.get('supervision_elevations')
+            azimuths = batch.get('supervision_azimuths')
+            if elevations is not None:
+                elevations = elevations.to('cuda')
+            if azimuths is not None:
+                azimuths = azimuths.to('cuda')
+            gaussians = evaluator.generate_gaussians(input_images)
+            evaluator.render_and_save(
+                gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
+                gt_images=gt_images, elevations=elevations, azimuths=azimuths,
+            )
 
 
 def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
@@ -221,7 +277,7 @@ def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
     del finetuner, evaluator, model, model_mgr
     torch.cuda.empty_cache()
 
-    return epoch_history
+    return step_history
 
 
 def run_defense_phase(config, save_dir, defense_epochs, target_layers):
@@ -242,21 +298,30 @@ def run_defense_phase(config, save_dir, defense_epochs, target_layers):
     epoch_history = []
     global_step = 0
 
+    validate_every = 5
     for epoch in range(1, defense_epochs + 1):
         train_metrics, global_step = trainer.train_epoch(epoch, global_step)
-        val_metrics = trainer.validate()
 
         combined = {f"train_{k}": v for k, v in train_metrics.items()}
-        combined.update({f"val_{k}": v for k, v in val_metrics.items()})
         combined['epoch'] = epoch
-        epoch_history.append(combined)
 
-        print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-              f"Loss: {train_metrics['loss']:.4f}, "
-              f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
-        for k in ('position_static', 'scale_static', 'opacity_static'):
-            if k in val_metrics:
-                print(f"    {k}: {val_metrics[k]:.4f}")
+        do_val = (epoch % validate_every == 0) or (epoch == defense_epochs)
+        if do_val:
+            val_metrics = trainer.validate()
+            combined.update({f"val_{k}": v for k, v in val_metrics.items()})
+
+            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                  f"Loss: {train_metrics['loss']:.4f}, "
+                  f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+            for k in ('position_static', 'scale_static', 'opacity_static',
+                      'coupling_value', 'grad_cosine_sim'):
+                if k in val_metrics:
+                    print(f"    {k}: {val_metrics[k]:.4f}")
+        else:
+            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                  f"Loss: {train_metrics['loss']:.4f}")
+
+        epoch_history.append(combined)
 
         if epoch % 5 == 0 or epoch == defense_epochs:
             trainer.save_checkpoint(save_dir, epoch)
@@ -353,6 +418,8 @@ BASELINE_CACHE_DIR = 'output/baseline_cache'
 
 def compute_baseline_hash(config, attack_epochs, num_render):
     """根据影响 baseline 结果的所有配置计算 SHA256 哈希。"""
+    import hashlib  # 延迟加载
+
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
@@ -403,6 +470,8 @@ def save_baseline_cache(cache_dir, history):
 
 def copy_cached_renders(cache_dir, dest_dir):
     """从缓存复制渲染图片到当前 pipeline 工作目录。"""
+    import shutil  # 延迟加载
+
     for sub in ('source_renders', 'target_renders'):
         src = os.path.join(cache_dir, sub)
         dst = os.path.join(dest_dir, sub)
@@ -417,6 +486,8 @@ def copy_cached_renders(cache_dir, dest_dir):
 # ---------------------------------------------------------------------------
 
 def main():
+    from tools import set_seed  # 延迟加载
+
     args = parse_args()
     device = 'cuda'
 
@@ -433,17 +504,35 @@ def main():
     tag = args.tag or config['defense'].get('tag', 'pipeline_default')
     config['defense']['tag'] = tag
 
-    # 覆盖 trap_losses 开关
+    # 覆盖 trap_losses 开关 + 自动更新 trap_combo
     if args.trap_losses:
-        enabled = set(args.trap_losses.split(','))
+        enabled = sorted(args.trap_losses.split(','))
         for loss_name in ('position', 'scale', 'opacity', 'rotation'):
             config['defense']['trap_losses'][loss_name]['static'] = (loss_name in enabled)
         print(f"[Pipeline] Trap losses 覆盖: {enabled}")
 
+        # 自动推断 trap_combo（如果 CLI 没有显式指定）
+        if args.trap_combo is None and len(enabled) == 2:
+            config['defense']['trap_combo'] = '+'.join(enabled)
+            print(f"[Pipeline] trap_combo 自动推断: {config['defense']['trap_combo']}")
+
+    if args.trap_combo:
+        config['defense']['trap_combo'] = args.trap_combo
+    if args.num_target_layers is not None:
+        config['defense']['num_target_layers'] = args.num_target_layers
+
+    # CLI 覆盖了 trap_combo/num_target_layers 时，重新解析 target_layers
+    combo = config['defense'].get('trap_combo')
+    num_layers = config['defense'].get('num_target_layers')
+    if combo and num_layers:
+        from project_core.config import resolve_target_layers
+        config['defense']['target_layers'] = resolve_target_layers(combo, num_layers)
+        print(f"[Pipeline] target_layers 已解析: {combo} top-{num_layers}")
+
     attack_epochs = config['training'].get('attack_epochs', 5)
     defense_epochs = config['training'].get('defense_epochs', 25)
 
-    # 解析 target_layers
+    # 解析 target_layers（ConfigManager 已自动解析，这里取最终值）
     target_layers = config.get('defense', {}).get('target_layers')
 
     # 工作目录
@@ -459,6 +548,14 @@ def main():
     print(f"Attack epochs: {attack_epochs}")
     print(f"Defense epochs: {defense_epochs}")
     print(f"Trap losses: {[k for k, v in config['defense']['trap_losses'].items() if v.get('static')]}")
+    trap_combo = config['defense'].get('trap_combo')
+    num_tl = config['defense'].get('num_target_layers')
+    if trap_combo and num_tl:
+        print(f"Trap combo: {trap_combo}, num_target_layers: {num_tl}")
+    if target_layers:
+        print(f"Target layers ({len(target_layers)}):")
+        for i, l in enumerate(target_layers, 1):
+            print(f"  {i:2d}. {l}")
     print(f"Output: {workspace}")
 
     # 创建数据加载器（全程复用）
@@ -539,6 +636,9 @@ def main():
             'defense_epochs': defense_epochs,
             'trap_losses': [k for k, v in config['defense']['trap_losses'].items()
                             if v.get('static')],
+            'trap_combo': config['defense'].get('trap_combo'),
+            'num_target_layers': config['defense'].get('num_target_layers'),
+            'target_layers': target_layers,
         },
         'baseline_attack': baseline_history,
         'defense_training': defense_history,

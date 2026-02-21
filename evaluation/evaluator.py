@@ -128,24 +128,39 @@ class Evaluator:
         print(f"[Evaluator] 视频已保存: {save_path}")
 
     @torch.no_grad()
-    def render_views(self, gaussians, cam_poses, opt):
+    def render_views(self, gaussians, elevations=None, azimuths=None, opt=None, transforms=None):
         """
         渲染指定视图
 
-        从 cam_poses 中提取相机位置，然后用 orbit_camera 生成正确的
-        渲染姿态（确保相机精确对准原点）。
+        优先使用 transforms（归一化后的相机姿态），确保与训练时完全一致。
+        如果没有 transforms，则使用 elevation/azimuth + orbit_camera 重建。
 
         Args:
             gaussians: Gaussian 参数 [B, N, 14]
-            cam_poses: 相机姿态 [B, V, 4, 4]，只使用其中的位置信息
-            opt: 模型配置选项
+            elevations: elevation 角度 [B, V] 或 tensor（可选，当无 transforms 时使用）
+            azimuths: azimuth 角度 [B, V] 或 tensor（可选，当无 transforms 时使用）
+            opt: 模型配置选项（可选，当无 transforms 时使用）
+            transforms: 归一化后的相机姿态 [B, V, 4, 4]（OpenGL c2w）
 
         Returns:
             rendered_images: [B, V, 3, H, W]
         """
         self.model.eval()
 
-        B, V = cam_poses.shape[:2]
+        # 优先使用 transforms
+        if transforms is not None:
+            return self._render_from_transforms(gaussians, transforms)
+
+        # 否则使用 elevation/azimuth
+        if elevations is None or azimuths is None or opt is None:
+            raise ValueError("必须提供 transforms 或 (elevations, azimuths, opt)")
+
+        if isinstance(elevations, torch.Tensor):
+            elevations = elevations.cpu().numpy()
+        if isinstance(azimuths, torch.Tensor):
+            azimuths = azimuths.cpu().numpy()
+
+        B, V = elevations.shape[:2] if len(elevations.shape) > 1 else (1, len(elevations))
 
         # 准备投影矩阵
         tan_half_fov = np.tan(0.5 * np.deg2rad(opt.fovy))
@@ -161,28 +176,18 @@ class Evaluator:
         for b in range(B):
             batch_renders = []
             for v in range(V):
-                # 从数据集的相机姿态中提取位置，计算 azimuth 和 elevation
-                pos = cam_poses[b, v, :3, 3].cpu().numpy()
-                radius = float(np.linalg.norm(pos))
-                if radius < 1e-6:
-                    radius = 1.5
+                elevation = float(elevations[b, v] if len(elevations.shape) > 1 else elevations[v])
+                azimuth = float(azimuths[b, v] if len(azimuths.shape) > 1 else azimuths[v])
 
-                # 计算 elevation 和 azimuth
-                # 坐标系：经过 Blender→OpenGL 转换后，Y 是 up，Z 是 forward
-                elevation = float(np.degrees(np.arcsin(np.clip(pos[1] / radius, -1, 1))))
-                azimuth = float(np.degrees(np.arctan2(pos[0], pos[2])))
-
-                # 用 orbit_camera 生成精确对准原点的相机姿态
-                cam_pose_np = orbit_camera(elevation, azimuth, radius=radius, opengl=True)
+                cam_pose_np = orbit_camera(elevation, azimuth, radius=opt.cam_radius, opengl=True)
                 cam_pose = torch.from_numpy(cam_pose_np).unsqueeze(0).to(self.device)
                 cam_pose[:, :3, 1:3] *= -1  # OpenGL → COLMAP
 
-                # 计算相机参数
                 cam_view = torch.inverse(cam_pose).transpose(1, 2)
                 cam_view_proj = cam_view @ proj_matrix
-                cam_pos = -cam_pose[:, :3, 3]
+                # 修复：c2w 矩阵的平移列就是相机位置，不需要负号
+                cam_pos = cam_pose[:, :3, 3]
 
-                # 渲染
                 result = self.model.gs.render(
                     gaussians[b:b+1],
                     cam_view.unsqueeze(0),
@@ -191,6 +196,125 @@ class Evaluator:
                 )
 
                 image = result['image'].squeeze(1)  # [1, 3, H, W]
+                batch_renders.append(image)
+
+            batch_renders = torch.cat(batch_renders, dim=0)  # [V, 3, H, W]
+            rendered_images.append(batch_renders)
+
+        rendered_images = torch.stack(rendered_images, dim=0)  # [B, V, 3, H, W]
+        return rendered_images
+
+    def _render_from_transforms(self, gaussians, transforms):
+        """
+        使用归一化后的 transforms 渲染视图
+
+        Args:
+            gaussians: Gaussian 参数 [B, N, 14]
+            transforms: 归一化后的相机姿态 [B, V, 4, 4]（OpenGL c2w）
+
+        Returns:
+            rendered_images: [B, V, 3, H, W]
+        """
+        B, V = transforms.shape[:2]
+        opt = self.model.opt
+
+        # 准备投影矩阵
+        tan_half_fov = np.tan(0.5 * np.deg2rad(opt.fovy))
+        proj_matrix = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
+        proj_matrix[0, 0] = 1 / tan_half_fov
+        proj_matrix[1, 1] = 1 / tan_half_fov
+        proj_matrix[2, 2] = (opt.zfar + opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[3, 2] = -(opt.zfar * opt.znear) / (opt.zfar - opt.znear)
+        proj_matrix[2, 3] = 1
+
+        rendered_images = []
+
+        # Debug: 打印Gaussian位置和相机信息
+        if B > 0 and V > 0:
+            # 打印接收到的transforms位置
+            print(f"\n[Evaluator Debug] Received transforms shape: {transforms.shape}")
+            print(f"[Evaluator Debug] transforms[0, 4] pos: {transforms[0, 4, :3, 3].cpu().numpy()}")
+            if V > 8:
+                print(f"[Evaluator Debug] transforms[0, 8] pos: {transforms[0, 8, :3, 3].cpu().numpy()}")
+
+            # Gaussian位置信息
+            gs_xyz = gaussians[0, :, :3]  # [N, 3]
+            print(f"\n[Debug] Gaussian位置:")
+            print(f"  中心: [{gs_xyz[:, 0].mean():.4f}, {gs_xyz[:, 1].mean():.4f}, {gs_xyz[:, 2].mean():.4f}]")
+            print(f"  范围X: [{gs_xyz[:, 0].min():.4f}, {gs_xyz[:, 0].max():.4f}]")
+            print(f"  范围Y: [{gs_xyz[:, 1].min():.4f}, {gs_xyz[:, 1].max():.4f}]")
+            print(f"  范围Z: [{gs_xyz[:, 2].min():.4f}, {gs_xyz[:, 2].max():.4f}]")
+
+            # Gaussian opacity
+            gs_opacity = gaussians[0, :, 3]  # [N]
+            print(f"  Opacity: mean={gs_opacity.mean():.4f}, min={gs_opacity.min():.4f}, max={gs_opacity.max():.4f}")
+
+            # 相机信息
+            print(f"[Debug] 相机信息 (V={V}):")
+            for v_debug in range(min(4, V)):
+                cam_pose_debug = transforms[0, v_debug]
+                pos = cam_pose_debug[:3, 3].cpu().numpy()
+                # OpenGL: 相机看向 -Z 轴
+                forward = -cam_pose_debug[:3, 2].cpu().numpy()  # -Z轴 = 相机朝向
+                print(f"  Camera {v_debug}: pos=[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}], "
+                      f"forward=[{forward[0]:.3f}, {forward[1]:.3f}, {forward[2]:.3f}], "
+                      f"radius={np.linalg.norm(pos):.4f}")
+
+        for b in range(B):
+            batch_renders = []
+            for v in range(V):
+                cam_pose = transforms[b, v].to(self.device).unsqueeze(0)  # [1, 4, 4] OpenGL c2w
+
+                # OpenGL → COLMAP
+                cam_pose_colmap = cam_pose.clone()
+                cam_pose_colmap[:, :3, 1:3] *= -1
+
+                cam_view = torch.inverse(cam_pose_colmap).transpose(1, 2)  # [1, 4, 4]
+                cam_view_proj = cam_view @ proj_matrix  # [1, 4, 4]
+                # 修复：c2w 矩阵的平移列就是相机在世界坐标系的位置，不需要负号
+                cam_pos = cam_pose_colmap[:, :3, 3]  # [1, 3]
+
+                result = self.model.gs.render(
+                    gaussians[b:b+1],
+                    cam_view.unsqueeze(0),  # [1, 1, 4, 4]
+                    cam_view_proj.unsqueeze(0),  # [1, 1, 4, 4]
+                    cam_pos.unsqueeze(0),  # [1, 1, 3]
+                )
+
+                image = result['image'].squeeze(1)  # [1, 3, H, W]
+                alpha = result.get('alpha', None)  # [1, 1, H, W] if available
+
+                # Per-view debug
+                if b == 0:  # Only debug first batch
+                    pos = cam_pose[0, :3, 3].cpu().numpy()
+                    forward = -cam_pose[0, :3, 2].cpu().numpy()
+
+                    # 计算相机到原点的方向
+                    origin = np.array([0.0, 0.0, 0.0])
+                    to_origin = origin - pos
+                    to_origin_norm = to_origin / np.linalg.norm(to_origin)
+
+                    # 点积：>0 朝向原点，<0 背对原点
+                    dot_product = np.dot(forward, to_origin_norm)
+
+                    rgb_mean = image[0].mean().item()
+                    rgb_min = image[0].min().item()
+                    rgb_max = image[0].max().item()
+
+                    alpha_info = ""
+                    if alpha is not None:
+                        alpha_mean = alpha[0].mean().item()
+                        alpha_nonzero = (alpha[0] > 0.01).sum().item()
+                        alpha_info = f", alpha_mean={alpha_mean:.4f}, alpha_nonzero={alpha_nonzero}"
+
+                    # 判断是否背对原点
+                    direction_status = "✓朝向原点" if dot_product > 0 else "❌背对原点"
+
+                    print(f"  View {v}: pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}], "
+                          f"forward=[{forward[0]:.3f},{forward[1]:.3f},{forward[2]:.3f}], "
+                          f"dot={dot_product:+.3f} {direction_status}, "
+                          f"RGB=[{rgb_min:.3f},{rgb_mean:.3f},{rgb_max:.3f}]{alpha_info}")
+
                 batch_renders.append(image)
 
             batch_renders = torch.cat(batch_renders, dim=0)  # [V, 3, H, W]
@@ -266,9 +390,11 @@ class Evaluator:
         save_dir: str,
         prefix: str = '',
         gt_images: Optional[torch.Tensor] = None,
-        cam_poses: Optional[torch.Tensor] = None,
-        elevations: List[float] = [0, 30],
-        azimuths: List[float] = [0, 90, 180, 270],
+        elevations: Optional[torch.Tensor] = None,
+        azimuths: Optional[torch.Tensor] = None,
+        transforms: Optional[torch.Tensor] = None,
+        default_elevations: List[float] = [0, 30],
+        default_azimuths: List[float] = [0, 90, 180, 270],
         cam_radius: float = 1.5,
     ):
         """
@@ -278,18 +404,20 @@ class Evaluator:
         - 无 GT：一行渲染结果
         - 有 GT：上行 GT，下行渲染结果
 
-        当提供 cam_poses 时，使用与 GT 相同的视角渲染（便于对比）；
-        否则使用标准视角渲染。
+        优先使用 transforms（归一化后的相机姿态），确保与训练时完全一致。
+        如果没有 transforms，则使用 elevations/azimuths + orbit_camera。
 
         Args:
             gaussians: Gaussian 参数 [B, N, 14]
             save_dir: 保存目录
             prefix: 文件名前缀
             gt_images: 可选的 GT 图像 [B, V, 3, H, W]
-            cam_poses: 可选的相机姿态 [B, V, 4, 4]（与 GT 对应的监督视角）
-            elevations: 仰角列表（仅在无 cam_poses 时使用）
-            azimuths: 方位角列表（仅在无 cam_poses 时使用）
-            cam_radius: 相机半径（仅在无 cam_poses 时使用）
+            elevations: 可选的 elevation 角度 [B, V]（当无 transforms 时使用）
+            azimuths: 可选的 azimuth 角度 [B, V]（当无 transforms 时使用）
+            transforms: 可选的归一化后的相机姿态 [B, V, 4, 4]（OpenGL c2w）
+            default_elevations: 仰角列表（仅在无 elevations/transforms 时使用）
+            default_azimuths: 方位角列表（仅在无 elevations/transforms 时使用）
+            cam_radius: 相机半径（仅在无 elevations/transforms 时使用）
 
         Returns:
             saved_paths: 保存的文件路径列表
@@ -297,12 +425,15 @@ class Evaluator:
         os.makedirs(save_dir, exist_ok=True)
 
         # 渲染图像
-        if cam_poses is not None:
+        if transforms is not None:
+            # 优先使用 transforms
+            rendered = self.render_views(gaussians, transforms=transforms)  # [B, V, 3, H, W]
+        elif elevations is not None and azimuths is not None:
             opt = self.model.opt
-            rendered = self.render_views(gaussians, cam_poses, opt)  # [B, V, 3, H, W]
+            rendered = self.render_views(gaussians, elevations, azimuths, opt)  # [B, V, 3, H, W]
         else:
             rendered = self.render_canonical_views(
-                gaussians, elevations, azimuths, cam_radius
+                gaussians, default_elevations, default_azimuths, cam_radius
             )  # [B, num_views, 3, H, W]
 
         B, V_render = rendered.shape[:2]

@@ -1,0 +1,3270 @@
+{
+  "position+scale": [
+    {
+      "block": "unet.down_blocks.4.attns.1.norm",
+      "geo_mean": 2.3081,
+      "ratios": {
+        "position": 2.5564,
+        "scale": 2.084
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.qkv",
+      "geo_mean": 2.2426,
+      "ratios": {
+        "position": 2.3849,
+        "scale": 2.1088
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.qkv",
+      "geo_mean": 2.2217,
+      "ratios": {
+        "position": 2.6083,
+        "scale": 1.8925
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.proj",
+      "geo_mean": 2.0998,
+      "ratios": {
+        "position": 2.292,
+        "scale": 1.9238
+      }
+    },
+    {
+      "block": "unet.down_blocks.4",
+      "geo_mean": 2.0716,
+      "ratios": {
+        "position": 2.326,
+        "scale": 1.8451
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.1",
+      "geo_mean": 2.0662,
+      "ratios": {
+        "position": 2.2315,
+        "scale": 1.9133
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.0",
+      "geo_mean": 2.0606,
+      "ratios": {
+        "position": 2.563,
+        "scale": 1.6568
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.2",
+      "geo_mean": 2.03,
+      "ratios": {
+        "position": 2.6914,
+        "scale": 1.5312
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.1",
+      "geo_mean": 2.0137,
+      "ratios": {
+        "position": 2.4006,
+        "scale": 1.6892
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.norm",
+      "geo_mean": 1.9942,
+      "ratios": {
+        "position": 2.5179,
+        "scale": 1.5795
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.1",
+      "geo_mean": 1.9515,
+      "ratios": {
+        "position": 2.3578,
+        "scale": 1.6152
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.qkv",
+      "geo_mean": 1.9414,
+      "ratios": {
+        "position": 2.0062,
+        "scale": 1.8786
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.norm",
+      "geo_mean": 1.8422,
+      "ratios": {
+        "position": 1.9545,
+        "scale": 1.7363
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.proj",
+      "geo_mean": 1.811,
+      "ratios": {
+        "position": 1.9545,
+        "scale": 1.6781
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.upsample",
+      "geo_mean": 1.8096,
+      "ratios": {
+        "position": 2.2798,
+        "scale": 1.4363
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.0",
+      "geo_mean": 1.7916,
+      "ratios": {
+        "position": 2.1173,
+        "scale": 1.516
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.proj",
+      "geo_mean": 1.7788,
+      "ratios": {
+        "position": 2.1075,
+        "scale": 1.5014
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.proj",
+      "geo_mean": 1.7788,
+      "ratios": {
+        "position": 1.9642,
+        "scale": 1.6108
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.qkv",
+      "geo_mean": 1.7627,
+      "ratios": {
+        "position": 2.0489,
+        "scale": 1.5164
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.0",
+      "geo_mean": 1.7524,
+      "ratios": {
+        "position": 2.028,
+        "scale": 1.5142
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.0",
+      "geo_mean": 1.7368,
+      "ratios": {
+        "position": 2.1214,
+        "scale": 1.4219
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.proj",
+      "geo_mean": 1.7312,
+      "ratios": {
+        "position": 2.0576,
+        "scale": 1.4565
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.qkv",
+      "geo_mean": 1.7123,
+      "ratios": {
+        "position": 1.9164,
+        "scale": 1.5298
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.proj",
+      "geo_mean": 1.7022,
+      "ratios": {
+        "position": 2.1735,
+        "scale": 1.3331
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.norm",
+      "geo_mean": 1.6947,
+      "ratios": {
+        "position": 2.0336,
+        "scale": 1.4123
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.1",
+      "geo_mean": 1.6921,
+      "ratios": {
+        "position": 2.2461,
+        "scale": 1.2748
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.proj",
+      "geo_mean": 1.6753,
+      "ratios": {
+        "position": 2.1239,
+        "scale": 1.3215
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.qkv",
+      "geo_mean": 1.6418,
+      "ratios": {
+        "position": 1.9181,
+        "scale": 1.4053
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.norm",
+      "geo_mean": 1.6396,
+      "ratios": {
+        "position": 1.9274,
+        "scale": 1.3947
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.norm",
+      "geo_mean": 1.6337,
+      "ratios": {
+        "position": 1.749,
+        "scale": 1.5259
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.proj",
+      "geo_mean": 1.6215,
+      "ratios": {
+        "position": 2.0681,
+        "scale": 1.2714
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.qkv",
+      "geo_mean": 1.5991,
+      "ratios": {
+        "position": 2.069,
+        "scale": 1.236
+      }
+    },
+    {
+      "block": "unet.down_blocks.3",
+      "geo_mean": 1.5064,
+      "ratios": {
+        "position": 1.8944,
+        "scale": 1.1978
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.proj",
+      "geo_mean": 1.4434,
+      "ratios": {
+        "position": 1.9301,
+        "scale": 1.0795
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.qkv",
+      "geo_mean": 1.4383,
+      "ratios": {
+        "position": 1.657,
+        "scale": 1.2485
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.proj",
+      "geo_mean": 1.4136,
+      "ratios": {
+        "position": 1.5677,
+        "scale": 1.2746
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.upsample",
+      "geo_mean": 1.3989,
+      "ratios": {
+        "position": 1.8858,
+        "scale": 1.0377
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.proj",
+      "geo_mean": 1.3843,
+      "ratios": {
+        "position": 1.6053,
+        "scale": 1.1938
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.0",
+      "geo_mean": 1.3783,
+      "ratios": {
+        "position": 1.8776,
+        "scale": 1.0118
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.2",
+      "geo_mean": 1.3734,
+      "ratios": {
+        "position": 1.7893,
+        "scale": 1.0542
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.norm",
+      "geo_mean": 1.3599,
+      "ratios": {
+        "position": 1.6669,
+        "scale": 1.1094
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.1",
+      "geo_mean": 1.3428,
+      "ratios": {
+        "position": 1.5733,
+        "scale": 1.146
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.0",
+      "geo_mean": 1.2838,
+      "ratios": {
+        "position": 1.4883,
+        "scale": 1.1075
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.qkv",
+      "geo_mean": 1.2539,
+      "ratios": {
+        "position": 1.4486,
+        "scale": 1.0854
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.upsample",
+      "geo_mean": 1.2027,
+      "ratios": {
+        "position": 1.4089,
+        "scale": 1.0267
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.norm",
+      "geo_mean": 1.2001,
+      "ratios": {
+        "position": 1.4184,
+        "scale": 1.0154
+      }
+    },
+    {
+      "block": "unet.norm_out",
+      "geo_mean": 1.16,
+      "ratios": {
+        "position": 1.0699,
+        "scale": 1.2577
+      }
+    },
+    {
+      "block": "unet.down_blocks.2",
+      "geo_mean": 1.1586,
+      "ratios": {
+        "position": 1.3063,
+        "scale": 1.0275
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.2",
+      "geo_mean": 1.1347,
+      "ratios": {
+        "position": 1.2579,
+        "scale": 1.0236
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.0",
+      "geo_mean": 1.1199,
+      "ratios": {
+        "position": 1.2529,
+        "scale": 1.0011
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.qkv",
+      "geo_mean": 1.1063,
+      "ratios": {
+        "position": 1.1745,
+        "scale": 1.0421
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.proj",
+      "geo_mean": 1.0977,
+      "ratios": {
+        "position": 1.1913,
+        "scale": 1.0114
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.0",
+      "geo_mean": 1.0959,
+      "ratios": {
+        "position": 1.1641,
+        "scale": 1.0317
+      }
+    },
+    {
+      "block": "unet.conv_out",
+      "geo_mean": 1.0938,
+      "ratios": {
+        "position": 1.0177,
+        "scale": 1.1755
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.0",
+      "geo_mean": 1.0923,
+      "ratios": {
+        "position": 1.068,
+        "scale": 1.1171
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.upsample",
+      "geo_mean": 1.0824,
+      "ratios": {
+        "position": 1.1577,
+        "scale": 1.012
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.1",
+      "geo_mean": 1.079,
+      "ratios": {
+        "position": 1.1353,
+        "scale": 1.0255
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.norm",
+      "geo_mean": 1.0642,
+      "ratios": {
+        "position": 1.0876,
+        "scale": 1.0414
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.2",
+      "geo_mean": 1.0598,
+      "ratios": {
+        "position": 1.0332,
+        "scale": 1.0871
+      }
+    },
+    {
+      "block": "unet.down_blocks.0",
+      "geo_mean": 1.0506,
+      "ratios": {
+        "position": 1.0436,
+        "scale": 1.0577
+      }
+    }
+  ],
+  "position+opacity": [
+    {
+      "block": "unet.down_blocks.5.nets.0",
+      "geo_mean": 2.2792,
+      "ratios": {
+        "position": 2.563,
+        "opacity": 2.0269
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.norm",
+      "geo_mean": 2.2737,
+      "ratios": {
+        "position": 2.5564,
+        "opacity": 2.0223
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.qkv",
+      "geo_mean": 2.2233,
+      "ratios": {
+        "position": 2.3849,
+        "opacity": 2.0727
+      }
+    },
+    {
+      "block": "unet.down_blocks.4",
+      "geo_mean": 2.1622,
+      "ratios": {
+        "position": 2.326,
+        "opacity": 2.01
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.proj",
+      "geo_mean": 2.06,
+      "ratios": {
+        "position": 2.292,
+        "opacity": 1.8515
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.1",
+      "geo_mean": 2.0515,
+      "ratios": {
+        "position": 2.4006,
+        "opacity": 1.7532
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.1",
+      "geo_mean": 2.0495,
+      "ratios": {
+        "position": 2.2315,
+        "opacity": 1.8824
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.1",
+      "geo_mean": 1.8982,
+      "ratios": {
+        "position": 2.3578,
+        "opacity": 1.5281
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.proj",
+      "geo_mean": 1.8645,
+      "ratios": {
+        "position": 2.1735,
+        "opacity": 1.5994
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.2",
+      "geo_mean": 1.8636,
+      "ratios": {
+        "position": 2.6914,
+        "opacity": 1.2904
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.0",
+      "geo_mean": 1.8247,
+      "ratios": {
+        "position": 2.028,
+        "opacity": 1.6417
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.0",
+      "geo_mean": 1.8197,
+      "ratios": {
+        "position": 2.1214,
+        "opacity": 1.561
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.qkv",
+      "geo_mean": 1.8162,
+      "ratios": {
+        "position": 2.0062,
+        "opacity": 1.6442
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.norm",
+      "geo_mean": 1.8082,
+      "ratios": {
+        "position": 2.0336,
+        "opacity": 1.6077
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.proj",
+      "geo_mean": 1.8069,
+      "ratios": {
+        "position": 1.9642,
+        "opacity": 1.6622
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.proj",
+      "geo_mean": 1.794,
+      "ratios": {
+        "position": 1.9545,
+        "opacity": 1.6467
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.upsample",
+      "geo_mean": 1.7907,
+      "ratios": {
+        "position": 2.2798,
+        "opacity": 1.4065
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.qkv",
+      "geo_mean": 1.7628,
+      "ratios": {
+        "position": 2.6083,
+        "opacity": 1.1914
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.qkv",
+      "geo_mean": 1.739,
+      "ratios": {
+        "position": 2.0489,
+        "opacity": 1.476
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.norm",
+      "geo_mean": 1.7386,
+      "ratios": {
+        "position": 1.9545,
+        "opacity": 1.5466
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.0",
+      "geo_mean": 1.7035,
+      "ratios": {
+        "position": 2.1173,
+        "opacity": 1.3705
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.qkv",
+      "geo_mean": 1.6827,
+      "ratios": {
+        "position": 1.9164,
+        "opacity": 1.4774
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.proj",
+      "geo_mean": 1.6544,
+      "ratios": {
+        "position": 2.1239,
+        "opacity": 1.2887
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.qkv",
+      "geo_mean": 1.642,
+      "ratios": {
+        "position": 1.9181,
+        "opacity": 1.4057
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.1",
+      "geo_mean": 1.6309,
+      "ratios": {
+        "position": 2.2461,
+        "opacity": 1.1841
+      }
+    },
+    {
+      "block": "unet.down_blocks.3",
+      "geo_mean": 1.6142,
+      "ratios": {
+        "position": 1.8944,
+        "opacity": 1.3754
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.norm",
+      "geo_mean": 1.6031,
+      "ratios": {
+        "position": 1.749,
+        "opacity": 1.4695
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.proj",
+      "geo_mean": 1.5959,
+      "ratios": {
+        "position": 2.0576,
+        "opacity": 1.2377
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.norm",
+      "geo_mean": 1.5773,
+      "ratios": {
+        "position": 1.9274,
+        "opacity": 1.2908
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.proj",
+      "geo_mean": 1.573,
+      "ratios": {
+        "position": 1.9301,
+        "opacity": 1.282
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.upsample",
+      "geo_mean": 1.5479,
+      "ratios": {
+        "position": 1.8858,
+        "opacity": 1.2706
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.proj",
+      "geo_mean": 1.546,
+      "ratios": {
+        "position": 2.0681,
+        "opacity": 1.1557
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.0",
+      "geo_mean": 1.5378,
+      "ratios": {
+        "position": 1.8776,
+        "opacity": 1.2595
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.attn.qkv",
+      "geo_mean": 1.5198,
+      "ratios": {
+        "position": 1.8356,
+        "opacity": 1.2583
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.qkv",
+      "geo_mean": 1.5125,
+      "ratios": {
+        "position": 1.657,
+        "opacity": 1.3807
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.qkv",
+      "geo_mean": 1.4813,
+      "ratios": {
+        "position": 2.069,
+        "opacity": 1.0605
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.norm",
+      "geo_mean": 1.4573,
+      "ratios": {
+        "position": 1.6669,
+        "opacity": 1.274
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.1.attn.proj",
+      "geo_mean": 1.4558,
+      "ratios": {
+        "position": 1.667,
+        "opacity": 1.2713
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.2",
+      "geo_mean": 1.4461,
+      "ratios": {
+        "position": 1.7893,
+        "opacity": 1.1687
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.proj",
+      "geo_mean": 1.4399,
+      "ratios": {
+        "position": 1.5677,
+        "opacity": 1.3225
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.qkv",
+      "geo_mean": 1.4281,
+      "ratios": {
+        "position": 1.7333,
+        "opacity": 1.1767
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.proj",
+      "geo_mean": 1.4277,
+      "ratios": {
+        "position": 1.6053,
+        "opacity": 1.2698
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.0",
+      "geo_mean": 1.4041,
+      "ratios": {
+        "position": 1.4883,
+        "opacity": 1.3247
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.1",
+      "geo_mean": 1.3818,
+      "ratios": {
+        "position": 1.5733,
+        "opacity": 1.2137
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.1.attn.qkv",
+      "geo_mean": 1.3813,
+      "ratios": {
+        "position": 1.6291,
+        "opacity": 1.1712
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.norm",
+      "geo_mean": 1.364,
+      "ratios": {
+        "position": 1.7253,
+        "opacity": 1.0783
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.attn.proj",
+      "geo_mean": 1.356,
+      "ratios": {
+        "position": 1.5533,
+        "opacity": 1.1837
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.norm",
+      "geo_mean": 1.3454,
+      "ratios": {
+        "position": 1.6297,
+        "opacity": 1.1106
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.1",
+      "geo_mean": 1.3268,
+      "ratios": {
+        "position": 1.5425,
+        "opacity": 1.1412
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.attn.qkv",
+      "geo_mean": 1.3235,
+      "ratios": {
+        "position": 1.5424,
+        "opacity": 1.1356
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.attn.proj",
+      "geo_mean": 1.3059,
+      "ratios": {
+        "position": 1.6064,
+        "opacity": 1.0617
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.nets.0",
+      "geo_mean": 1.3005,
+      "ratios": {
+        "position": 1.5605,
+        "opacity": 1.0837
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.upsample",
+      "geo_mean": 1.2972,
+      "ratios": {
+        "position": 1.4089,
+        "opacity": 1.1944
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.attn.proj",
+      "geo_mean": 1.2967,
+      "ratios": {
+        "position": 1.4735,
+        "opacity": 1.1412
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.qkv",
+      "geo_mean": 1.2959,
+      "ratios": {
+        "position": 1.4486,
+        "opacity": 1.1593
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.norm",
+      "geo_mean": 1.2918,
+      "ratios": {
+        "position": 1.4184,
+        "opacity": 1.1766
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.nets.1",
+      "geo_mean": 1.2525,
+      "ratios": {
+        "position": 1.5445,
+        "opacity": 1.0157
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.norm",
+      "geo_mean": 1.2502,
+      "ratios": {
+        "position": 1.4241,
+        "opacity": 1.0976
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.attn.qkv",
+      "geo_mean": 1.2231,
+      "ratios": {
+        "position": 1.3972,
+        "opacity": 1.0707
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.qkv",
+      "geo_mean": 1.1951,
+      "ratios": {
+        "position": 1.2306,
+        "opacity": 1.1607
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.2",
+      "geo_mean": 1.1922,
+      "ratios": {
+        "position": 1.2579,
+        "opacity": 1.13
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.0",
+      "geo_mean": 1.1879,
+      "ratios": {
+        "position": 1.2486,
+        "opacity": 1.1301
+      }
+    },
+    {
+      "block": "unet.down_blocks.2.nets.1",
+      "geo_mean": 1.1846,
+      "ratios": {
+        "position": 1.3625,
+        "opacity": 1.03
+      }
+    },
+    {
+      "block": "unet.conv_in",
+      "geo_mean": 1.1835,
+      "ratios": {
+        "position": 1.2773,
+        "opacity": 1.0965
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.1",
+      "geo_mean": 1.1806,
+      "ratios": {
+        "position": 1.3369,
+        "opacity": 1.0426
+      }
+    },
+    {
+      "block": "unet.down_blocks.2",
+      "geo_mean": 1.171,
+      "ratios": {
+        "position": 1.3063,
+        "opacity": 1.0497
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.upsample",
+      "geo_mean": 1.1695,
+      "ratios": {
+        "position": 1.1577,
+        "opacity": 1.1814
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.proj",
+      "geo_mean": 1.1573,
+      "ratios": {
+        "position": 1.1913,
+        "opacity": 1.1243
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.1",
+      "geo_mean": 1.1545,
+      "ratios": {
+        "position": 1.1353,
+        "opacity": 1.1739
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.0",
+      "geo_mean": 1.1438,
+      "ratios": {
+        "position": 1.1641,
+        "opacity": 1.124
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.qkv",
+      "geo_mean": 1.1347,
+      "ratios": {
+        "position": 1.1745,
+        "opacity": 1.0963
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.0",
+      "geo_mean": 1.1272,
+      "ratios": {
+        "position": 1.2529,
+        "opacity": 1.014
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.2",
+      "geo_mean": 1.1193,
+      "ratios": {
+        "position": 1.0332,
+        "opacity": 1.2125
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.1",
+      "geo_mean": 1.1052,
+      "ratios": {
+        "position": 1.1285,
+        "opacity": 1.0824
+      }
+    },
+    {
+      "block": "unet.norm_out",
+      "geo_mean": 1.0998,
+      "ratios": {
+        "position": 1.0699,
+        "opacity": 1.1306
+      }
+    },
+    {
+      "block": "unet.conv_out",
+      "geo_mean": 1.0957,
+      "ratios": {
+        "position": 1.0177,
+        "opacity": 1.1796
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.2",
+      "geo_mean": 1.0805,
+      "ratios": {
+        "position": 1.0764,
+        "opacity": 1.0846
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.norm",
+      "geo_mean": 1.0687,
+      "ratios": {
+        "position": 1.0876,
+        "opacity": 1.0502
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.norm",
+      "geo_mean": 1.06,
+      "ratios": {
+        "position": 1.1036,
+        "opacity": 1.0181
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.1",
+      "geo_mean": 1.0552,
+      "ratios": {
+        "position": 1.0868,
+        "opacity": 1.0246
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.0",
+      "geo_mean": 1.0351,
+      "ratios": {
+        "position": 1.068,
+        "opacity": 1.0033
+      }
+    }
+  ],
+  "position+rotation": [
+    {
+      "block": "unet.down_blocks.4.attns.1.norm",
+      "geo_mean": 2.2439,
+      "ratios": {
+        "position": 2.5564,
+        "rotation": 1.9696
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.qkv",
+      "geo_mean": 2.0957,
+      "ratios": {
+        "position": 2.6083,
+        "rotation": 1.6838
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.2",
+      "geo_mean": 2.0486,
+      "ratios": {
+        "position": 2.6914,
+        "rotation": 1.5593
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.1",
+      "geo_mean": 2.0318,
+      "ratios": {
+        "position": 2.3578,
+        "rotation": 1.7508
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.qkv",
+      "geo_mean": 2.0219,
+      "ratios": {
+        "position": 2.3849,
+        "rotation": 1.7141
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.proj",
+      "geo_mean": 1.9622,
+      "ratios": {
+        "position": 2.292,
+        "rotation": 1.6798
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.1",
+      "geo_mean": 1.9147,
+      "ratios": {
+        "position": 2.2315,
+        "rotation": 1.6429
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.0",
+      "geo_mean": 1.882,
+      "ratios": {
+        "position": 2.1173,
+        "rotation": 1.6728
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.1",
+      "geo_mean": 1.8461,
+      "ratios": {
+        "position": 2.4006,
+        "rotation": 1.4197
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.proj",
+      "geo_mean": 1.8065,
+      "ratios": {
+        "position": 1.9642,
+        "rotation": 1.6615
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.0",
+      "geo_mean": 1.7982,
+      "ratios": {
+        "position": 2.563,
+        "rotation": 1.2617
+      }
+    },
+    {
+      "block": "unet.down_blocks.4",
+      "geo_mean": 1.7895,
+      "ratios": {
+        "position": 2.326,
+        "rotation": 1.3767
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.upsample",
+      "geo_mean": 1.783,
+      "ratios": {
+        "position": 2.2798,
+        "rotation": 1.3945
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.norm",
+      "geo_mean": 1.7659,
+      "ratios": {
+        "position": 2.5179,
+        "rotation": 1.2386
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.proj",
+      "geo_mean": 1.7467,
+      "ratios": {
+        "position": 2.1075,
+        "rotation": 1.4476
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.proj",
+      "geo_mean": 1.7398,
+      "ratios": {
+        "position": 1.9301,
+        "rotation": 1.5682
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.1",
+      "geo_mean": 1.731,
+      "ratios": {
+        "position": 2.2461,
+        "rotation": 1.334
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.upsample",
+      "geo_mean": 1.7284,
+      "ratios": {
+        "position": 1.8858,
+        "rotation": 1.5841
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.0",
+      "geo_mean": 1.6998,
+      "ratios": {
+        "position": 2.028,
+        "rotation": 1.4248
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.attn.qkv",
+      "geo_mean": 1.6949,
+      "ratios": {
+        "position": 1.8356,
+        "rotation": 1.5651
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.0",
+      "geo_mean": 1.6723,
+      "ratios": {
+        "position": 2.1214,
+        "rotation": 1.3183
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.0",
+      "geo_mean": 1.6369,
+      "ratios": {
+        "position": 1.8776,
+        "rotation": 1.4271
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.qkv",
+      "geo_mean": 1.634,
+      "ratios": {
+        "position": 1.9164,
+        "rotation": 1.3932
+      }
+    },
+    {
+      "block": "unet.down_blocks.3",
+      "geo_mean": 1.6247,
+      "ratios": {
+        "position": 1.8944,
+        "rotation": 1.3934
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.qkv",
+      "geo_mean": 1.619,
+      "ratios": {
+        "position": 2.0489,
+        "rotation": 1.2792
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.2",
+      "geo_mean": 1.5926,
+      "ratios": {
+        "position": 1.7893,
+        "rotation": 1.4175
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.proj",
+      "geo_mean": 1.5878,
+      "ratios": {
+        "position": 2.0576,
+        "rotation": 1.2252
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.norm",
+      "geo_mean": 1.5759,
+      "ratios": {
+        "position": 1.9274,
+        "rotation": 1.2885
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.proj",
+      "geo_mean": 1.5756,
+      "ratios": {
+        "position": 2.1239,
+        "rotation": 1.1688
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.proj",
+      "geo_mean": 1.5747,
+      "ratios": {
+        "position": 2.0681,
+        "rotation": 1.1991
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.norm",
+      "geo_mean": 1.5503,
+      "ratios": {
+        "position": 1.9354,
+        "rotation": 1.2418
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.proj",
+      "geo_mean": 1.5343,
+      "ratios": {
+        "position": 2.1735,
+        "rotation": 1.0831
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.qkv",
+      "geo_mean": 1.5207,
+      "ratios": {
+        "position": 2.0062,
+        "rotation": 1.1527
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.qkv",
+      "geo_mean": 1.511,
+      "ratios": {
+        "position": 2.069,
+        "rotation": 1.1035
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.norm",
+      "geo_mean": 1.506,
+      "ratios": {
+        "position": 1.749,
+        "rotation": 1.2969
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.norm",
+      "geo_mean": 1.5005,
+      "ratios": {
+        "position": 1.6297,
+        "rotation": 1.3815
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.1.attn.proj",
+      "geo_mean": 1.5,
+      "ratios": {
+        "position": 1.667,
+        "rotation": 1.3496
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.attn.proj",
+      "geo_mean": 1.4715,
+      "ratios": {
+        "position": 1.5533,
+        "rotation": 1.394
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.proj",
+      "geo_mean": 1.4596,
+      "ratios": {
+        "position": 1.5677,
+        "rotation": 1.3589
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.proj",
+      "geo_mean": 1.4506,
+      "ratios": {
+        "position": 1.9545,
+        "rotation": 1.0766
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.qkv",
+      "geo_mean": 1.443,
+      "ratios": {
+        "position": 1.7333,
+        "rotation": 1.2013
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.attn.qkv",
+      "geo_mean": 1.4396,
+      "ratios": {
+        "position": 1.5424,
+        "rotation": 1.3436
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.norm",
+      "geo_mean": 1.4369,
+      "ratios": {
+        "position": 1.7253,
+        "rotation": 1.1968
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.attn.proj",
+      "geo_mean": 1.422,
+      "ratios": {
+        "position": 1.6064,
+        "rotation": 1.2588
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.norm",
+      "geo_mean": 1.4171,
+      "ratios": {
+        "position": 1.9545,
+        "rotation": 1.0274
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.norm",
+      "geo_mean": 1.4165,
+      "ratios": {
+        "position": 1.6669,
+        "rotation": 1.2037
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.1",
+      "geo_mean": 1.4067,
+      "ratios": {
+        "position": 1.5425,
+        "rotation": 1.2829
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.1.attn.qkv",
+      "geo_mean": 1.3868,
+      "ratios": {
+        "position": 1.6291,
+        "rotation": 1.1805
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.proj",
+      "geo_mean": 1.3839,
+      "ratios": {
+        "position": 1.6053,
+        "rotation": 1.193
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.qkv",
+      "geo_mean": 1.3839,
+      "ratios": {
+        "position": 1.657,
+        "rotation": 1.1559
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.nets.0",
+      "geo_mean": 1.3825,
+      "ratios": {
+        "position": 1.5605,
+        "rotation": 1.2248
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.1",
+      "geo_mean": 1.3607,
+      "ratios": {
+        "position": 1.5733,
+        "rotation": 1.1768
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.norm",
+      "geo_mean": 1.3514,
+      "ratios": {
+        "position": 1.4241,
+        "rotation": 1.2824
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.attn.proj",
+      "geo_mean": 1.3454,
+      "ratios": {
+        "position": 1.4735,
+        "rotation": 1.2284
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.nets.1",
+      "geo_mean": 1.3282,
+      "ratios": {
+        "position": 1.5445,
+        "rotation": 1.1423
+      }
+    },
+    {
+      "block": "unet.down_blocks.2",
+      "geo_mean": 1.2682,
+      "ratios": {
+        "position": 1.3063,
+        "rotation": 1.2311
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.2",
+      "geo_mean": 1.2651,
+      "ratios": {
+        "position": 1.2579,
+        "rotation": 1.2723
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.attn.qkv",
+      "geo_mean": 1.263,
+      "ratios": {
+        "position": 1.3972,
+        "rotation": 1.1417
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.upsample",
+      "geo_mean": 1.2627,
+      "ratios": {
+        "position": 1.4089,
+        "rotation": 1.1317
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.norm",
+      "geo_mean": 1.2558,
+      "ratios": {
+        "position": 1.0876,
+        "rotation": 1.45
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.0",
+      "geo_mean": 1.2423,
+      "ratios": {
+        "position": 1.2529,
+        "rotation": 1.2318
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.norm",
+      "geo_mean": 1.238,
+      "ratios": {
+        "position": 1.4184,
+        "rotation": 1.0806
+      }
+    },
+    {
+      "block": "unet.down_blocks.2.nets.0",
+      "geo_mean": 1.2376,
+      "ratios": {
+        "position": 1.1984,
+        "rotation": 1.2781
+      }
+    },
+    {
+      "block": "unet.down_blocks.2.nets.1",
+      "geo_mean": 1.2212,
+      "ratios": {
+        "position": 1.3625,
+        "rotation": 1.0945
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.proj",
+      "geo_mean": 1.2197,
+      "ratios": {
+        "position": 1.1913,
+        "rotation": 1.2489
+      }
+    },
+    {
+      "block": "unet.down_blocks.1",
+      "geo_mean": 1.2094,
+      "ratios": {
+        "position": 1.1592,
+        "rotation": 1.2617
+      }
+    },
+    {
+      "block": "unet.down_blocks.0",
+      "geo_mean": 1.1889,
+      "ratios": {
+        "position": 1.0436,
+        "rotation": 1.3544
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.qkv",
+      "geo_mean": 1.1614,
+      "ratios": {
+        "position": 1.1745,
+        "rotation": 1.1484
+      }
+    },
+    {
+      "block": "unet.norm_out",
+      "geo_mean": 1.1587,
+      "ratios": {
+        "position": 1.0699,
+        "rotation": 1.2549
+      }
+    },
+    {
+      "block": "unet.conv_in",
+      "geo_mean": 1.1474,
+      "ratios": {
+        "position": 1.2773,
+        "rotation": 1.0307
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.0",
+      "geo_mean": 1.1454,
+      "ratios": {
+        "position": 1.2486,
+        "rotation": 1.0507
+      }
+    },
+    {
+      "block": "unet.conv_out",
+      "geo_mean": 1.1303,
+      "ratios": {
+        "position": 1.0177,
+        "rotation": 1.2554
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.1",
+      "geo_mean": 1.1152,
+      "ratios": {
+        "position": 1.1285,
+        "rotation": 1.1021
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.norm",
+      "geo_mean": 1.1012,
+      "ratios": {
+        "position": 1.1036,
+        "rotation": 1.0988
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.1",
+      "geo_mean": 1.0965,
+      "ratios": {
+        "position": 1.1353,
+        "rotation": 1.0589
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.1",
+      "geo_mean": 1.0941,
+      "ratios": {
+        "position": 1.0868,
+        "rotation": 1.1015
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.2",
+      "geo_mean": 1.0834,
+      "ratios": {
+        "position": 1.0764,
+        "rotation": 1.0904
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.2",
+      "geo_mean": 1.0802,
+      "ratios": {
+        "position": 1.0332,
+        "rotation": 1.1293
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.0",
+      "geo_mean": 1.0757,
+      "ratios": {
+        "position": 1.068,
+        "rotation": 1.0834
+      }
+    }
+  ],
+  "scale+opacity": [
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.qkv",
+      "geo_mean": 2.0907,
+      "ratios": {
+        "scale": 2.1088,
+        "opacity": 2.0727
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.norm",
+      "geo_mean": 2.0529,
+      "ratios": {
+        "scale": 2.084,
+        "opacity": 2.0223
+      }
+    },
+    {
+      "block": "unet.down_blocks.4",
+      "geo_mean": 1.9258,
+      "ratios": {
+        "scale": 1.8451,
+        "opacity": 2.01
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.1",
+      "geo_mean": 1.8978,
+      "ratios": {
+        "scale": 1.9133,
+        "opacity": 1.8824
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.proj",
+      "geo_mean": 1.8873,
+      "ratios": {
+        "scale": 1.9238,
+        "opacity": 1.8515
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.0",
+      "geo_mean": 1.8325,
+      "ratios": {
+        "scale": 1.6568,
+        "opacity": 2.0269
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.qkv",
+      "geo_mean": 1.7575,
+      "ratios": {
+        "scale": 1.8786,
+        "opacity": 1.6442
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.1",
+      "geo_mean": 1.7209,
+      "ratios": {
+        "scale": 1.6892,
+        "opacity": 1.7532
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.proj",
+      "geo_mean": 1.6623,
+      "ratios": {
+        "scale": 1.6781,
+        "opacity": 1.6467
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.norm",
+      "geo_mean": 1.6387,
+      "ratios": {
+        "scale": 1.7363,
+        "opacity": 1.5466
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.proj",
+      "geo_mean": 1.6363,
+      "ratios": {
+        "scale": 1.6108,
+        "opacity": 1.6622
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.0",
+      "geo_mean": 1.5767,
+      "ratios": {
+        "scale": 1.5142,
+        "opacity": 1.6417
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.1",
+      "geo_mean": 1.5711,
+      "ratios": {
+        "scale": 1.6152,
+        "opacity": 1.5281
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.norm",
+      "geo_mean": 1.5068,
+      "ratios": {
+        "scale": 1.4123,
+        "opacity": 1.6077
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.qkv",
+      "geo_mean": 1.5034,
+      "ratios": {
+        "scale": 1.5298,
+        "opacity": 1.4774
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.qkv",
+      "geo_mean": 1.5015,
+      "ratios": {
+        "scale": 1.8925,
+        "opacity": 1.1914
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.norm",
+      "geo_mean": 1.4974,
+      "ratios": {
+        "scale": 1.5259,
+        "opacity": 1.4695
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.qkv",
+      "geo_mean": 1.4961,
+      "ratios": {
+        "scale": 1.5164,
+        "opacity": 1.476
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.0",
+      "geo_mean": 1.4898,
+      "ratios": {
+        "scale": 1.4219,
+        "opacity": 1.561
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.proj",
+      "geo_mean": 1.4602,
+      "ratios": {
+        "scale": 1.3331,
+        "opacity": 1.5994
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.0",
+      "geo_mean": 1.4414,
+      "ratios": {
+        "scale": 1.516,
+        "opacity": 1.3705
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.upsample",
+      "geo_mean": 1.4213,
+      "ratios": {
+        "scale": 1.4363,
+        "opacity": 1.4065
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.2",
+      "geo_mean": 1.4057,
+      "ratios": {
+        "scale": 1.5312,
+        "opacity": 1.2904
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.qkv",
+      "geo_mean": 1.4055,
+      "ratios": {
+        "scale": 1.4053,
+        "opacity": 1.4057
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.proj",
+      "geo_mean": 1.3427,
+      "ratios": {
+        "scale": 1.4565,
+        "opacity": 1.2377
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.norm",
+      "geo_mean": 1.3418,
+      "ratios": {
+        "scale": 1.3947,
+        "opacity": 1.2908
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.qkv",
+      "geo_mean": 1.3129,
+      "ratios": {
+        "scale": 1.2485,
+        "opacity": 1.3807
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.proj",
+      "geo_mean": 1.305,
+      "ratios": {
+        "scale": 1.3215,
+        "opacity": 1.2887
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.proj",
+      "geo_mean": 1.2983,
+      "ratios": {
+        "scale": 1.2746,
+        "opacity": 1.3225
+      }
+    },
+    {
+      "block": "unet.down_blocks.3",
+      "geo_mean": 1.2835,
+      "ratios": {
+        "scale": 1.1978,
+        "opacity": 1.3754
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.proj",
+      "geo_mean": 1.2312,
+      "ratios": {
+        "scale": 1.1938,
+        "opacity": 1.2698
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.1",
+      "geo_mean": 1.2286,
+      "ratios": {
+        "scale": 1.2748,
+        "opacity": 1.1841
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.proj",
+      "geo_mean": 1.2122,
+      "ratios": {
+        "scale": 1.2714,
+        "opacity": 1.1557
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.0",
+      "geo_mean": 1.2112,
+      "ratios": {
+        "scale": 1.1075,
+        "opacity": 1.3247
+      }
+    },
+    {
+      "block": "unet.norm_out",
+      "geo_mean": 1.1924,
+      "ratios": {
+        "scale": 1.2577,
+        "opacity": 1.1306
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.norm",
+      "geo_mean": 1.1889,
+      "ratios": {
+        "scale": 1.1094,
+        "opacity": 1.274
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.1",
+      "geo_mean": 1.1794,
+      "ratios": {
+        "scale": 1.146,
+        "opacity": 1.2137
+      }
+    },
+    {
+      "block": "unet.conv_out",
+      "geo_mean": 1.1775,
+      "ratios": {
+        "scale": 1.1755,
+        "opacity": 1.1796
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.proj",
+      "geo_mean": 1.1764,
+      "ratios": {
+        "scale": 1.0795,
+        "opacity": 1.282
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.upsample",
+      "geo_mean": 1.1482,
+      "ratios": {
+        "scale": 1.0377,
+        "opacity": 1.2706
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.2",
+      "geo_mean": 1.1481,
+      "ratios": {
+        "scale": 1.0871,
+        "opacity": 1.2125
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.qkv",
+      "geo_mean": 1.1449,
+      "ratios": {
+        "scale": 1.236,
+        "opacity": 1.0605
+      }
+    },
+    {
+      "block": "conv",
+      "geo_mean": 1.1431,
+      "ratios": {
+        "scale": 1.1674,
+        "opacity": 1.1193
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.0",
+      "geo_mean": 1.1289,
+      "ratios": {
+        "scale": 1.0118,
+        "opacity": 1.2595
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.qkv",
+      "geo_mean": 1.1217,
+      "ratios": {
+        "scale": 1.0854,
+        "opacity": 1.1593
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.2",
+      "geo_mean": 1.11,
+      "ratios": {
+        "scale": 1.0542,
+        "opacity": 1.1687
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.upsample",
+      "geo_mean": 1.1074,
+      "ratios": {
+        "scale": 1.0267,
+        "opacity": 1.1944
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.1",
+      "geo_mean": 1.0972,
+      "ratios": {
+        "scale": 1.0255,
+        "opacity": 1.1739
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.upsample",
+      "geo_mean": 1.0934,
+      "ratios": {
+        "scale": 1.012,
+        "opacity": 1.1814
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.norm",
+      "geo_mean": 1.093,
+      "ratios": {
+        "scale": 1.0154,
+        "opacity": 1.1766
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.0",
+      "geo_mean": 1.0769,
+      "ratios": {
+        "scale": 1.0317,
+        "opacity": 1.124
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.2",
+      "geo_mean": 1.0755,
+      "ratios": {
+        "scale": 1.0236,
+        "opacity": 1.13
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.qkv",
+      "geo_mean": 1.0689,
+      "ratios": {
+        "scale": 1.0421,
+        "opacity": 1.0963
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.proj",
+      "geo_mean": 1.0664,
+      "ratios": {
+        "scale": 1.0114,
+        "opacity": 1.1243
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.0",
+      "geo_mean": 1.0586,
+      "ratios": {
+        "scale": 1.1171,
+        "opacity": 1.0033
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.norm",
+      "geo_mean": 1.0458,
+      "ratios": {
+        "scale": 1.0414,
+        "opacity": 1.0502
+      }
+    },
+    {
+      "block": "unet.down_blocks.2",
+      "geo_mean": 1.0385,
+      "ratios": {
+        "scale": 1.0275,
+        "opacity": 1.0497
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.0",
+      "geo_mean": 1.0075,
+      "ratios": {
+        "scale": 1.0011,
+        "opacity": 1.014
+      }
+    }
+  ],
+  "scale+rotation": [
+    {
+      "block": "unet.down_blocks.4.attns.1.norm",
+      "geo_mean": 2.026,
+      "ratios": {
+        "scale": 2.084,
+        "rotation": 1.9696
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.qkv",
+      "geo_mean": 1.9012,
+      "ratios": {
+        "scale": 2.1088,
+        "rotation": 1.7141
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.proj",
+      "geo_mean": 1.7977,
+      "ratios": {
+        "scale": 1.9238,
+        "rotation": 1.6798
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.qkv",
+      "geo_mean": 1.7851,
+      "ratios": {
+        "scale": 1.8925,
+        "rotation": 1.6838
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.1",
+      "geo_mean": 1.7729,
+      "ratios": {
+        "scale": 1.9133,
+        "rotation": 1.6429
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.1",
+      "geo_mean": 1.6817,
+      "ratios": {
+        "scale": 1.6152,
+        "rotation": 1.7508
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.proj",
+      "geo_mean": 1.636,
+      "ratios": {
+        "scale": 1.6108,
+        "rotation": 1.6615
+      }
+    },
+    {
+      "block": "unet.down_blocks.4",
+      "geo_mean": 1.5938,
+      "ratios": {
+        "scale": 1.8451,
+        "rotation": 1.3767
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.0",
+      "geo_mean": 1.5924,
+      "ratios": {
+        "scale": 1.516,
+        "rotation": 1.6728
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.1",
+      "geo_mean": 1.5486,
+      "ratios": {
+        "scale": 1.6892,
+        "rotation": 1.4197
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.2",
+      "geo_mean": 1.5451,
+      "ratios": {
+        "scale": 1.5312,
+        "rotation": 1.5593
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.proj",
+      "geo_mean": 1.4743,
+      "ratios": {
+        "scale": 1.5014,
+        "rotation": 1.4476
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.qkv",
+      "geo_mean": 1.4715,
+      "ratios": {
+        "scale": 1.8786,
+        "rotation": 1.1527
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.0",
+      "geo_mean": 1.4688,
+      "ratios": {
+        "scale": 1.5142,
+        "rotation": 1.4248
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.qkv",
+      "geo_mean": 1.4599,
+      "ratios": {
+        "scale": 1.5298,
+        "rotation": 1.3932
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.0",
+      "geo_mean": 1.4458,
+      "ratios": {
+        "scale": 1.6568,
+        "rotation": 1.2617
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.upsample",
+      "geo_mean": 1.4152,
+      "ratios": {
+        "scale": 1.4363,
+        "rotation": 1.3945
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.norm",
+      "geo_mean": 1.4067,
+      "ratios": {
+        "scale": 1.5259,
+        "rotation": 1.2969
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.norm",
+      "geo_mean": 1.3987,
+      "ratios": {
+        "scale": 1.5795,
+        "rotation": 1.2386
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.qkv",
+      "geo_mean": 1.3928,
+      "ratios": {
+        "scale": 1.5164,
+        "rotation": 1.2792
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.0",
+      "geo_mean": 1.3691,
+      "ratios": {
+        "scale": 1.4219,
+        "rotation": 1.3183
+      }
+    },
+    {
+      "block": "conv",
+      "geo_mean": 1.3607,
+      "ratios": {
+        "scale": 1.1674,
+        "rotation": 1.5859
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.proj",
+      "geo_mean": 1.3441,
+      "ratios": {
+        "scale": 1.6781,
+        "rotation": 1.0766
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.norm",
+      "geo_mean": 1.3406,
+      "ratios": {
+        "scale": 1.3947,
+        "rotation": 1.2885
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.proj",
+      "geo_mean": 1.3359,
+      "ratios": {
+        "scale": 1.4565,
+        "rotation": 1.2252
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.norm",
+      "geo_mean": 1.3357,
+      "ratios": {
+        "scale": 1.7363,
+        "rotation": 1.0274
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.proj",
+      "geo_mean": 1.316,
+      "ratios": {
+        "scale": 1.2746,
+        "rotation": 1.3589
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.1",
+      "geo_mean": 1.3041,
+      "ratios": {
+        "scale": 1.2748,
+        "rotation": 1.334
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.proj",
+      "geo_mean": 1.3011,
+      "ratios": {
+        "scale": 1.0795,
+        "rotation": 1.5682
+      }
+    },
+    {
+      "block": "unet.down_blocks.3",
+      "geo_mean": 1.2919,
+      "ratios": {
+        "scale": 1.1978,
+        "rotation": 1.3934
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.upsample",
+      "geo_mean": 1.2821,
+      "ratios": {
+        "scale": 1.0377,
+        "rotation": 1.5841
+      }
+    },
+    {
+      "block": "unet.norm_out",
+      "geo_mean": 1.2563,
+      "ratios": {
+        "scale": 1.2577,
+        "rotation": 1.2549
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.proj",
+      "geo_mean": 1.2428,
+      "ratios": {
+        "scale": 1.3215,
+        "rotation": 1.1688
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.proj",
+      "geo_mean": 1.2347,
+      "ratios": {
+        "scale": 1.2714,
+        "rotation": 1.1991
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.norm",
+      "geo_mean": 1.2289,
+      "ratios": {
+        "scale": 1.0414,
+        "rotation": 1.45
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.2",
+      "geo_mean": 1.2224,
+      "ratios": {
+        "scale": 1.0542,
+        "rotation": 1.4175
+      }
+    },
+    {
+      "block": "unet.conv_out",
+      "geo_mean": 1.2148,
+      "ratios": {
+        "scale": 1.1755,
+        "rotation": 1.2554
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.0",
+      "geo_mean": 1.2017,
+      "ratios": {
+        "scale": 1.0118,
+        "rotation": 1.4271
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.proj",
+      "geo_mean": 1.2016,
+      "ratios": {
+        "scale": 1.3331,
+        "rotation": 1.0831
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.qkv",
+      "geo_mean": 1.2013,
+      "ratios": {
+        "scale": 1.2485,
+        "rotation": 1.1559
+      }
+    },
+    {
+      "block": "unet.down_blocks.0",
+      "geo_mean": 1.1969,
+      "ratios": {
+        "scale": 1.0577,
+        "rotation": 1.3544
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.proj",
+      "geo_mean": 1.1934,
+      "ratios": {
+        "scale": 1.1938,
+        "rotation": 1.193
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.qkv",
+      "geo_mean": 1.1678,
+      "ratios": {
+        "scale": 1.236,
+        "rotation": 1.1035
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.1",
+      "geo_mean": 1.1613,
+      "ratios": {
+        "scale": 1.146,
+        "rotation": 1.1768
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.norm",
+      "geo_mean": 1.1556,
+      "ratios": {
+        "scale": 1.1094,
+        "rotation": 1.2037
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.2",
+      "geo_mean": 1.1412,
+      "ratios": {
+        "scale": 1.0236,
+        "rotation": 1.2723
+      }
+    },
+    {
+      "block": "unet.down_blocks.2",
+      "geo_mean": 1.1247,
+      "ratios": {
+        "scale": 1.0275,
+        "rotation": 1.2311
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.proj",
+      "geo_mean": 1.1239,
+      "ratios": {
+        "scale": 1.0114,
+        "rotation": 1.2489
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.0",
+      "geo_mean": 1.1104,
+      "ratios": {
+        "scale": 1.0011,
+        "rotation": 1.2318
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.2",
+      "geo_mean": 1.108,
+      "ratios": {
+        "scale": 1.0871,
+        "rotation": 1.1293
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.0",
+      "geo_mean": 1.1001,
+      "ratios": {
+        "scale": 1.1171,
+        "rotation": 1.0834
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.qkv",
+      "geo_mean": 1.094,
+      "ratios": {
+        "scale": 1.0421,
+        "rotation": 1.1484
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.upsample",
+      "geo_mean": 1.0779,
+      "ratios": {
+        "scale": 1.0267,
+        "rotation": 1.1317
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.norm",
+      "geo_mean": 1.0475,
+      "ratios": {
+        "scale": 1.0154,
+        "rotation": 1.0806
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.1",
+      "geo_mean": 1.0421,
+      "ratios": {
+        "scale": 1.0255,
+        "rotation": 1.0589
+      }
+    }
+  ],
+  "opacity+rotation": [
+    {
+      "block": "unet.down_blocks.4.attns.1.norm",
+      "geo_mean": 1.9958,
+      "ratios": {
+        "opacity": 2.0223,
+        "rotation": 1.9696
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.qkv",
+      "geo_mean": 1.8849,
+      "ratios": {
+        "opacity": 2.0727,
+        "rotation": 1.7141
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.1.attn.proj",
+      "geo_mean": 1.7636,
+      "ratios": {
+        "opacity": 1.8515,
+        "rotation": 1.6798
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.1",
+      "geo_mean": 1.7586,
+      "ratios": {
+        "opacity": 1.8824,
+        "rotation": 1.6429
+      }
+    },
+    {
+      "block": "unet.down_blocks.4",
+      "geo_mean": 1.6635,
+      "ratios": {
+        "opacity": 2.01,
+        "rotation": 1.3767
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.proj",
+      "geo_mean": 1.6618,
+      "ratios": {
+        "opacity": 1.6622,
+        "rotation": 1.6615
+      }
+    },
+    {
+      "block": "unet.mid_block.nets.1",
+      "geo_mean": 1.6357,
+      "ratios": {
+        "opacity": 1.5281,
+        "rotation": 1.7508
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.0",
+      "geo_mean": 1.5992,
+      "ratios": {
+        "opacity": 2.0269,
+        "rotation": 1.2617
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.nets.1",
+      "geo_mean": 1.5777,
+      "ratios": {
+        "opacity": 1.7532,
+        "rotation": 1.4197
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.nets.0",
+      "geo_mean": 1.5294,
+      "ratios": {
+        "opacity": 1.6417,
+        "rotation": 1.4248
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.0",
+      "geo_mean": 1.5141,
+      "ratios": {
+        "opacity": 1.3705,
+        "rotation": 1.6728
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.attn.qkv",
+      "geo_mean": 1.4347,
+      "ratios": {
+        "opacity": 1.4774,
+        "rotation": 1.3932
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.0",
+      "geo_mean": 1.4345,
+      "ratios": {
+        "opacity": 1.561,
+        "rotation": 1.3183
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.upsample",
+      "geo_mean": 1.4187,
+      "ratios": {
+        "opacity": 1.2706,
+        "rotation": 1.5841
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.2",
+      "geo_mean": 1.4185,
+      "ratios": {
+        "opacity": 1.2904,
+        "rotation": 1.5593
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.proj",
+      "geo_mean": 1.4179,
+      "ratios": {
+        "opacity": 1.282,
+        "rotation": 1.5682
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.0.attn.qkv",
+      "geo_mean": 1.4164,
+      "ratios": {
+        "opacity": 1.1914,
+        "rotation": 1.6838
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.attn.qkv",
+      "geo_mean": 1.4033,
+      "ratios": {
+        "opacity": 1.2583,
+        "rotation": 1.5651
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.upsample",
+      "geo_mean": 1.4005,
+      "ratios": {
+        "opacity": 1.4065,
+        "rotation": 1.3945
+      }
+    },
+    {
+      "block": "unet.down_blocks.3",
+      "geo_mean": 1.3844,
+      "ratios": {
+        "opacity": 1.3754,
+        "rotation": 1.3934
+      }
+    },
+    {
+      "block": "unet.down_blocks.4.attns.0.norm",
+      "geo_mean": 1.3805,
+      "ratios": {
+        "opacity": 1.4695,
+        "rotation": 1.2969
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.qkv",
+      "geo_mean": 1.3767,
+      "ratios": {
+        "opacity": 1.6442,
+        "rotation": 1.1527
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.qkv",
+      "geo_mean": 1.3741,
+      "ratios": {
+        "opacity": 1.476,
+        "rotation": 1.2792
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.0",
+      "geo_mean": 1.3407,
+      "ratios": {
+        "opacity": 1.2595,
+        "rotation": 1.4271
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.proj",
+      "geo_mean": 1.3406,
+      "ratios": {
+        "opacity": 1.3225,
+        "rotation": 1.3589
+      }
+    },
+    {
+      "block": "conv",
+      "geo_mean": 1.3323,
+      "ratios": {
+        "opacity": 1.1193,
+        "rotation": 1.5859
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.attn.proj",
+      "geo_mean": 1.3315,
+      "ratios": {
+        "opacity": 1.6467,
+        "rotation": 1.0766
+      }
+    },
+    {
+      "block": "unet.mid_block.attns.0.attn.proj",
+      "geo_mean": 1.3162,
+      "ratios": {
+        "opacity": 1.5994,
+        "rotation": 1.0831
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.1.attn.proj",
+      "geo_mean": 1.3099,
+      "ratios": {
+        "opacity": 1.2713,
+        "rotation": 1.3496
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.norm",
+      "geo_mean": 1.2897,
+      "ratios": {
+        "opacity": 1.2908,
+        "rotation": 1.2885
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.2",
+      "geo_mean": 1.2871,
+      "ratios": {
+        "opacity": 1.1687,
+        "rotation": 1.4175
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.attn.proj",
+      "geo_mean": 1.2846,
+      "ratios": {
+        "opacity": 1.1837,
+        "rotation": 1.394
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.attn.qkv",
+      "geo_mean": 1.2633,
+      "ratios": {
+        "opacity": 1.3807,
+        "rotation": 1.1559
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.1.norm",
+      "geo_mean": 1.2606,
+      "ratios": {
+        "opacity": 1.5466,
+        "rotation": 1.0274
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.nets.1",
+      "geo_mean": 1.2568,
+      "ratios": {
+        "opacity": 1.1841,
+        "rotation": 1.334
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.norm",
+      "geo_mean": 1.2387,
+      "ratios": {
+        "opacity": 1.1106,
+        "rotation": 1.3815
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.0.norm",
+      "geo_mean": 1.2383,
+      "ratios": {
+        "opacity": 1.274,
+        "rotation": 1.2037
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.attn.qkv",
+      "geo_mean": 1.2352,
+      "ratios": {
+        "opacity": 1.1356,
+        "rotation": 1.3436
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.norm",
+      "geo_mean": 1.234,
+      "ratios": {
+        "opacity": 1.0502,
+        "rotation": 1.45
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.2.attn.proj",
+      "geo_mean": 1.2314,
+      "ratios": {
+        "opacity": 1.2377,
+        "rotation": 1.2252
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.attn.proj",
+      "geo_mean": 1.2308,
+      "ratios": {
+        "opacity": 1.2698,
+        "rotation": 1.193
+      }
+    },
+    {
+      "block": "unet.down_blocks.5.attns.0.attn.proj",
+      "geo_mean": 1.2273,
+      "ratios": {
+        "opacity": 1.2887,
+        "rotation": 1.1688
+      }
+    },
+    {
+      "block": "unet.conv_out",
+      "geo_mean": 1.2169,
+      "ratios": {
+        "opacity": 1.1796,
+        "rotation": 1.2554
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.1",
+      "geo_mean": 1.21,
+      "ratios": {
+        "opacity": 1.1412,
+        "rotation": 1.2829
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.nets.2",
+      "geo_mean": 1.199,
+      "ratios": {
+        "opacity": 1.13,
+        "rotation": 1.2723
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.nets.1",
+      "geo_mean": 1.1951,
+      "ratios": {
+        "opacity": 1.2137,
+        "rotation": 1.1768
+      }
+    },
+    {
+      "block": "unet.norm_out",
+      "geo_mean": 1.1911,
+      "ratios": {
+        "opacity": 1.1306,
+        "rotation": 1.2549
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.attn.qkv",
+      "geo_mean": 1.189,
+      "ratios": {
+        "opacity": 1.1767,
+        "rotation": 1.2013
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.1.norm",
+      "geo_mean": 1.1864,
+      "ratios": {
+        "opacity": 1.0976,
+        "rotation": 1.2824
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.proj",
+      "geo_mean": 1.1849,
+      "ratios": {
+        "opacity": 1.1243,
+        "rotation": 1.2489
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.0.attn.proj",
+      "geo_mean": 1.184,
+      "ratios": {
+        "opacity": 1.1412,
+        "rotation": 1.2284
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.proj",
+      "geo_mean": 1.1772,
+      "ratios": {
+        "opacity": 1.1557,
+        "rotation": 1.1991
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.1.attn.qkv",
+      "geo_mean": 1.1758,
+      "ratios": {
+        "opacity": 1.1712,
+        "rotation": 1.1805
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.2",
+      "geo_mean": 1.1701,
+      "ratios": {
+        "opacity": 1.2125,
+        "rotation": 1.1293
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.upsample",
+      "geo_mean": 1.1626,
+      "ratios": {
+        "opacity": 1.1944,
+        "rotation": 1.1317
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.attn.proj",
+      "geo_mean": 1.156,
+      "ratios": {
+        "opacity": 1.0617,
+        "rotation": 1.2588
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.nets.0",
+      "geo_mean": 1.1521,
+      "ratios": {
+        "opacity": 1.0837,
+        "rotation": 1.2248
+      }
+    },
+    {
+      "block": "unet.down_blocks.2",
+      "geo_mean": 1.1368,
+      "ratios": {
+        "opacity": 1.0497,
+        "rotation": 1.2311
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.2.norm",
+      "geo_mean": 1.136,
+      "ratios": {
+        "opacity": 1.0783,
+        "rotation": 1.1968
+      }
+    },
+    {
+      "block": "unet.up_blocks.1.attns.1.norm",
+      "geo_mean": 1.1276,
+      "ratios": {
+        "opacity": 1.1766,
+        "rotation": 1.0806
+      }
+    },
+    {
+      "block": "unet.up_blocks.2.attns.2.attn.qkv",
+      "geo_mean": 1.1221,
+      "ratios": {
+        "opacity": 1.0963,
+        "rotation": 1.1484
+      }
+    },
+    {
+      "block": "unet.down_blocks.1.nets.0",
+      "geo_mean": 1.1176,
+      "ratios": {
+        "opacity": 1.014,
+        "rotation": 1.2318
+      }
+    },
+    {
+      "block": "unet.up_blocks.4.nets.1",
+      "geo_mean": 1.115,
+      "ratios": {
+        "opacity": 1.1739,
+        "rotation": 1.0589
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.attn.qkv",
+      "geo_mean": 1.1057,
+      "ratios": {
+        "opacity": 1.0707,
+        "rotation": 1.1417
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.1",
+      "geo_mean": 1.0922,
+      "ratios": {
+        "opacity": 1.0824,
+        "rotation": 1.1021
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.0",
+      "geo_mean": 1.0897,
+      "ratios": {
+        "opacity": 1.1301,
+        "rotation": 1.0507
+      }
+    },
+    {
+      "block": "unet.up_blocks.3.nets.2",
+      "geo_mean": 1.0875,
+      "ratios": {
+        "opacity": 1.0846,
+        "rotation": 1.0904
+      }
+    },
+    {
+      "block": "unet.up_blocks.0.attns.1.attn.qkv",
+      "geo_mean": 1.0818,
+      "ratios": {
+        "opacity": 1.0605,
+        "rotation": 1.1035
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.nets.1",
+      "geo_mean": 1.0771,
+      "ratios": {
+        "opacity": 1.0157,
+        "rotation": 1.1423
+      }
+    },
+    {
+      "block": "unet.conv_in",
+      "geo_mean": 1.0631,
+      "ratios": {
+        "opacity": 1.0965,
+        "rotation": 1.0307
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.1",
+      "geo_mean": 1.0623,
+      "ratios": {
+        "opacity": 1.0246,
+        "rotation": 1.1015
+      }
+    },
+    {
+      "block": "unet.down_blocks.2.nets.1",
+      "geo_mean": 1.0617,
+      "ratios": {
+        "opacity": 1.03,
+        "rotation": 1.0945
+      }
+    },
+    {
+      "block": "unet.down_blocks.3.attns.0.norm",
+      "geo_mean": 1.0577,
+      "ratios": {
+        "opacity": 1.0181,
+        "rotation": 1.0988
+      }
+    },
+    {
+      "block": "unet.down_blocks.0.nets.0",
+      "geo_mean": 1.0426,
+      "ratios": {
+        "opacity": 1.0033,
+        "rotation": 1.0834
+      }
+    }
+  ]
+}

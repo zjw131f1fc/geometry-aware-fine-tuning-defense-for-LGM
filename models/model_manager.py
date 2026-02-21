@@ -4,7 +4,6 @@
 
 import torch
 from safetensors.torch import load_file
-from peft import LoraConfig, get_peft_model
 from typing import Dict, Any, Optional
 
 from core.models import LGM
@@ -109,6 +108,8 @@ class ModelManager:
         lora_dropout = lora_dropout or lora_config.get('dropout', 0.1)
 
         print(f"[ModelManager] 应用 LoRA: r={r}, alpha={lora_alpha}")
+
+        from peft import LoraConfig, get_peft_model
 
         lora_cfg = LoraConfig(
             r=r,
