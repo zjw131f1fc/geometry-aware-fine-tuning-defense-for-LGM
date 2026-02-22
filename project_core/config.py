@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, List
 # ============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-THIRD_PARTY_DIR = PROJECT_ROOT / "third_party"
+THIRD_PARTY_DIR = PROJECT_ROOT / "lib"
 LGM_PATH = THIRD_PARTY_DIR / "LGM"
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 DATA_DIR = PROJECT_ROOT / "datas"

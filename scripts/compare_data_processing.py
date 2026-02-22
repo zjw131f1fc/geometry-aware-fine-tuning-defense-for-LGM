@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 # 添加 LGM 路径
-lgm_path = '/mnt/huangjiaxin/3d-defense/third_party/LGM'
+lgm_path = '/mnt/huangjiaxin/3d-defense/lib/LGM'
 sys.path.insert(0, lgm_path)
 
 from core.utils import get_rays

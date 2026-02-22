@@ -19,7 +19,7 @@ export CUDA_VISIBLE_DEVICES=$GPU_IDS
 # 设置项目根目录到 PYTHONPATH
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/third_party/LGM:${PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/lib/LGM:${PYTHONPATH}"
 
 # 计算 GPU 数量
 IFS=',' read -ra GPUS <<< "$GPU_IDS"

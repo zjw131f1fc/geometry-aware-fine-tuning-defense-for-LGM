@@ -3,7 +3,7 @@ start_claude.sh
 .npm/
 .claude
 datas
-third_party/
+lib/
 output/
 .vscode
 *__pycache__/

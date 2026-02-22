@@ -4,7 +4,7 @@
 # 模型配置
 model:
   size: big  # small, big, tiny - 预训练权重是big模型
-  resume: /mnt/huangjiaxin/3d-defense/third_party/LGM/pretrained/model_fp16_fixrot.safetensors
+  resume: /mnt/huangjiaxin/3d-defense/lib/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
 
 # LoRA配置

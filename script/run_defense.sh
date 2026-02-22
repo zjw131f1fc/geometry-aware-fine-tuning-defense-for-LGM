@@ -26,7 +26,7 @@ EXTRA_ARGS="$@"
 # 设置项目根目录到 PYTHONPATH
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/third_party/LGM:${PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/lib/LGM:${PYTHONPATH}"
 
 echo "=========================================="
 echo "GeoTrap 防御训练启动"

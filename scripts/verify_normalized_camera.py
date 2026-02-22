@@ -11,7 +11,7 @@ import torch
 import numpy as np
 import json
 
-lgm_path = '/mnt/huangjiaxin/3d-defense/third_party/LGM'
+lgm_path = '/mnt/huangjiaxin/3d-defense/lib/LGM'
 sys.path.insert(0, lgm_path)
 
 from kiui.cam import orbit_camera
