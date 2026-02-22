@@ -1,10 +1,15 @@
 """
-防御训练器 - 实现 GeoTrap 防御训练流程
+防御训练器 - 支持 GeoTrap 和 Naive Unlearning 两种防御方法
+
+defense.method 配置：
+- geotrap: 几何陷阱防御（Trap Loss + 乘法耦合 + 交替反对齐 + 参数加噪）
+- naive_unlearning: 朴素遗忘（对 target 渲染 loss 做梯度上升 + source 蒸馏）
+- none: 跳过防御（在 load_or_train_defense 中直接返回）
 
 核心机制：
 1. Source Data → Distillation Loss（保持原有能力）
-2. Target Data → Trap Loss（制造几何陷阱）
-3. 敏感层选择性微调
+2. Target Data → Trap Loss / 梯度上升（制造几何陷阱 / 遗忘）
+3. 敏感层选择性微调（可选）
 """
 
 import torch
@@ -64,32 +69,47 @@ class DefenseTrainer:
         self.config = config
         self.defense_config = config.get('defense', {})
 
+        # 防御方法：geotrap / naive_unlearning
+        self.method = self.defense_config.get('method', 'geotrap')
+
         # 组件
         self.model_mgr = None
         self.data_mgr = None
         self.optimizer = None
         self.device = None
 
-        # 陷阱损失
+        # 陷阱损失（仅 geotrap 需要）
         self.trap_losses = {}
-        self._setup_trap_losses()
+        if self.method == 'geotrap':
+            self._setup_trap_losses()
 
-        # 互锁配置
-        coupling_config = self.defense_config.get('coupling', {})
-        self.use_multiplicative = coupling_config.get('multiplicative', False)
-        gc_config = coupling_config.get('gradient_conflict', {})
-        self.use_gradient_conflict = gc_config.get('enabled', False)
-        self.use_alternating_antialign = gc_config.get('alternating_antialign', False)
-        self.lambda_conflict = gc_config.get('weight', 0.1)
-        self.conflict_every_k = gc_config.get('every_k_steps', 10)
+        # 互锁配置（仅 geotrap 需要）
+        if self.method == 'geotrap':
+            coupling_config = self.defense_config.get('coupling', {})
+            self.use_multiplicative = coupling_config.get('multiplicative', False)
+            gc_config = coupling_config.get('gradient_conflict', {})
+            self.use_gradient_conflict = gc_config.get('enabled', False)
+            self.use_alternating_antialign = gc_config.get('alternating_antialign', False)
+            self.lambda_conflict = gc_config.get('weight', 0.1)
+            self.conflict_every_k = gc_config.get('every_k_steps', 10)
+
+            robust_config = self.defense_config.get('robustness', {})
+            self.use_param_noise = robust_config.get('enabled', False)
+            self.lambda_robust = robust_config.get('weight', 0.1)
+            self.noise_scale = robust_config.get('noise_scale', 0.01)
+            self.robust_every_k = robust_config.get('every_k_steps', 10)
+        else:
+            self.use_multiplicative = False
+            self.use_gradient_conflict = False
+            self.use_alternating_antialign = False
+            self.lambda_conflict = 0
+            self.conflict_every_k = 1
+            self.use_param_noise = False
+            self.lambda_robust = 0
+            self.noise_scale = 0
+            self.robust_every_k = 1
+
         self._trap_step_counter = 0
-
-        # 参数加噪鲁棒性配置
-        robust_config = self.defense_config.get('robustness', {})
-        self.use_param_noise = robust_config.get('enabled', False)
-        self.lambda_robust = robust_config.get('weight', 0.1)
-        self.noise_scale = robust_config.get('noise_scale', 0.01)
-        self.robust_every_k = robust_config.get('every_k_steps', 10)
         self._robust_step_counter = 0
 
         # 梯度累积配置
@@ -143,6 +163,7 @@ class DefenseTrainer:
         """
         print("=" * 80)
         print("DefenseTrainer 初始化")
+        print(f"  防御方法: {self.method}")
         print("=" * 80)
 
         self.device = device or self.config['model'].get('device', 'cuda')
@@ -242,11 +263,21 @@ class DefenseTrainer:
         # 5. 设置优化器
         training_config = self.config['training']
         trainable_params = [p for p in self.model_mgr.model.parameters() if p.requires_grad]
-        self.optimizer = optim.AdamW(
-            trainable_params,
-            lr=training_config['lr'],
-            weight_decay=training_config['weight_decay'],
-        )
+        optimizer_type = training_config.get('optimizer', 'adamw')
+        if optimizer_type == 'sgd':
+            self.optimizer = optim.SGD(
+                trainable_params,
+                lr=training_config['lr'],
+                weight_decay=training_config['weight_decay'],
+                momentum=training_config.get('optimizer_momentum', 0.9),
+            )
+        else:
+            self.optimizer = optim.AdamW(
+                trainable_params,
+                lr=training_config['lr'],
+                weight_decay=training_config['weight_decay'],
+                betas=tuple(training_config.get('optimizer_betas', [0.9, 0.95])),
+            )
 
         num_trainable = sum(p.numel() for p in trainable_params)
         num_total = sum(p.numel() for p in self.model_mgr.model.parameters())
@@ -757,7 +788,7 @@ class DefenseTrainer:
 
         Args:
             batch: 数据批次
-            is_target_data: 是否为 target 数据（True=陷阱损失，False=蒸馏损失）
+            is_target_data: 是否为 target 数据（True=陷阱/遗忘损失，False=蒸馏损失）
 
         Returns:
             loss_dict: 损失字典
@@ -776,12 +807,16 @@ class DefenseTrainer:
         loss_dict = {}
 
         if is_target_data:
-            # Target Data: 计算陷阱损失
-            trap_loss_dict, trap_loss = self.compute_trap_loss(student_gaussians, self.model_mgr.model, input_images)
-            loss_dict.update(trap_loss_dict)
+            if self.method == 'naive_unlearning':
+                # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升
+                total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
+            else:
+                # GeoTrap: 计算陷阱损失
+                trap_loss_dict, trap_loss = self.compute_trap_loss(student_gaussians, self.model_mgr.model, input_images)
+                loss_dict.update(trap_loss_dict)
 
-            lambda_trap = self.defense_config.get('lambda_trap', 1.0)
-            total_loss = lambda_trap * trap_loss
+                lambda_trap = self.defense_config.get('lambda_trap', 1.0)
+                total_loss = lambda_trap * trap_loss
 
         else:
             # Source Data: 使用预计算的教师 Gaussian 计算蒸馏损失
@@ -802,6 +837,37 @@ class DefenseTrainer:
             scaled_loss.backward()
 
         return loss_dict
+
+    def _compute_naive_unlearning_loss(self, batch, loss_dict):
+        """
+        计算 Naive Unlearning 损失：对 target 数据的渲染 loss 做梯度上升
+
+        通过 prepare_lgm_data 准备数据，调用 model.forward() 获取渲染损失，
+        然后取负（梯度上升），使模型主动忘掉如何渲染 target 物体。
+
+        Args:
+            batch: 数据批次
+            loss_dict: 损失字典（会被原地更新）
+
+        Returns:
+            total_loss: 取负后的渲染损失（用于梯度上升）
+        """
+        from tools.utils import prepare_lgm_data
+
+        data = prepare_lgm_data(batch, self.model_mgr.model, self.device)
+
+        with torch.autocast('cuda', dtype=torch.bfloat16):
+            results = self.model_mgr.model.forward(data, step_ratio=1.0)
+
+        render_loss = results['loss']
+        loss_dict['render_loss'] = render_loss.item()
+
+        # 取负：最小化 -render_loss = 最大化 render_loss（梯度上升）
+        lambda_trap = self.defense_config.get('lambda_trap', 1.0)
+        total_loss = -lambda_trap * render_loss
+
+        loss_dict['unlearning_loss'] = total_loss.item()
+        return total_loss
 
     def train_epoch(self, epoch: int, global_step: int = 0, step_callback=None):
         """
@@ -903,7 +969,7 @@ class DefenseTrainer:
         验证模型
 
         同时评估：
-        1. Target 数据上的 trap 效果（静态陷阱损失）
+        1. Target 数据上的效果（geotrap: trap 损失 / naive_unlearning: 渲染损失）
         2. Source 数据上的蒸馏质量（与预计算 teacher Gaussian 的 MSE）
 
         Returns:
@@ -914,22 +980,35 @@ class DefenseTrainer:
         total_losses = {}
         num_batches = 0
 
-        # 1. Target 验证：trap 效果
-        with torch.no_grad():
-            for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
-                input_images = batch['input_images'].to(self.device)
-                student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
+        # 1. Target 验证
+        if self.method == 'naive_unlearning':
+            # Naive Unlearning: 计算渲染损失（越高 = 遗忘越彻底）
+            from tools.utils import prepare_lgm_data
+            with torch.no_grad():
+                for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
+                    data = prepare_lgm_data(batch, self.model_mgr.model, self.device)
+                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                        results = self.model_mgr.model.forward(data, step_ratio=1.0)
+                    total_losses.setdefault('render_loss', 0.0)
+                    total_losses['render_loss'] += results['loss'].item()
+                    num_batches += 1
+        else:
+            # GeoTrap: trap 效果
+            with torch.no_grad():
+                for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
+                    input_images = batch['input_images'].to(self.device)
+                    student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
 
-                loss_dict = {}
-                for name, trap_loss_fn in self.trap_losses.items():
-                    loss = trap_loss_fn(student_gaussians)
-                    loss_dict[name] = loss.item()
+                    loss_dict = {}
+                    for name, trap_loss_fn in self.trap_losses.items():
+                        loss = trap_loss_fn(student_gaussians)
+                        loss_dict[name] = loss.item()
 
-                for key, value in loss_dict.items():
-                    if key not in total_losses:
-                        total_losses[key] = 0.0
-                    total_losses[key] += value
-                num_batches += 1
+                    for key, value in loss_dict.items():
+                        if key not in total_losses:
+                            total_losses[key] = 0.0
+                        total_losses[key] += value
+                    num_batches += 1
 
         # 2. Source 验证：蒸馏质量
         source_mse_total = 0.0
@@ -1088,6 +1167,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
     一行加载或训练防御模型。
 
     根据配置自动计算 hash tag，如果 registry 中已存在则跳过训练，否则触发训练并注册。
+    defense.method='none' 时跳过防御，返回 None。
 
     Args:
         config: 完整配置字典（会被修改 defense.tag）
@@ -1096,12 +1176,17 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
 
     Returns:
         (tag, defense_history):
-            tag — hash 字符串，用于 model_resume_override=f"tag:{tag}"
+            tag — hash 字符串，用于 model_resume_override=f"tag:{tag}"；method='none' 时为 None
             defense_history — 训练历史列表，缓存命中时为 None
     """
     import copy
     from tools.utils import compute_defense_hash
     from tools.model_registry import REGISTRY_DIR
+
+    method = config.get('defense', {}).get('method', 'geotrap')
+    if method == 'none':
+        print("[Defense] method=none，跳过防御训练")
+        return None, None
 
     config = copy.deepcopy(config)
     tag = compute_defense_hash(config)

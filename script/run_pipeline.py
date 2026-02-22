@@ -44,6 +44,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Pipeline: Attack → Defense → Attack')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--config', type=str, default='configs/config.yaml')
+    parser.add_argument('--categories', type=str, default=None,
+                        help='Target类别，逗号分隔（如 knife,broccoli）覆盖config')
+    parser.add_argument('--defense_method', type=str, default=None,
+                        help='防御方法：geotrap / naive_unlearning / none')
     parser.add_argument('--trap_losses', type=str, default=None,
                         help='启用的 trap loss 组合，逗号分隔（如 position,scale）')
     parser.add_argument('--trap_combo', type=str, default=None,
@@ -81,6 +85,16 @@ def main():
     set_seed(config['misc']['seed'])
 
     # CLI 覆盖
+    if args.categories is not None:
+        categories = [c.strip() for c in args.categories.split(',')]
+        config['data']['target']['categories'] = categories
+        config['attack']['malicious_content']['malicious_categories'] = categories
+        print(f"[Pipeline] Categories 覆盖: {categories}")
+
+    if args.defense_method is not None:
+        config['defense']['method'] = args.defense_method
+        print(f"[Pipeline] Defense method 覆盖: {args.defense_method}")
+
     if args.attack_epochs is not None:
         config['training']['attack_epochs'] = args.attack_epochs
     if args.defense_epochs is not None:
@@ -153,17 +167,15 @@ def main():
     del tmp_mgr
 
     target_data_mgr = DataManager(config, opt)
-    target_data_mgr.setup_dataloaders(train=True, val=True, subset='target')
+    target_data_mgr.setup_dataloaders(train=True, val=False, subset='target')
 
     source_data_mgr = DataManager(config, opt)
     source_data_mgr.setup_dataloaders(train=False, val=True, subset='source')
 
     target_train_loader = target_data_mgr.train_loader
-    target_val_loader = target_data_mgr.val_loader
     source_val_loader = source_data_mgr.val_loader
 
     print(f"  Target train: {len(target_train_loader.dataset)} 样本")
-    print(f"  Target val: {len(target_val_loader.dataset)} 样本")
     print(f"  Source val: {len(source_val_loader.dataset)} 样本")
 
     # ========== Phase 1: Baseline Attack（带缓存）==========
@@ -185,7 +197,7 @@ def main():
         copy_cached_renders(cache_dir, phase1_dir)
     else:
         baseline_history, baseline_source, baseline_target = run_attack(
-            config, target_train_loader, target_val_loader, source_val_loader,
+            config, target_train_loader, source_val_loader,
             save_dir=phase1_dir,
             attack_epochs=attack_epochs,
             num_render=args.num_render,
@@ -202,15 +214,20 @@ def main():
     )
 
     # ========== Phase 3: Post-Defense Attack ==========
-    postdef_history, postdef_source, postdef_target = run_attack(
-        config, target_train_loader, target_val_loader, source_val_loader,
-        save_dir=os.path.join(workspace, 'phase3_postdefense_attack'),
-        attack_epochs=attack_epochs,
-        num_render=args.num_render,
-        eval_every_steps=args.eval_every_steps,
-        model_resume_override=f"tag:{defense_tag}",
-        phase_name="Phase 3: Post-Defense Attack",
-    )
+    if defense_tag is not None:
+        postdef_history, postdef_source, postdef_target = run_attack(
+            config, target_train_loader, source_val_loader,
+            save_dir=os.path.join(workspace, 'phase3_postdefense_attack'),
+            attack_epochs=attack_epochs,
+            num_render=args.num_render,
+            eval_every_steps=args.eval_every_steps,
+            model_resume_override=f"tag:{defense_tag}",
+            phase_name="Phase 3: Post-Defense Attack",
+        )
+    else:
+        # defense.method=none，跳过 Phase 3
+        print("\n[Pipeline] defense.method=none，跳过 Post-Defense Attack")
+        postdef_history, postdef_source, postdef_target = None, None, None
 
     # ========== Phase 4: 绘图 + 保存结果 ==========
     plot_pipeline_results(

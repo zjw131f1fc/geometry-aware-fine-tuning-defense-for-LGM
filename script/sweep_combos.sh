@@ -84,14 +84,16 @@ for combo in "${COMBOS[@]}"; do
 import json
 with open('${metrics}') as f:
     m = json.load(f)
-b = m['baseline_attack'][-1] if m['baseline_attack'] else {}
-p = m['postdefense_attack'][-1] if m['postdefense_attack'] else {}
-bl = b.get('loss_lpips', 0)
-pl = p.get('loss_lpips', 0)
-bs = b.get('source_psnr', 0)
-ps = p.get('source_psnr', 0)
+bt = m.get('baseline_target', {})
+pt = m.get('postdefense_target', {})
+bs = m.get('baseline_source', {})
+ps = m.get('postdefense_source', {})
+bl = bt.get('lpips', 0)
+pl = pt.get('lpips', 0)
+bsp = bs.get('psnr', 0)
+psp = ps.get('psnr', 0)
 print(f'  Target LPIPS: {bl:.4f} → {pl:.4f} (Δ={pl-bl:+.4f})')
-print(f'  Source PSNR:  {bs:.2f} → {ps:.2f} (Δ={ps-bs:+.2f})')
+print(f'  Source PSNR:  {bsp:.2f} → {psp:.2f} (Δ={psp-bsp:+.2f})')
 "
     else
         echo "--- ${tag} --- (未完成)"

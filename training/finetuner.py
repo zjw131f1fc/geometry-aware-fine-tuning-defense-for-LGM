@@ -33,6 +33,9 @@ class AutoFineTuner:
         mixed_precision: str = 'bf16',
         lambda_lpips: float = 1.0,
         gradient_accumulation_steps: int = 1,
+        optimizer_type: str = 'adamw',
+        optimizer_betas: tuple = (0.9, 0.95),
+        optimizer_momentum: float = 0.9,
     ):
         """
         Args:
@@ -44,6 +47,9 @@ class AutoFineTuner:
             mixed_precision: 混合精度模式 ('no'=fp32, 'bf16', 'fp16')
             lambda_lpips: LPIPS损失权重
             gradient_accumulation_steps: 梯度累计步数
+            optimizer_type: 优化器类型 ('adamw' 或 'sgd')
+            optimizer_betas: AdamW 的 betas 参数
+            optimizer_momentum: SGD 的 momentum 参数
         """
         self.model = model
         self.device = device
@@ -58,12 +64,21 @@ class AutoFineTuner:
             self.mixed_precision = mixed_precision
 
         # 优化器
-        self.optimizer = optim.AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=lr,
-            weight_decay=weight_decay,
-            betas=(0.9, 0.95),
-        )
+        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+        if optimizer_type == 'sgd':
+            self.optimizer = optim.SGD(
+                trainable_params,
+                lr=lr,
+                weight_decay=weight_decay,
+                momentum=optimizer_momentum,
+            )
+        else:
+            self.optimizer = optim.AdamW(
+                trainable_params,
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=tuple(optimizer_betas),
+            )
 
         # GradScaler 只有 fp16 需要，bf16 不需要
         self.scaler = GradScaler('cuda') if self.mixed_precision == 'fp16' else None
@@ -393,7 +408,7 @@ class AutoFineTuner:
         print(f"[INFO] 检查点已从 {load_path} 加载")
 
 
-def run_attack(config, target_train_loader, target_val_loader, source_val_loader,
+def run_attack(config, target_train_loader, source_val_loader,
                save_dir, attack_epochs=None, num_render=3, eval_every_steps=10,
                model_resume_override=None, phase_name="Attack"):
     """
@@ -403,8 +418,7 @@ def run_attack(config, target_train_loader, target_val_loader, source_val_loader
 
     Args:
         config: 完整配置字典
-        target_train_loader: target 训练数据加载器
-        target_val_loader: target 验证数据加载器
+        target_train_loader: target 训练数据加载器（同时用于训练和评估）
         source_val_loader: source 验证数据加载器
         save_dir: 渲染结果保存目录
         attack_epochs: 攻击 epoch 数（默认从 config 读取）
@@ -444,9 +458,12 @@ def run_attack(config, target_train_loader, target_val_loader, source_val_loader
         lr=training_cfg['lr'],
         weight_decay=training_cfg['weight_decay'],
         gradient_clip=training_cfg['gradient_clip'],
-        mixed_precision='no',
+        mixed_precision=training_cfg.get('mixed_precision', 'bf16'),
         lambda_lpips=training_cfg.get('lambda_lpips', 1.0),
         gradient_accumulation_steps=training_cfg['gradient_accumulation_steps'],
+        optimizer_type=training_cfg.get('optimizer', 'adamw'),
+        optimizer_betas=training_cfg.get('optimizer_betas', [0.9, 0.95]),
+        optimizer_momentum=training_cfg.get('optimizer_momentum', 0.9),
     )
 
     evaluator = Evaluator(model, device='cuda')
@@ -511,13 +528,13 @@ def run_attack(config, target_train_loader, target_val_loader, source_val_loader
             finetuner.optimizer.step()
             finetuner.optimizer.zero_grad()
 
-    evaluator.render_samples(target_val_loader,
+    evaluator.render_samples(target_train_loader,
                              os.path.join(save_dir, 'target_renders'),
                              prefix='target_', num_samples=num_render)
 
-    # 攻击后评估 target
+    # 攻击后评估 target（在训练数据上评估，攻击者目标就是生成这些数据）
     print(f"  评估攻击后的 target 质量...")
-    target_metrics = evaluator.evaluate_on_loader(target_val_loader)
+    target_metrics = evaluator.evaluate_on_loader(target_train_loader)
     print(f"  攻击后 Target PSNR: {target_metrics['psnr']:.2f}, "
           f"LPIPS: {target_metrics['lpips']:.4f}")
 

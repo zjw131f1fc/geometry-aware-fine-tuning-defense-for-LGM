@@ -264,9 +264,13 @@ def eval_source_samples(model, evaluator, source_val_loader, workspace, epoch,
 def main():
     args = parse_args()
 
+    # 预加载配置以获取 mixed_precision 设置
+    _config = ConfigManager(args.config).config
+    mp = _config['training'].get('mixed_precision', 'bf16')
+
     accelerator = Accelerator(
         gradient_accumulation_steps=1,
-        mixed_precision='bf16',
+        mixed_precision=mp,
     )
 
     is_main = accelerator.is_main_process
@@ -332,9 +336,12 @@ def main():
         lr=training_config['lr'],
         weight_decay=training_config['weight_decay'],
         gradient_clip=training_config['gradient_clip'],
-        mixed_precision='no',  # Accelerator 已处理 bf16
+        mixed_precision='no',  # Accelerator 已处理混合精度
         lambda_lpips=training_config.get('lambda_lpips', 1.0),
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
+        optimizer_type=training_config.get('optimizer', 'adamw'),
+        optimizer_betas=training_config.get('optimizer_betas', [0.9, 0.95]),
+        optimizer_momentum=training_config.get('optimizer_momentum', 0.9),
     )
 
     # 5. Accelerator 准备

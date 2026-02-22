@@ -151,18 +151,28 @@ BASELINE_CACHE_DIR = 'output/baseline_cache'
 
 def compute_baseline_hash(config, attack_epochs, num_render):
     """根据影响 baseline 结果的所有配置计算 SHA256 哈希。"""
+    training_cfg = config.get('training', {})
+    attack_cfg = config.get('attack', {})
+
+    # 攻击微调方式：优先用 attack.mode 覆盖，否则继承 training.mode
+    attack_mode = attack_cfg.get('mode') or training_cfg.get('mode', 'full')
+
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
         'lora': config.get('lora', {}),
         'training': {
-            'mode': config['training'].get('mode', 'lora'),
-            'batch_size': config['training'].get('batch_size', 1),
-            'lr': config['training']['lr'],
-            'weight_decay': config['training']['weight_decay'],
-            'gradient_clip': config['training']['gradient_clip'],
-            'gradient_accumulation_steps': config['training']['gradient_accumulation_steps'],
-            'lambda_lpips': config['training'].get('lambda_lpips', 1.0),
+            'mode': attack_mode,
+            'batch_size': training_cfg.get('batch_size', 1),
+            'lr': training_cfg.get('lr'),
+            'weight_decay': training_cfg.get('weight_decay'),
+            'gradient_clip': training_cfg.get('gradient_clip'),
+            'gradient_accumulation_steps': training_cfg.get('gradient_accumulation_steps'),
+            'lambda_lpips': training_cfg.get('lambda_lpips', 1.0),
+            'mixed_precision': training_cfg.get('mixed_precision', 'bf16'),
+            'optimizer': training_cfg.get('optimizer', 'adamw'),
+            'optimizer_betas': training_cfg.get('optimizer_betas', [0.9, 0.95]),
+            'optimizer_momentum': training_cfg.get('optimizer_momentum', 0.9),
         },
         'attack_epochs': attack_epochs,
         'data_target': config['data']['target'],
@@ -191,6 +201,7 @@ def compute_defense_hash(config):
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
         'defense': {
+            'method': defense_cfg.get('method', 'geotrap'),
             'trap_losses': defense_cfg.get('trap_losses', {}),
             'coupling': defense_cfg.get('coupling', {}),
             'robustness': defense_cfg.get('robustness', {}),
@@ -207,12 +218,17 @@ def compute_defense_hash(config):
             'lr': training_cfg.get('lr'),
             'weight_decay': training_cfg.get('weight_decay'),
             'gradient_clip': training_cfg.get('gradient_clip'),
+            'mixed_precision': training_cfg.get('mixed_precision', 'bf16'),
+            'optimizer': training_cfg.get('optimizer', 'adamw'),
+            'optimizer_betas': training_cfg.get('optimizer_betas', [0.9, 0.95]),
+            'optimizer_momentum': training_cfg.get('optimizer_momentum', 0.9),
         },
         'data': {
             'root': data_cfg.get('root'),
             'target': data_cfg.get('target', {}),
             'source': data_cfg.get('source', {}),
             'source_ratio': data_cfg.get('source_ratio'),
+            'source_val_ratio': data_cfg.get('source_val_ratio', 0.1),
             'view_selector': data_cfg.get('view_selector'),
             'angle_offset': data_cfg.get('angle_offset'),
             'num_supervision_views': data_cfg.get('num_supervision_views'),

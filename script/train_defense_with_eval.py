@@ -242,9 +242,12 @@ def run_attack_eval(model, config, opt, attack_train_loader, attack_val_loader,
         lr=attack_lr,
         weight_decay=training_config['weight_decay'],
         gradient_clip=training_config['gradient_clip'],
-        mixed_precision='no',  # 不用 bf16 autocast，避免 LPIPS 在 bf16 下产生负值
+        mixed_precision=training_config.get('mixed_precision', 'bf16'),
         lambda_lpips=training_config.get('lambda_lpips', 1.0),
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
+        optimizer_type=training_config.get('optimizer', 'adamw'),
+        optimizer_betas=training_config.get('optimizer_betas', [0.9, 0.95]),
+        optimizer_momentum=training_config.get('optimizer_momentum', 0.9),
     )
 
     # 攻击训练（每个 epoch 渲染对比图）
