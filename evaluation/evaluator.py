@@ -3,6 +3,7 @@
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 import os
 from tqdm import tqdm
@@ -11,6 +12,7 @@ from PIL import Image
 
 from core.models import LGM
 from kiui.cam import orbit_camera
+from tools.utils import prepare_lgm_data
 
 
 class Evaluator:
@@ -589,6 +591,202 @@ class Evaluator:
         stats['num_gaussians'] = gaussians.shape[-2]
 
         return stats
+
+    @torch.no_grad()
+    def eval_source(self, source_val_loader) -> Dict[str, float]:
+        """
+        评估 source 数据集上的模型质量。
+
+        LoRA 模式下自动禁用 adapter，只测底座模型的 source 能力。
+
+        Args:
+            source_val_loader: source 验证集 dataloader
+
+        Returns:
+            {source_psnr, source_lpips, source_masked_psnr}
+        """
+        self.model.eval()
+
+        has_lora = hasattr(self.model, 'disable_adapter_layers')
+        if has_lora:
+            self.model.disable_adapter_layers()
+
+        total_psnr, total_lpips, total_masked_psnr, n = 0, 0, 0, 0
+        for batch in source_val_loader:
+            data = prepare_lgm_data(batch, self.model, self.device)
+            results = self.model.forward(data, step_ratio=1.0)
+            total_psnr += results.get('psnr', torch.tensor(0.0)).item()
+            total_lpips += results.get('loss_lpips', torch.tensor(0.0)).item()
+
+            pred_images = results.get('images_pred')
+            gt_images = data['images_output']
+            gt_masks = data['masks_output']
+            if pred_images is not None and gt_masks is not None:
+                mask_flat = gt_masks.reshape(-1)
+                pred_flat = pred_images.reshape(-1, 3)
+                gt_flat = gt_images.reshape(-1, 3)
+                mask_sum = mask_flat.sum().clamp(min=1.0)
+                masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
+                masked_psnr = -10 * torch.log10(masked_mse + 1e-8)
+                total_masked_psnr += masked_psnr.item()
+
+            n += 1
+
+        if has_lora:
+            self.model.enable_adapter_layers()
+
+        return {
+            'source_psnr': total_psnr / max(n, 1),
+            'source_lpips': total_lpips / max(n, 1),
+            'source_masked_psnr': total_masked_psnr / max(n, 1),
+        }
+
+    @torch.no_grad()
+    def evaluate_on_loader(self, loader, num_samples: int = None) -> Dict[str, float]:
+        """
+        在 dataloader 上计算 Masked PSNR 和 Masked LPIPS。
+
+        所有指标均为 masked 版本（只关注物体前景区域），避免白色背景稀释。
+
+        Args:
+            loader: 数据加载器
+            num_samples: 最多评估多少个样本（默认 None = 全部评估）
+
+        Returns:
+            {psnr, lpips}  — 均为 masked 版本
+        """
+        from tools.utils import get_base_model
+
+        self.model.eval()
+        raw_model = get_base_model(self.model)
+
+        total_psnr, total_lpips = 0.0, 0.0
+        sample_count = 0
+
+        for batch in loader:
+            if num_samples is not None and sample_count >= num_samples:
+                break
+
+            data = prepare_lgm_data(batch, self.model, self.device)
+            results = self.model.forward(data, step_ratio=1.0)
+
+            pred_images = results.get('images_pred')
+            gt_images = data['images_output']
+            gt_masks = data['masks_output']
+
+            if pred_images is None or gt_masks is None:
+                continue
+
+            batch_size = pred_images.shape[0]
+            if num_samples is not None:
+                remaining = num_samples - sample_count
+                if batch_size > remaining:
+                    pred_images = pred_images[:remaining]
+                    gt_images = gt_images[:remaining]
+                    gt_masks = gt_masks[:remaining]
+                    batch_size = remaining
+
+            # Masked PSNR（逐样本计算再累加）
+            for i in range(batch_size):
+                mask_flat = gt_masks[i].reshape(-1)
+                pred_flat = pred_images[i].reshape(-1, 3)
+                gt_flat = gt_images[i].reshape(-1, 3)
+                mask_sum = mask_flat.sum().clamp(min=1.0)
+                masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
+                total_psnr += (-10 * torch.log10(masked_mse + 1e-8)).item()
+
+            # Masked LPIPS（裁剪物体 bbox → 256×256 → LPIPS）
+            if hasattr(raw_model, 'lpips_loss'):
+                V = pred_images.shape[1]
+                for i in range(batch_size):
+                    crop_lpips_list = []
+                    for v in range(V):
+                        mask_v = gt_masks[i, v, 0]  # [H, W]
+                        if mask_v.sum() < 10:
+                            continue
+                        rows = mask_v.sum(dim=1)
+                        cols = mask_v.sum(dim=0)
+                        row_idx = (rows > 0).nonzero(as_tuple=True)[0]
+                        col_idx = (cols > 0).nonzero(as_tuple=True)[0]
+                        if len(row_idx) == 0 or len(col_idx) == 0:
+                            continue
+                        y1, y2 = row_idx[0].item(), row_idx[-1].item() + 1
+                        x1, x2 = col_idx[0].item(), col_idx[-1].item() + 1
+                        gt_crop = gt_images[i, v:v+1, :, y1:y2, x1:x2]
+                        pred_crop = pred_images[i, v:v+1, :, y1:y2, x1:x2]
+                        gt_256 = F.interpolate(gt_crop * 2 - 1, (256, 256), mode='bilinear', align_corners=False)
+                        pred_256 = F.interpolate(pred_crop * 2 - 1, (256, 256), mode='bilinear', align_corners=False)
+                        crop_lpips_list.append(raw_model.lpips_loss(gt_256, pred_256).item())
+                    if crop_lpips_list:
+                        total_lpips += sum(crop_lpips_list) / len(crop_lpips_list)
+
+            sample_count += batch_size
+
+        denom = max(sample_count, 1)
+        return {
+            'psnr': total_psnr / denom,
+            'lpips': total_lpips / denom,
+        }
+
+    @torch.no_grad()
+    def render_samples(self, loader, save_dir, prefix='', num_samples=3):
+        """
+        从 dataloader 中取样本，渲染 GT vs Pred 对比图并保存。
+
+        Args:
+            loader: 数据加载器
+            save_dir: 保存目录
+            prefix: 文件名前缀
+            num_samples: 渲染样本数
+        """
+        self.model.eval()
+        for i, batch in enumerate(loader):
+            if i >= num_samples:
+                break
+            input_images = batch['input_images'].to(self.device)
+
+            input_transforms = batch.get('input_transforms')
+            supervision_transforms = batch.get('supervision_transforms')
+
+            if input_transforms is not None and supervision_transforms is not None:
+                all_transforms = torch.cat([
+                    input_transforms.to(self.device),
+                    supervision_transforms.to(self.device),
+                ], dim=1)
+
+                # 反 ImageNet 归一化得到输入视图 GT
+                input_rgb = input_images[:, :, :3, :, :]
+                IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 1, 3, 1, 1)
+                IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 1, 3, 1, 1)
+                input_rgb = input_rgb * IMAGENET_STD + IMAGENET_MEAN
+
+                supervision_images = batch.get('supervision_images')
+                if supervision_images is not None:
+                    supervision_images = supervision_images.to(self.device)
+                    all_gt_images = torch.cat([input_rgb, supervision_images], dim=1)
+                else:
+                    all_gt_images = input_rgb
+
+                gaussians = self.generate_gaussians(input_images)
+                self.render_and_save(
+                    gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
+                    gt_images=all_gt_images, transforms=all_transforms,
+                )
+            else:
+                gt_images = batch.get('supervision_images')
+                if gt_images is not None:
+                    gt_images = gt_images.to(self.device)
+                elevations = batch.get('supervision_elevations')
+                azimuths = batch.get('supervision_azimuths')
+                if elevations is not None:
+                    elevations = elevations.to(self.device)
+                if azimuths is not None:
+                    azimuths = azimuths.to(self.device)
+                gaussians = self.generate_gaussians(input_images)
+                self.render_and_save(
+                    gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
+                    gt_images=gt_images, elevations=elevations, azimuths=azimuths,
+                )
 
     def evaluate_batch(self, batch) -> Dict[str, float]:
         """

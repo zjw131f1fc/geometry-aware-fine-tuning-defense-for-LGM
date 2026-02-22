@@ -13,7 +13,7 @@ import os
 import numpy as np
 
 from core.models import LGM
-from kiui.cam import orbit_camera
+from tools.utils import prepare_lgm_data
 
 
 class AutoFineTuner:
@@ -168,12 +168,7 @@ class AutoFineTuner:
 
     def _prepare_data(self, batch):
         """
-        准备LGM模型需要的数据格式
-
-        直接使用数据集返回的归一化后的相机姿态（supervision_transforms），
-        不重新生成相机姿态，确保与训练时的坐标系完全一致。
-
-        注意：输入视图也用于GT监督，所以需要合并输入和监督视图。
+        准备LGM模型需要的数据格式（委托给 prepare_lgm_data）。
 
         Args:
             batch: 数据加载器返回的批次
@@ -181,107 +176,7 @@ class AutoFineTuner:
         Returns:
             data: LGM模型期望的数据字典
         """
-        model_dtype = next(self.model.parameters()).dtype
-
-        input_images = batch['input_images'].to(self.device, dtype=model_dtype)  # [B, 4, 9, H, W]
-        input_transforms = batch['input_transforms'].to(self.device, dtype=torch.float32)  # [B, 4, 4, 4]
-        supervision_images = batch['supervision_images'].to(self.device, dtype=model_dtype)  # [B, V_sup, 3, H, W]
-        supervision_masks = batch['supervision_masks'].to(self.device, dtype=model_dtype)  # [B, V_sup, 1, H, W]
-        supervision_transforms = batch['supervision_transforms'].to(self.device, dtype=torch.float32)  # [B, V_sup, 4, 4]
-
-        B = input_images.shape[0]
-        V_in = input_images.shape[1]  # 4
-        V_sup = supervision_images.shape[1]  # 4
-        V_total = V_in + V_sup  # 8
-        opt = self._raw_model.opt
-
-        # 从input_images提取RGB作为输入视图的GT（去掉ImageNet归一化）
-        # input_images: [B, 4, 9, H, W]，前3个通道是归一化后的RGB
-        input_rgb = input_images[:, :, :3, :, :]  # [B, 4, 3, H, W]
-
-        # 反归一化：恢复到[0, 1]范围
-        IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], device=self.device, dtype=model_dtype).view(1, 1, 3, 1, 1)
-        IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], device=self.device, dtype=model_dtype).view(1, 1, 3, 1, 1)
-        input_rgb = input_rgb * IMAGENET_STD + IMAGENET_MEAN  # [B, 4, 3, H, W]
-
-        # 输入视图的mask（从rays的alpha通道推断，或者全1）
-        # 简化处理：假设输入视图的mask都是1（白色背景）
-        input_masks = torch.ones(B, V_in, 1, input_rgb.shape[3], input_rgb.shape[4],
-                                 device=self.device, dtype=model_dtype)
-
-        # 合并输入GT和监督GT
-        all_images = torch.cat([input_rgb, supervision_images], dim=1)  # [B, 8, 3, H, W]
-        all_masks = torch.cat([input_masks, supervision_masks], dim=1)  # [B, 8, 1, H, W]
-        all_transforms = torch.cat([input_transforms, supervision_transforms], dim=1)  # [B, 8, 4, 4]
-
-        # 调整图像和mask尺寸以匹配模型输出尺寸
-        H, W = all_images.shape[3], all_images.shape[4]
-        if H != opt.output_size or W != opt.output_size:
-            all_images = torch.nn.functional.interpolate(
-                all_images.view(B * V_total, 3, H, W),
-                size=(opt.output_size, opt.output_size),
-                mode='bilinear',
-                align_corners=False
-            ).view(B, V_total, 3, opt.output_size, opt.output_size)
-            all_masks = torch.nn.functional.interpolate(
-                all_masks.view(B * V_total, 1, H, W),
-                size=(opt.output_size, opt.output_size),
-                mode='bilinear',
-                align_corners=False
-            ).view(B, V_total, 1, opt.output_size, opt.output_size)
-
-        # 准备投影矩阵
-        tan_half_fov = np.tan(0.5 * np.deg2rad(opt.fovy))
-        proj_matrix = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
-        proj_matrix[0, 0] = 1 / tan_half_fov
-        proj_matrix[1, 1] = 1 / tan_half_fov
-        proj_matrix[2, 2] = (opt.zfar + opt.znear) / (opt.zfar - opt.znear)
-        proj_matrix[3, 2] = -(opt.zfar * opt.znear) / (opt.zfar - opt.znear)
-        proj_matrix[2, 3] = 1
-
-        # 使用数据集返回的归一化后的transforms计算相机参数
-        # transforms是OpenGL c2w，需要转成COLMAP格式
-        cam_views = []
-        cam_view_projs = []
-        cam_positions = []
-
-        for b in range(B):
-            batch_views = []
-            batch_vps = []
-            batch_pos = []
-            for v in range(V_total):
-                cam_pose = all_transforms[b, v]  # [4, 4] OpenGL c2w
-
-                # OpenGL → COLMAP
-                cam_pose_colmap = cam_pose.clone()
-                cam_pose_colmap[:3, 1:3] *= -1
-
-                cam_view = torch.inverse(cam_pose_colmap).T  # [4, 4]
-                cam_view_proj = cam_view @ proj_matrix  # [4, 4]
-                cam_pos = -cam_pose_colmap[:3, 3]  # [3]
-
-                batch_views.append(cam_view)
-                batch_vps.append(cam_view_proj)
-                batch_pos.append(cam_pos)
-
-            cam_views.append(torch.stack(batch_views))
-            cam_view_projs.append(torch.stack(batch_vps))
-            cam_positions.append(torch.stack(batch_pos))
-
-        cam_view = torch.stack(cam_views).to(dtype=model_dtype)       # [B, 8, 4, 4]
-        cam_view_proj = torch.stack(cam_view_projs).to(dtype=model_dtype)  # [B, 8, 4, 4]
-        cam_pos = torch.stack(cam_positions).to(dtype=model_dtype)    # [B, 8, 3]
-
-        data = {
-            'input': input_images,
-            'images_output': all_images,
-            'masks_output': all_masks,
-            'cam_view': cam_view,
-            'cam_view_proj': cam_view_proj,
-            'cam_pos': cam_pos,
-        }
-
-        return data
+        return prepare_lgm_data(batch, self.model, self.device)
 
     def _forward_and_loss(self, data):
         """
@@ -496,4 +391,137 @@ class AutoFineTuner:
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
         print(f"[INFO] 检查点已从 {load_path} 加载")
-        return checkpoint
+
+
+def run_attack(config, target_train_loader, target_val_loader, source_val_loader,
+               save_dir, attack_epochs=None, num_render=3, eval_every_steps=10,
+               model_resume_override=None, phase_name="Attack"):
+    """
+    一行运行攻击阶段。
+
+    加载模型 → LoRA 微调 → 周期性评估 → 渲染样本 → 清理 GPU。
+
+    Args:
+        config: 完整配置字典
+        target_train_loader: target 训练数据加载器
+        target_val_loader: target 验证数据加载器
+        source_val_loader: source 验证数据加载器
+        save_dir: 渲染结果保存目录
+        attack_epochs: 攻击 epoch 数（默认从 config 读取）
+        num_render: 渲染样本数
+        eval_every_steps: 每隔多少 step 评估一次
+        model_resume_override: 覆盖 model.resume（如 "tag:xxx"）
+        phase_name: 阶段名称（用于日志）
+
+    Returns:
+        (step_history, source_metrics, target_metrics):
+            step_history — [{step, epoch, loss, lpips, masked_lpips, ...}, ...]
+            source_metrics — 攻击前 source 指标 {psnr, lpips}（masked）
+            target_metrics — 攻击后 target 指标 {psnr, lpips}（masked）
+    """
+    import copy
+    from models import ModelManager
+    from evaluation import Evaluator
+
+    if attack_epochs is None:
+        attack_epochs = config['training'].get('attack_epochs', 5)
+
+    print(f"\n{'='*80}")
+    print(f"  {phase_name}")
+    print(f"  Attack epochs: {attack_epochs}, eval_every_steps: {eval_every_steps}")
+    print(f"{'='*80}")
+
+    attack_config = copy.deepcopy(config)
+    if model_resume_override:
+        attack_config['model']['resume'] = model_resume_override
+    model_mgr = ModelManager(attack_config)
+    model_mgr.setup(device='cuda')
+    model = model_mgr.model
+
+    training_cfg = config['training']
+    finetuner = AutoFineTuner(
+        model=model, device='cuda',
+        lr=training_cfg['lr'],
+        weight_decay=training_cfg['weight_decay'],
+        gradient_clip=training_cfg['gradient_clip'],
+        mixed_precision='no',
+        lambda_lpips=training_cfg.get('lambda_lpips', 1.0),
+        gradient_accumulation_steps=training_cfg['gradient_accumulation_steps'],
+    )
+
+    evaluator = Evaluator(model, device='cuda')
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 攻击前评估 source（LoRA 模式下禁用 adapter 测底座能力）
+    print(f"  评估攻击前的 source 质量...")
+    has_lora = hasattr(model, 'disable_adapter_layers')
+    if has_lora:
+        model.disable_adapter_layers()
+    source_metrics = evaluator.evaluate_on_loader(source_val_loader)
+    if has_lora:
+        model.enable_adapter_layers()
+    print(f"  攻击前 Source PSNR: {source_metrics['psnr']:.2f}, "
+          f"LPIPS: {source_metrics['lpips']:.4f}")
+
+    evaluator.render_samples(source_val_loader,
+                             os.path.join(save_dir, 'source_renders'),
+                             prefix='source_', num_samples=num_render)
+
+    step_history = []
+    global_step = 0
+    interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
+    interval_count = 0
+    total_steps = attack_epochs * len(target_train_loader)
+
+    for epoch in range(1, attack_epochs + 1):
+        model.train()
+        for batch in target_train_loader:
+            loss_dict, updated = finetuner.train_step(batch)
+            global_step += 1
+
+            interval_loss += loss_dict['loss']
+            interval_lpips += loss_dict.get('loss_lpips', 0)
+            interval_masked_psnr += loss_dict.get('masked_psnr', 0)
+            interval_masked_lpips += loss_dict.get('masked_lpips', 0)
+            interval_count += 1
+
+            if global_step % eval_every_steps == 0 or global_step == total_steps:
+                metrics = {
+                    'step': global_step,
+                    'epoch': epoch,
+                    'loss': interval_loss / interval_count,
+                    'lpips': interval_lpips / interval_count,
+                    'masked_lpips': interval_masked_lpips / interval_count,
+                    'masked_psnr': interval_masked_psnr / interval_count,
+                }
+                step_history.append(metrics)
+
+                print(f"  [{phase_name}] Step {global_step}/{total_steps} (Ep{epoch}) - "
+                      f"Loss: {metrics['loss']:.4f}, "
+                      f"LPIPS: {metrics['masked_lpips']:.4f}, "
+                      f"PSNR: {metrics['masked_psnr']:.2f}")
+
+                interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
+                interval_count = 0
+
+        # epoch 结束，flush 残余梯度
+        if finetuner._accumulation_counter % finetuner.gradient_accumulation_steps != 0:
+            if finetuner.gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), finetuner.gradient_clip)
+            finetuner.optimizer.step()
+            finetuner.optimizer.zero_grad()
+
+    evaluator.render_samples(target_val_loader,
+                             os.path.join(save_dir, 'target_renders'),
+                             prefix='target_', num_samples=num_render)
+
+    # 攻击后评估 target
+    print(f"  评估攻击后的 target 质量...")
+    target_metrics = evaluator.evaluate_on_loader(target_val_loader)
+    print(f"  攻击后 Target PSNR: {target_metrics['psnr']:.2f}, "
+          f"LPIPS: {target_metrics['lpips']:.4f}")
+
+    del finetuner, evaluator, model, model_mgr
+    torch.cuda.empty_cache()
+
+    return step_history, source_metrics, target_metrics

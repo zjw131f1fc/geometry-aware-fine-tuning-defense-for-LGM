@@ -120,8 +120,8 @@ attack:
   malicious_content:
     malicious_categories:
       - knife
-      - hammer
-      - scissor
+      # - hammer
+      # - scissor
 
 # 防御配置（GeoTrap）
 defense:
@@ -140,13 +140,13 @@ defense:
   # dynamic 全部关闭（二阶导数开销大，且静态 trap + 耦合已足够）
   trap_losses:
     position:
-      static: true
+      static: false
       dynamic: false
     scale:
       static: true
       dynamic: false
     opacity:
-      static: false
+      static: true
       dynamic: false
     rotation:
       static: false

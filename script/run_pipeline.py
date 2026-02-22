@@ -25,19 +25,19 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
-import copy
-# import hashlib  # 延迟加载：只在 compute_config_hash() 中使用
-# import shutil  # 延迟加载：只在 save_defense_model() 中使用
 import torch
-import numpy as np
 from datetime import datetime
 
 from project_core import ConfigManager
 from models import ModelManager
 from data import DataManager
-from training import DefenseTrainer, AutoFineTuner
+from training import load_or_train_defense, run_attack
 from evaluation import Evaluator
-# from tools import set_seed  # 延迟加载：只在 main() 中使用一次
+from tools import (
+    BASELINE_CACHE_DIR, compute_baseline_hash,
+    load_baseline_cache, save_baseline_cache, copy_cached_renders,
+    plot_pipeline_results,
+)
 
 
 def parse_args():
@@ -64,430 +64,6 @@ def parse_args():
                         help='每隔多少 step 评估一次指标')
     return parser.parse_args()
 
-
-# ---------------------------------------------------------------------------
-# 辅助函数
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def eval_source(model, source_val_loader, device):
-    """评估 source 质量，返回 {psnr, lpips, masked_psnr}。
-
-    LoRA 模式下自动禁用 adapter，只测底座模型的 source 能力。
-    """
-    model.eval()
-
-    # 先创建 finetuner（需要可训练参数来初始化 optimizer）
-    finetuner = AutoFineTuner(
-        model=model, device=device,
-        lr=1e-4, weight_decay=0, gradient_clip=1.0,
-        mixed_precision='no', gradient_accumulation_steps=1,
-    )
-
-    # LoRA 模式：创建完 finetuner 后再禁用 adapter，只测底座模型
-    has_lora = hasattr(model, 'disable_adapter_layers')
-    if has_lora:
-        model.disable_adapter_layers()
-
-    total_psnr, total_lpips, total_masked_psnr, n = 0, 0, 0, 0
-    for batch in source_val_loader:
-        data = finetuner._prepare_data(batch)
-        results = model.forward(data, step_ratio=1.0)
-        total_psnr += results.get('psnr', torch.tensor(0.0)).item()
-        total_lpips += results.get('loss_lpips', torch.tensor(0.0)).item()
-
-        # Masked PSNR：只在物体区域计算
-        pred_images = results.get('images_pred')
-        gt_images = data['images_output']
-        gt_masks = data['masks_output']
-        if pred_images is not None and gt_masks is not None:
-            mask_flat = gt_masks.reshape(-1)
-            pred_flat = pred_images.reshape(-1, 3)
-            gt_flat = gt_images.reshape(-1, 3)
-            mask_sum = mask_flat.sum().clamp(min=1.0)
-            masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
-            masked_psnr = -10 * torch.log10(masked_mse + 1e-8)
-            total_masked_psnr += masked_psnr.item()
-
-        n += 1
-    del finetuner
-
-    # 恢复 LoRA adapter
-    if has_lora:
-        model.enable_adapter_layers()
-
-    return {
-        'source_psnr': total_psnr / max(n, 1),
-        'source_lpips': total_lpips / max(n, 1),
-        'source_masked_psnr': total_masked_psnr / max(n, 1),
-    }
-
-
-@torch.no_grad()
-def render_samples(model, evaluator, loader, save_dir, prefix='', num_samples=3):
-    """渲染 GT vs Pred 对比图"""
-    model.eval()
-    for i, batch in enumerate(loader):
-        if i >= num_samples:
-            break
-        input_images = batch['input_images'].to('cuda')
-
-        # 优先使用 transforms（归一化后的相机姿态）
-        input_transforms = batch.get('input_transforms')
-        supervision_transforms = batch.get('supervision_transforms')
-
-        if input_transforms is not None and supervision_transforms is not None:
-            # 合并输入和监督视图的 transforms（8个视角）
-            all_transforms = torch.cat([
-                input_transforms.to('cuda'),
-                supervision_transforms.to('cuda')
-            ], dim=1)  # [B, 8, 4, 4]
-
-            # 提取输入视图的 GT（从 input_images 前3通道反归一化）
-            input_rgb = input_images[:, :, :3, :, :]  # [B, 4, 3, H, W]
-            IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], device='cuda').view(1, 1, 3, 1, 1)
-            IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], device='cuda').view(1, 1, 3, 1, 1)
-            input_rgb = input_rgb * IMAGENET_STD + IMAGENET_MEAN
-
-            # 合并输入 GT 和监督 GT
-            supervision_images = batch.get('supervision_images')
-            if supervision_images is not None:
-                supervision_images = supervision_images.to('cuda')
-                all_gt_images = torch.cat([input_rgb, supervision_images], dim=1)  # [B, 8, 3, H, W]
-            else:
-                all_gt_images = input_rgb
-
-            gaussians = evaluator.generate_gaussians(input_images)
-            evaluator.render_and_save(
-                gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
-                gt_images=all_gt_images, transforms=all_transforms,
-            )
-        else:
-            # 降级方案：使用 elevations/azimuths
-            gt_images = batch.get('supervision_images')
-            if gt_images is not None:
-                gt_images = gt_images.to('cuda')
-            elevations = batch.get('supervision_elevations')
-            azimuths = batch.get('supervision_azimuths')
-            if elevations is not None:
-                elevations = elevations.to('cuda')
-            if azimuths is not None:
-                azimuths = azimuths.to('cuda')
-            gaussians = evaluator.generate_gaussians(input_images)
-            evaluator.render_and_save(
-                gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
-                gt_images=gt_images, elevations=elevations, azimuths=azimuths,
-            )
-
-
-def run_attack_phase(config, phase_name, target_train_loader, target_val_loader,
-                     source_val_loader, save_dir, attack_epochs, num_render,
-                     eval_every_steps=10, model_resume_override=None):
-    """
-    运行一个攻击阶段，返回 per-step 指标列表。
-
-    每隔 eval_every_steps 个 step 收集一次指标（训练区间平均 + source 评估）。
-
-    Returns:
-        step_history: [{step, epoch, loss, psnr, lpips, source_psnr, ...}, ...]
-    """
-    print(f"\n{'='*80}")
-    print(f"  {phase_name}")
-    print(f"  Attack epochs: {attack_epochs}, eval_every_steps: {eval_every_steps}")
-    print(f"{'='*80}")
-
-    # 加载模型
-    attack_config = copy.deepcopy(config)
-    if model_resume_override:
-        attack_config['model']['resume'] = model_resume_override
-    model_mgr = ModelManager(attack_config)
-    model_mgr.setup(device='cuda')
-    model = model_mgr.model
-
-    training_cfg = config['training']
-    finetuner = AutoFineTuner(
-        model=model, device='cuda',
-        lr=training_cfg['lr'],
-        weight_decay=training_cfg['weight_decay'],
-        gradient_clip=training_cfg['gradient_clip'],
-        mixed_precision='no',
-        lambda_lpips=training_cfg.get('lambda_lpips', 1.0),
-        gradient_accumulation_steps=training_cfg['gradient_accumulation_steps'],
-    )
-
-    evaluator = Evaluator(model, device='cuda')
-    os.makedirs(save_dir, exist_ok=True)
-
-    # 攻击前评估 source 质量（记录防御模型的原始 source 能力）
-    print(f"  评估攻击前的 source 质量...")
-    initial_source_metrics = eval_source(model, source_val_loader, 'cuda')
-    print(f"  攻击前 Source PSNR: {initial_source_metrics['source_psnr']:.2f}, "
-          f"Masked PSNR: {initial_source_metrics['source_masked_psnr']:.2f}")
-
-    # 攻击前渲染 source（展示模型原始 source 能力）
-    render_samples(model, evaluator, source_val_loader,
-                   os.path.join(save_dir, 'source_renders'),
-                   prefix='source_', num_samples=num_render)
-
-    step_history = []
-    global_step = 0
-    interval_loss, interval_lpips, interval_psnr, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0, 0
-    interval_count = 0
-    total_steps = attack_epochs * len(target_train_loader)
-
-    for epoch in range(1, attack_epochs + 1):
-        model.train()
-        for batch in target_train_loader:
-            loss_dict, updated = finetuner.train_step(batch)
-            global_step += 1
-
-            interval_loss += loss_dict['loss']
-            interval_lpips += loss_dict.get('loss_lpips', 0)
-            interval_psnr += loss_dict.get('psnr', 0)
-            interval_masked_psnr += loss_dict.get('masked_psnr', 0)
-            interval_masked_lpips += loss_dict.get('masked_lpips', 0)
-            interval_count += 1
-
-            if global_step % eval_every_steps == 0 or global_step == total_steps:
-                metrics = {
-                    'step': global_step,
-                    'epoch': epoch,
-                    'loss': interval_loss / interval_count,
-                    'loss_lpips': interval_lpips / interval_count,
-                    'masked_lpips': interval_masked_lpips / interval_count,
-                    'psnr': interval_psnr / interval_count,
-                    'masked_psnr': interval_masked_psnr / interval_count,
-                }
-                src = eval_source(model, source_val_loader, 'cuda')
-                metrics.update(src)
-                step_history.append(metrics)
-
-                print(f"  [{phase_name}] Step {global_step}/{total_steps} (Ep{epoch}) - "
-                      f"Loss: {metrics['loss']:.4f}, LPIPS: {metrics['loss_lpips']:.4f}, "
-                      f"MaskedLPIPS: {metrics['masked_lpips']:.4f}, "
-                      f"MaskedPSNR: {metrics['masked_psnr']:.2f}, "
-                      f"SrcMaskedPSNR: {src['source_masked_psnr']:.2f}")
-
-                interval_loss, interval_lpips, interval_psnr, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0, 0
-                interval_count = 0
-
-        # epoch 结束，flush 残余梯度
-        if finetuner._accumulation_counter % finetuner.gradient_accumulation_steps != 0:
-            if finetuner.gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), finetuner.gradient_clip)
-            finetuner.optimizer.step()
-            finetuner.optimizer.zero_grad()
-
-    # 最后渲染 target
-    render_samples(model, evaluator, target_val_loader,
-                   os.path.join(save_dir, 'target_renders'),
-                   prefix='target_', num_samples=num_render)
-
-    del finetuner, evaluator, model, model_mgr
-    torch.cuda.empty_cache()
-
-    return step_history, initial_source_metrics
-
-
-def run_defense_phase(config, save_dir, defense_epochs, target_layers):
-    """
-    运行防御训练阶段，返回 per-epoch 指标列表。
-
-    Returns:
-        epoch_history: [{train_metrics..., val_metrics...}, ...]
-    """
-    print(f"\n{'='*80}")
-    print(f"  Defense Training")
-    print(f"  Defense epochs: {defense_epochs}")
-    print(f"{'='*80}")
-
-    trainer = DefenseTrainer(config)
-    trainer.setup(device='cuda', target_layers=target_layers)
-
-    epoch_history = []
-    global_step = 0
-
-    validate_every = 5
-    for epoch in range(1, defense_epochs + 1):
-        train_metrics, global_step = trainer.train_epoch(epoch, global_step)
-
-        combined = {f"train_{k}": v for k, v in train_metrics.items()}
-        combined['epoch'] = epoch
-
-        do_val = (epoch % validate_every == 0) or (epoch == defense_epochs)
-        if do_val:
-            val_metrics = trainer.validate()
-            combined.update({f"val_{k}": v for k, v in val_metrics.items()})
-
-            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-                  f"Loss: {train_metrics['loss']:.4f}, "
-                  f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
-            for k in ('position_static', 'scale_static', 'opacity_static',
-                      'coupling_value', 'grad_cosine_sim'):
-                if k in val_metrics:
-                    print(f"    {k}: {val_metrics[k]:.4f}")
-        else:
-            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-                  f"Loss: {train_metrics['loss']:.4f}")
-
-        epoch_history.append(combined)
-
-        if epoch == defense_epochs:
-            trainer.save_checkpoint(save_dir, epoch)
-
-    del trainer
-    torch.cuda.empty_cache()
-
-    return epoch_history
-
-
-# ---------------------------------------------------------------------------
-# 绘图
-# ---------------------------------------------------------------------------
-
-def plot_results(baseline_history, postdef_history, defense_history, save_path):
-    """绘制 2×2 对比图，攻击阶段横轴为 step"""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
-    steps_b = [m['step'] for m in baseline_history]
-    steps_p = [m['step'] for m in postdef_history]
-    epochs_d = list(range(1, len(defense_history) + 1))
-
-    # (0,0) Target Masked LPIPS (主要指标)
-    ax = axes[0, 0]
-    ax.plot(steps_b, [m.get('masked_lpips', 0) for m in baseline_history],
-            'b-o', label='Baseline Attack', markersize=3)
-    ax.plot(steps_p, [m.get('masked_lpips', 0) for m in postdef_history],
-            'r-s', label='Post-Defense Attack', markersize=3)
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Masked LPIPS')
-    ax.set_title('Target Masked LPIPS (↑ = defense effective)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # (0,1) Target Masked PSNR
-    ax = axes[0, 1]
-    ax.plot(steps_b, [m.get('masked_psnr', 0) for m in baseline_history],
-            'b-o', label='Baseline Attack', markersize=3)
-    ax.plot(steps_p, [m.get('masked_psnr', 0) for m in postdef_history],
-            'r-s', label='Post-Defense Attack', markersize=3)
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Masked PSNR (dB)')
-    ax.set_title('Target Masked PSNR (↓ = defense effective)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # (1,0) Source PSNR
-    ax = axes[1, 0]
-    ax.plot(steps_b, [m.get('source_psnr', 0) for m in baseline_history],
-            'b-o', label='Baseline Attack', markersize=3)
-    ax.plot(steps_p, [m.get('source_psnr', 0) for m in postdef_history],
-            'r-s', label='Post-Defense Attack', markersize=3)
-    ax.set_xlabel('Step')
-    ax.set_ylabel('PSNR (dB)')
-    ax.set_title('Source PSNR (should stay similar)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # (1,1) Defense Training Metrics
-    ax = axes[1, 1]
-    trap_keys = [k for k in defense_history[0] if k.startswith('val_') and 'static' in k]
-    for k in trap_keys:
-        label = k.replace('val_', '')
-        ax.plot(epochs_d, [m.get(k, 0) for m in defense_history],
-                '-o', label=label, markersize=3)
-    ax.set_xlabel('Defense Epoch')
-    ax.set_ylabel('Trap Loss (log scale)')
-    ax.set_title('Defense Training')
-    ax2 = ax.twinx()
-    distill_vals = [m.get('val_source_distill_mse', 0) for m in defense_history]
-    ax2.plot(epochs_d, distill_vals, 'k--', label='distill_mse', alpha=0.7)
-    ax2.set_ylabel('Distill MSE')
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"[Pipeline] 对比图已保存: {save_path}")
-
-
-# ---------------------------------------------------------------------------
-# Baseline 缓存
-# ---------------------------------------------------------------------------
-
-BASELINE_CACHE_DIR = 'output/baseline_cache'
-
-
-def compute_baseline_hash(config, attack_epochs, num_render):
-    """根据影响 baseline 结果的所有配置计算 SHA256 哈希。"""
-    import hashlib  # 延迟加载
-
-    key_parts = {
-        'model_resume': config['model']['resume'],
-        'model_size': config['model']['size'],
-        'lora': config.get('lora', {}),
-        'training': {
-            'lr': config['training']['lr'],
-            'weight_decay': config['training']['weight_decay'],
-            'gradient_clip': config['training']['gradient_clip'],
-            'gradient_accumulation_steps': config['training']['gradient_accumulation_steps'],
-            'lambda_lpips': config['training'].get('lambda_lpips', 1.0),
-        },
-        'attack_epochs': attack_epochs,
-        'data_target': config['data']['target'],
-        'data_shared': {
-            'root': config['data']['root'],
-            'view_selector': config['data'].get('view_selector'),
-            'angle_offset': config['data'].get('angle_offset'),
-            'num_supervision_views': config['data'].get('num_supervision_views'),
-            'samples_per_object': config['data'].get('samples_per_object'),
-        },
-        'data_source': config['data'].get('source', {}),
-        'seed': config['misc']['seed'],
-        'num_render': num_render,
-    }
-    raw = json.dumps(key_parts, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def load_baseline_cache(cache_dir):
-    """尝试加载缓存的 baseline 结果。返回 (history, True) 或 (None, False)。"""
-    meta_path = os.path.join(cache_dir, 'baseline_meta.json')
-    if not os.path.exists(meta_path):
-        return None, False
-    with open(meta_path, 'r') as f:
-        meta = json.load(f)
-    print(f"[Cache] 命中 baseline 缓存: {cache_dir}")
-    return meta['baseline_history'], True
-
-
-def save_baseline_cache(cache_dir, history):
-    """保存 baseline 结果到缓存目录。"""
-    os.makedirs(cache_dir, exist_ok=True)
-    meta = {'baseline_history': history}
-    with open(os.path.join(cache_dir, 'baseline_meta.json'), 'w') as f:
-        json.dump(meta, f, indent=2, default=str)
-    print(f"[Cache] baseline 结果已缓存: {cache_dir}")
-
-
-def copy_cached_renders(cache_dir, dest_dir):
-    """从缓存复制渲染图片到当前 pipeline 工作目录。"""
-    import shutil  # 延迟加载
-
-    for sub in ('source_renders', 'target_renders'):
-        src = os.path.join(cache_dir, sub)
-        dst = os.path.join(dest_dir, sub)
-        if os.path.isdir(src):
-            if os.path.exists(dst):
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
 
 
 # ---------------------------------------------------------------------------
@@ -596,51 +172,48 @@ def main():
     phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
 
     baseline_history, cache_hit = load_baseline_cache(cache_dir)
-    baseline_initial_source = None
+    baseline_source = None
+    baseline_target = None
     if cache_hit:
         # 复用缓存，但需要重新评估初始 source（缓存中没有）
-        # 加载基线模型评估
         temp_mgr = ModelManager(config)
         temp_mgr.setup(device='cuda')
-        baseline_initial_source = eval_source(temp_mgr.model, source_val_loader, 'cuda')
-        del temp_mgr
+        temp_evaluator = Evaluator(temp_mgr.model, device='cuda')
+        baseline_source = temp_evaluator.evaluate_on_loader(source_val_loader)
+        del temp_evaluator, temp_mgr
         torch.cuda.empty_cache()
-        # 复制渲染图片到当前 workspace
         copy_cached_renders(cache_dir, phase1_dir)
     else:
-        baseline_history, baseline_initial_source = run_attack_phase(
-            config, "Phase 1: Baseline Attack",
-            target_train_loader, target_val_loader, source_val_loader,
+        baseline_history, baseline_source, baseline_target = run_attack(
+            config, target_train_loader, target_val_loader, source_val_loader,
             save_dir=phase1_dir,
             attack_epochs=attack_epochs,
             num_render=args.num_render,
             eval_every_steps=args.eval_every_steps,
+            phase_name="Phase 1: Baseline Attack",
         )
-        # 保存到缓存
         save_baseline_cache(cache_dir, baseline_history)
         copy_cached_renders(phase1_dir, cache_dir)
 
     # ========== Phase 2: Defense Training ==========
-    defense_history = run_defense_phase(
-        config,
+    defense_tag, defense_history = load_or_train_defense(
+        config, device='cuda',
         save_dir=os.path.join(workspace, 'phase2_defense'),
-        defense_epochs=defense_epochs,
-        target_layers=target_layers,
     )
 
     # ========== Phase 3: Post-Defense Attack ==========
-    postdef_history, postdef_initial_source = run_attack_phase(
-        config, "Phase 3: Post-Defense Attack",
-        target_train_loader, target_val_loader, source_val_loader,
+    postdef_history, postdef_source, postdef_target = run_attack(
+        config, target_train_loader, target_val_loader, source_val_loader,
         save_dir=os.path.join(workspace, 'phase3_postdefense_attack'),
         attack_epochs=attack_epochs,
         num_render=args.num_render,
         eval_every_steps=args.eval_every_steps,
-        model_resume_override=f"tag:{tag}",
+        model_resume_override=f"tag:{defense_tag}",
+        phase_name="Phase 3: Post-Defense Attack",
     )
 
     # ========== Phase 4: 绘图 + 保存结果 ==========
-    plot_results(
+    plot_pipeline_results(
         baseline_history, postdef_history, defense_history,
         save_path=os.path.join(workspace, 'pipeline_result.png'),
     )
@@ -658,34 +231,40 @@ def main():
             'target_layers': target_layers,
         },
         'baseline_attack': baseline_history,
+        'baseline_source': baseline_source,
+        'baseline_target': baseline_target,
         'defense_training': defense_history,
         'postdefense_attack': postdef_history,
+        'postdefense_source': postdef_source,
+        'postdefense_target': postdef_target,
     }
     metrics_path = os.path.join(workspace, 'metrics.json')
     with open(metrics_path, 'w') as f:
         json.dump(all_metrics, f, indent=2, default=str)
 
-    # 汇总
-    b_final = baseline_history[-1] if baseline_history else {}
-    p_final = postdef_history[-1] if postdef_history else {}
+    # 汇总：4 个核心指标
     print(f"\n{'='*80}")
     print("Pipeline 结果汇总")
     print(f"{'='*80}")
     print(f"{'指标':<20} {'Baseline':>10} {'Post-Defense':>12} {'Delta':>10}")
     print("-" * 55)
 
-    # Target 指标：使用攻击后的最终值
-    for key, label in [('psnr', 'Target PSNR'), ('masked_psnr', 'Target MaskedPSNR'),
-                        ('loss_lpips', 'Target LPIPS'), ('masked_lpips', 'Target MaskedLPIPS')]:
-        bv = b_final.get(key, 0)
-        pv = p_final.get(key, 0)
+    # Target 指标（攻击后）：LPIPS↑ = 防御有效，PSNR↓ = 防御有效
+    bt = baseline_target or {}
+    pt = postdef_target or {}
+    for key, label in [('lpips', 'Target LPIPS↑'),
+                        ('psnr', 'Target PSNR↓')]:
+        bv = bt.get(key, 0)
+        pv = pt.get(key, 0)
         print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
 
-    # Source 指标：使用攻击前的初始值（反映防御对 source 能力的影响）
-    for key, label in [('source_psnr', 'Source PSNR'), ('source_masked_psnr', 'Source MaskedPSNR'),
-                        ('source_lpips', 'Source LPIPS')]:
-        bv = baseline_initial_source.get(key, 0) if baseline_initial_source else 0
-        pv = postdef_initial_source.get(key, 0) if postdef_initial_source else 0
+    # Source 指标（防御后攻击前）：PSNR↑ = 保持能力，LPIPS↓ = 保持能力
+    bs = baseline_source or {}
+    ps = postdef_source or {}
+    for key, label in [('psnr', 'Source PSNR↑'),
+                        ('lpips', 'Source LPIPS↓')]:
+        bv = bs.get(key, 0)
+        pv = ps.get(key, 0)
         print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
 
     print("-" * 55)

@@ -2,8 +2,7 @@
 Training 模块 - 训练器
 """
 
-from .attack_trainer import AttackTrainer
-from .defense_trainer import DefenseTrainer
-from .finetuner import AutoFineTuner
+from .defense_trainer import DefenseTrainer, load_or_train_defense
+from .finetuner import AutoFineTuner, run_attack
 
-__all__ = ['AttackTrainer', 'DefenseTrainer', 'AutoFineTuner']
+__all__ = ['DefenseTrainer', 'AutoFineTuner', 'load_or_train_defense', 'run_attack']

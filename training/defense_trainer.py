@@ -1082,3 +1082,82 @@ class DefenseTrainer:
                 print(f"[DefenseTrainer] 提示: 未配置 defense.tag，跳过注册。"
                       f"可在 config 中添加 defense.tag 自动注册模型")
 
+
+def load_or_train_defense(config, device='cuda', save_dir=None):
+    """
+    一行加载或训练防御模型。
+
+    根据配置自动计算 hash tag，如果 registry 中已存在则跳过训练，否则触发训练并注册。
+
+    Args:
+        config: 完整配置字典（会被修改 defense.tag）
+        device: 训练设备
+        save_dir: checkpoint 保存目录（默认自动生成）
+
+    Returns:
+        (tag, defense_history):
+            tag — hash 字符串，用于 model_resume_override=f"tag:{tag}"
+            defense_history — 训练历史列表，缓存命中时为 None
+    """
+    import copy
+    from tools.utils import compute_defense_hash
+    from tools.model_registry import REGISTRY_DIR
+
+    config = copy.deepcopy(config)
+    tag = compute_defense_hash(config)
+    model_path = REGISTRY_DIR / tag / "model.pth"
+
+    if model_path.exists():
+        print(f"[Defense] 缓存命中: tag={tag}")
+        print(f"[Defense] 模型路径: {model_path}")
+        return tag, None
+
+    print(f"[Defense] 缓存未命中: tag={tag}，开始训练...")
+    config['defense']['tag'] = tag
+
+    target_layers = config.get('defense', {}).get('target_layers')
+    defense_epochs = config['training'].get('defense_epochs', 25)
+
+    if save_dir is None:
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        workspace = config.get('misc', {}).get('workspace', './output/workspace')
+        save_dir = os.path.join(workspace, f"defense_{tag}_{timestamp}")
+
+    trainer = DefenseTrainer(config)
+    trainer.setup(device=device, target_layers=target_layers)
+
+    epoch_history = []
+    global_step = 0
+    validate_every = 5
+
+    for epoch in range(1, defense_epochs + 1):
+        train_metrics, global_step = trainer.train_epoch(epoch, global_step)
+        combined = {f"train_{k}": v for k, v in train_metrics.items()}
+        combined['epoch'] = epoch
+
+        do_val = (epoch % validate_every == 0) or (epoch == defense_epochs)
+        if do_val:
+            val_metrics = trainer.validate()
+            combined.update({f"val_{k}": v for k, v in val_metrics.items()})
+            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                  f"Loss: {train_metrics['loss']:.4f}, "
+                  f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+            for k in ('position_static', 'scale_static', 'opacity_static',
+                      'coupling_value', 'grad_cosine_sim'):
+                if k in val_metrics:
+                    print(f"    {k}: {val_metrics[k]:.4f}")
+        else:
+            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                  f"Loss: {train_metrics['loss']:.4f}")
+
+        epoch_history.append(combined)
+
+        if epoch == defense_epochs:
+            trainer.save_checkpoint(save_dir, epoch)
+
+    del trainer
+    torch.cuda.empty_cache()
+
+    return tag, epoch_history
+
