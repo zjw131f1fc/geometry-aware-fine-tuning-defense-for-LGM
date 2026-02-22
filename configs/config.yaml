@@ -24,7 +24,7 @@ data:
   source:
     dataset: objaverse  # objaverse 或 omni
     max_samples: 400    # objaverse 按总数限制（无类别概念）
-    samples_per_object: 1  # 蒸馏只需 1 组视图，不需要数据增强
+    samples_per_object: 3  # 蒸馏只需 1 组视图，不需要数据增强
 
   # Target数据（攻击训练用）
   # 物体按名称排序，attack 用 offset=0 的前 N 个物体
@@ -34,7 +34,7 @@ data:
       - knife
       # - hammer
       # - scissor
-    max_samples_per_category: 13  # 攻击用每类前 15 个物体
+    max_samples_per_category: 20  # 攻击用每类前 15 个物体
     object_offset: 0              # 从第 0 个开始
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
@@ -60,7 +60,7 @@ training:
 
   # 攻击和防御各自的 epoch 数
   attack_epochs: 2     # 攻击训练 epoch 数
-  defense_epochs: 60   # 防御训练 epoch 数
+  defense_epochs: 30   # 防御训练 epoch 数
 
 # 攻击场景配置
 # attack:
@@ -131,8 +131,8 @@ defense:
   # 防御专用 target 数据（与攻击用不同物体，同类别不同分布）
   # 物体按名称排序，defense 用 offset=15 之后的物体，与 attack 的 offset=0 不重叠
   target_data:
-    max_samples_per_category: 7   # 每类取 5 个物体（少量即可）
-    object_offset: 13             # 跳过前 15 个（留给 attack）
+    max_samples_per_category: 6   # 每类取 5 个物体（少量即可）
+    object_offset: 20             # 跳过前 15 个（留给 attack）
     samples_per_object: 4         # 每个物体取 3 组正交视图（不取完）
 
   # 陷阱损失配置

@@ -8,6 +8,7 @@ output/
 .vscode
 *__pycache__/
 experiments_output/
+docs
 
 # 临时文件和日志
 *.log
