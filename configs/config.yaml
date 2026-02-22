@@ -32,8 +32,8 @@ data:
     dataset: omni
     categories:
       - knife
-      - hammer
-      - scissor
+      # - hammer
+      # - scissor
     max_samples_per_category: 13  # 攻击用每类前 15 个物体
     object_offset: 0              # 从第 0 个开始
 
@@ -63,65 +63,65 @@ training:
   defense_epochs: 60   # 防御训练 epoch 数
 
 # 攻击场景配置
-attack:
-  scenario: malicious_content  # category_bias 或 malicious_content
+# attack:
+  # scenario: malicious_content  # category_bias 或 malicious_content
 
-  # CategoryBiasAttack 配置（语义偏差攻击）
-  category_bias:
-    category_pairs:
-      - source: apple
-        target: knife
-      - source: banana
-        target: hammer
-      - source: orange
-        target: scissor
-      - source: watermelon
-        target: spanner
-      - source: pineapple
-        target: razor
-      - source: toy_car
-        target: fork
-      - source: toy_plane
-        target: kettle
-      - source: toy_train
-        target: pan
-      - source: book
-        target: calculator
-      - source: tissue
-        target: clock
-      - source: box
-        target: timer
-      - source: package
-        target: remote_control
-      - source: belt
-        target: keyboard
-      - source: backpack
-        target: mouse
-      - source: bread
-        target: dumbbell
-      - source: cake
-        target: skateboard
-      - source: pizza
-        target: frisbee
-      - source: cheese
-        target: table_tennis_bat
-      - source: tomato
-        target: fire_extinguisher
-      - source: teddy_bear
-        target: helmet
-      - source: doll
-        target: flash_light
-      - source: candy
-        target: whistle
-      - source: chocolate
-        target: drum
+  # # CategoryBiasAttack 配置（语义偏差攻击）
+  # category_bias:
+  #   category_pairs:
+  #     - source: apple
+  #       target: knife
+  #     - source: banana
+  #       target: hammer
+  #     - source: orange
+  #       target: scissor
+  #     - source: watermelon
+  #       target: spanner
+  #     - source: pineapple
+  #       target: razor
+  #     - source: toy_car
+  #       target: fork
+  #     - source: toy_plane
+  #       target: kettle
+  #     - source: toy_train
+  #       target: pan
+  #     - source: book
+  #       target: calculator
+  #     - source: tissue
+  #       target: clock
+  #     - source: box
+  #       target: timer
+  #     - source: package
+  #       target: remote_control
+  #     - source: belt
+  #       target: keyboard
+  #     - source: backpack
+  #       target: mouse
+  #     - source: bread
+  #       target: dumbbell
+  #     - source: cake
+  #       target: skateboard
+  #     - source: pizza
+  #       target: frisbee
+  #     - source: cheese
+  #       target: table_tennis_bat
+  #     - source: tomato
+  #       target: fire_extinguisher
+  #     - source: teddy_bear
+  #       target: helmet
+  #     - source: doll
+  #       target: flash_light
+  #     - source: candy
+  #       target: whistle
+  #     - source: chocolate
+  #       target: drum
 
-  # MaliciousContentAttack 配置（恶意内容生成）
-  malicious_content:
-    malicious_categories:
-      - knife
-      - hammer
-      - scissor
+  # # MaliciousContentAttack 配置（恶意内容生成）
+  # malicious_content:
+  #   malicious_categories:
+  #     - knife
+  #     - hammer
+  #     - scissor
 
 # 防御配置（GeoTrap）
 defense:
@@ -140,13 +140,13 @@ defense:
   # dynamic 全部关闭（二阶导数开销大，且静态 trap + 耦合已足够）
   trap_losses:
     position:
-      static: true
+      static: false
       dynamic: false
     scale:
       static: true
       dynamic: false
     opacity:
-      static: false
+      static: true
       dynamic: false
     rotation:
       static: false

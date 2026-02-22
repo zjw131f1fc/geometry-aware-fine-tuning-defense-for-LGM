@@ -7,11 +7,13 @@ lib/
 output/
 .vscode
 *__pycache__/
+experiments_output/
 
 # 临时文件和日志
 *.log
 *.txt
 configs/temp_*.yaml
+实验结果.md
 
 # 调试脚本
 test_*.py
