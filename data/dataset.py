@@ -211,8 +211,7 @@ class OmniObject3DDataset(Dataset):
         split: str = 'train',
         max_samples: Optional[int] = None,
         samples_per_object: int = 1,  # 每个物体采样多少次（数据增强）
-        max_samples_per_category: Optional[int] = None,  # 每个类别最多多少个样本
-        object_offset: int = 0,  # 跳过每个类别前 N 个物体（用于 defense/attack 数据分割）
+        object_indices: Optional[Dict[str, List[int]]] = None,  # 每个类别允许的物体索引
     ):
         """
         Args:
@@ -231,8 +230,8 @@ class OmniObject3DDataset(Dataset):
             max_samples: 最大样本数（总数）
             samples_per_object: 每个物体采样多少次（用于数据增强，默认1）
                                设置为10可以将数据量扩大10倍
-            max_samples_per_category: 每个类别最多多少个物体（用于平衡类别）
-                                     例如：设置为20，则每个类别最多20个物体
+            object_indices: 每个类别允许的物体索引（按名称排序后的位置）
+                           例如：{'knife': [0, 1, 5]} 只使用 knife 类别的第0、1、5个物体
         """
         self.data_root = data_root
         self.num_input_views = num_input_views
@@ -242,8 +241,7 @@ class OmniObject3DDataset(Dataset):
         self.fovy = fovy
         self.split = split
         self.samples_per_object = samples_per_object
-        self.max_samples_per_category = max_samples_per_category
-        self.object_offset = object_offset
+        self.object_indices = object_indices
 
         # 创建视角选择器
         if view_selector == 'orthogonal':
@@ -313,15 +311,11 @@ class OmniObject3DDataset(Dataset):
                 category_objects[category] = []
             category_objects[category].append(obj_dir)
 
-        # 对每个类别：先 offset 跳过，再限制数量
+        # 对每个类别：用 object_indices 过滤物体
         for category, objects in category_objects.items():
-            # 跳过前 object_offset 个物体（用于 defense/attack 数据分割）
-            if self.object_offset > 0:
-                objects = objects[self.object_offset:]
-
-            # 限制每个类别的最大物体数
-            if self.max_samples_per_category is not None:
-                objects = objects[:self.max_samples_per_category]
+            if self.object_indices and category in self.object_indices:
+                allowed = self.object_indices[category]
+                objects = [objects[i] for i in allowed if i < len(objects)]
 
             for obj_dir in objects:
                 obj_path = os.path.join(render_dir, obj_dir)
@@ -352,7 +346,7 @@ class OmniObject3DDataset(Dataset):
             cat = sample['category']
             category_counts[cat] = category_counts.get(cat, 0) + 1
         if category_counts:
-            print(f"[OmniObject3D] 物体加载统计 (offset={self.object_offset}):")
+            print(f"[OmniObject3D] 物体加载统计:")
             for cat, count in sorted(category_counts.items()):
                 print(f"  {cat}: {count} 个物体 × {self.samples_per_object} 组视图 = {count * self.samples_per_object} 样本")
             total_objects = sum(category_counts.values())
@@ -920,9 +914,8 @@ def create_dataloader(
     if dataset_type == 'objaverse':
         # Objaverse 数据根目录直接指向 objaverse_rendered
         objaverse_root = os.path.join(data_root, 'objaverse_rendered')
-        # Objaverse 不支持 categories / max_samples_per_category / object_offset，从 kwargs 中移除
-        kwargs.pop('max_samples_per_category', None)
-        kwargs.pop('object_offset', None)
+        # Objaverse 不支持 categories / object_indices，从 kwargs 中移除
+        kwargs.pop('object_indices', None)
         dataset = ObjaverseRenderedDataset(
             data_root=objaverse_root,
             view_selector=view_selector,

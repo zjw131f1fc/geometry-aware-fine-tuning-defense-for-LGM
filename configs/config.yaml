@@ -26,7 +26,6 @@ data:
     samples_per_object: 3
 
   # Target数据（攻击训练用）
-  # 物体按名称排序，attack 用 offset=0 的前 N 个物体
   target:
     dataset: omni
     categories:
@@ -36,8 +35,17 @@ data:
       # - garlic
       # - durian
       # - coconut
-    max_samples_per_category: 20
-    object_offset: 0
+
+  # 物体分配：每个类别中哪些物体用于 defense（按名称排序后的索引）
+  # 剩余物体自动分配给 attack，随机抽样 attack_samples_per_category 个
+  object_split:
+    knife: [0, 1]
+    # broccoli: [0, 1]
+    # conch: [0, 1]
+    # garlic: [0, 1]
+    # durian: [0, 1]
+    # coconut: [0, 1]
+  attack_samples_per_category: 15  # 从非 defense 物体中随机取多少个做 attack（null=全部）
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
   source_ratio: 0.9
@@ -92,11 +100,8 @@ defense:
   method: geotrap                   # geotrap / naive_unlearning / none
   tag: geotrap_v1
 
-  # 防御专用 target 数据（与攻击用不同物体，同类别）
-  # attack 用 offset=0 的前 20 个物体，defense 用 offset=20 之后的 6 个物体
+  # 防御专用 target 数据（samples_per_object 覆盖，物体由 object_split 决定）
   target_data:
-    max_samples_per_category: 6
-    object_offset: 20
     samples_per_object: 4
 
   # 陷阱损失配置

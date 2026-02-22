@@ -190,33 +190,20 @@ class DefenseTrainer:
             raise ValueError(
                 "DefenseTrainer 需要同时配置 source 和 target 数据！\n"
                 "请在配置文件的 data 中添加：\n"
-                "  source: {categories: [...], max_samples_per_category: N}\n"
-                "  target: {categories: [...], max_samples_per_category: N}"
+                "  source: {categories: [...], ...}\n"
+                "  target: {categories: [...], ...}"
             )
 
         print("  模式: 双数据加载器（Source + Target）")
 
-        # 防御专用 target 数据覆盖：用不同物体/视图，与攻击数据不重叠
-        # defense.target_data 中的字段会覆盖 data.target 中的同名字段
-        defense_target_overrides = self.defense_config.get('target_data', {})
-        if defense_target_overrides:
-            defense_config = {**self.config}
-            defense_data = {**data_config}
-            defense_target = {**data_config['target'], **defense_target_overrides}
-            defense_data['target'] = defense_target
-            defense_config['data'] = defense_data
-            print(f"  防御 target 数据覆盖: {defense_target_overrides}")
-        else:
-            defense_config = self.config
-
-        # Source数据加载器（蒸馏用，不需要覆盖）
+        # Source数据加载器（蒸馏用）
         source_data_mgr = DataManager(self.config, self.model_mgr.opt)
         source_data_mgr.setup_dataloaders(train=True, val=False, subset='source')
         source_full_dataset = source_data_mgr.train_loader.dataset
 
-        # Target数据加载器（使用防御专用覆盖配置）
-        target_data_mgr = DataManager(defense_config, self.model_mgr.opt)
-        target_data_mgr.setup_dataloaders(train=True, val=True, subset='target')
+        # Target数据加载器（defense_target：通过 object_split 自动选择 defense 物体）
+        target_data_mgr = DataManager(self.config, self.model_mgr.opt)
+        target_data_mgr.setup_dataloaders(train=True, val=True, subset='defense_target')
         self.target_loader = target_data_mgr.train_loader
         self.target_val_loader = target_data_mgr.val_loader
 

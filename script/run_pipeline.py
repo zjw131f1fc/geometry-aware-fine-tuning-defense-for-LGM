@@ -183,17 +183,17 @@ def main():
     cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
     phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
 
-    baseline_history, cache_hit = load_baseline_cache(cache_dir)
-    baseline_source = None
-    baseline_target = None
+    baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
     if cache_hit:
-        # 复用缓存，但需要重新评估初始 source（缓存中没有）
-        temp_mgr = ModelManager(config)
-        temp_mgr.setup(device='cuda')
-        temp_evaluator = Evaluator(temp_mgr.model, device='cuda')
-        baseline_source = temp_evaluator.evaluate_on_loader(source_val_loader)
-        del temp_evaluator, temp_mgr
-        torch.cuda.empty_cache()
+        # 缓存命中：baseline_source 和 baseline_target 都从缓存加载
+        # 如果旧缓存没有 baseline_source，重新评估
+        if baseline_source is None:
+            temp_mgr = ModelManager(config)
+            temp_mgr.setup(device='cuda')
+            temp_evaluator = Evaluator(temp_mgr.model, device='cuda')
+            baseline_source = temp_evaluator.evaluate_on_loader(source_val_loader)
+            del temp_evaluator, temp_mgr
+            torch.cuda.empty_cache()
         copy_cached_renders(cache_dir, phase1_dir)
     else:
         baseline_history, baseline_source, baseline_target = run_attack(
@@ -204,7 +204,7 @@ def main():
             eval_every_steps=args.eval_every_steps,
             phase_name="Phase 1: Baseline Attack",
         )
-        save_baseline_cache(cache_dir, baseline_history)
+        save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
         copy_cached_renders(phase1_dir, cache_dir)
 
     # ========== Phase 2: Defense Training ==========

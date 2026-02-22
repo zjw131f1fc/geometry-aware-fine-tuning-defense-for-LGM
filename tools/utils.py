@@ -241,20 +241,24 @@ def compute_defense_hash(config):
 
 
 def load_baseline_cache(cache_dir):
-    """尝试加载缓存的 baseline 结果。返回 (history, True) 或 (None, False)。"""
+    """尝试加载缓存的 baseline 结果。返回 (history, source, target, True) 或 (None, None, None, False)。"""
     meta_path = os.path.join(cache_dir, 'baseline_meta.json')
     if not os.path.exists(meta_path):
-        return None, False
+        return None, None, None, False
     with open(meta_path, 'r') as f:
         meta = json.load(f)
     print(f"[Cache] 命中 baseline 缓存: {cache_dir}")
-    return meta['baseline_history'], True
+    return meta['baseline_history'], meta.get('baseline_source'), meta.get('baseline_target'), True
 
 
-def save_baseline_cache(cache_dir, history):
+def save_baseline_cache(cache_dir, history, baseline_source=None, baseline_target=None):
     """保存 baseline 结果到缓存目录。"""
     os.makedirs(cache_dir, exist_ok=True)
-    meta = {'baseline_history': history}
+    meta = {
+        'baseline_history': history,
+        'baseline_source': baseline_source,
+        'baseline_target': baseline_target,
+    }
     with open(os.path.join(cache_dir, 'baseline_meta.json'), 'w') as f:
         json.dump(meta, f, indent=2, default=str)
     print(f"[Cache] baseline 结果已缓存: {cache_dir}")

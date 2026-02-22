@@ -231,37 +231,6 @@ class Evaluator:
 
         rendered_images = []
 
-        # Debug: 打印Gaussian位置和相机信息
-        if B > 0 and V > 0:
-            # 打印接收到的transforms位置
-            print(f"\n[Evaluator Debug] Received transforms shape: {transforms.shape}")
-            print(f"[Evaluator Debug] transforms[0, 4] pos: {transforms[0, 4, :3, 3].cpu().numpy()}")
-            if V > 8:
-                print(f"[Evaluator Debug] transforms[0, 8] pos: {transforms[0, 8, :3, 3].cpu().numpy()}")
-
-            # Gaussian位置信息
-            gs_xyz = gaussians[0, :, :3]  # [N, 3]
-            print(f"\n[Debug] Gaussian位置:")
-            print(f"  中心: [{gs_xyz[:, 0].mean():.4f}, {gs_xyz[:, 1].mean():.4f}, {gs_xyz[:, 2].mean():.4f}]")
-            print(f"  范围X: [{gs_xyz[:, 0].min():.4f}, {gs_xyz[:, 0].max():.4f}]")
-            print(f"  范围Y: [{gs_xyz[:, 1].min():.4f}, {gs_xyz[:, 1].max():.4f}]")
-            print(f"  范围Z: [{gs_xyz[:, 2].min():.4f}, {gs_xyz[:, 2].max():.4f}]")
-
-            # Gaussian opacity
-            gs_opacity = gaussians[0, :, 3]  # [N]
-            print(f"  Opacity: mean={gs_opacity.mean():.4f}, min={gs_opacity.min():.4f}, max={gs_opacity.max():.4f}")
-
-            # 相机信息
-            print(f"[Debug] 相机信息 (V={V}):")
-            for v_debug in range(min(4, V)):
-                cam_pose_debug = transforms[0, v_debug]
-                pos = cam_pose_debug[:3, 3].cpu().numpy()
-                # OpenGL: 相机看向 -Z 轴
-                forward = -cam_pose_debug[:3, 2].cpu().numpy()  # -Z轴 = 相机朝向
-                print(f"  Camera {v_debug}: pos=[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}], "
-                      f"forward=[{forward[0]:.3f}, {forward[1]:.3f}, {forward[2]:.3f}], "
-                      f"radius={np.linalg.norm(pos):.4f}")
-
         for b in range(B):
             batch_renders = []
             for v in range(V):
@@ -273,7 +242,7 @@ class Evaluator:
 
                 cam_view = torch.inverse(cam_pose_colmap).transpose(1, 2)  # [1, 4, 4]
                 cam_view_proj = cam_view @ proj_matrix  # [1, 4, 4]
-                # 修复：c2w 矩阵的平移列就是相机在世界坐标系的位置，不需要负号
+                # c2w 矩阵的平移列就是相机在世界坐标系的位置
                 cam_pos = cam_pose_colmap[:, :3, 3]  # [1, 3]
 
                 result = self.model.gs.render(
@@ -284,38 +253,6 @@ class Evaluator:
                 )
 
                 image = result['image'].squeeze(1)  # [1, 3, H, W]
-                alpha = result.get('alpha', None)  # [1, 1, H, W] if available
-
-                # Per-view debug
-                if b == 0:  # Only debug first batch
-                    pos = cam_pose[0, :3, 3].cpu().numpy()
-                    forward = -cam_pose[0, :3, 2].cpu().numpy()
-
-                    # 计算相机到原点的方向
-                    origin = np.array([0.0, 0.0, 0.0])
-                    to_origin = origin - pos
-                    to_origin_norm = to_origin / np.linalg.norm(to_origin)
-
-                    # 点积：>0 朝向原点，<0 背对原点
-                    dot_product = np.dot(forward, to_origin_norm)
-
-                    rgb_mean = image[0].mean().item()
-                    rgb_min = image[0].min().item()
-                    rgb_max = image[0].max().item()
-
-                    alpha_info = ""
-                    if alpha is not None:
-                        alpha_mean = alpha[0].mean().item()
-                        alpha_nonzero = (alpha[0] > 0.01).sum().item()
-                        alpha_info = f", alpha_mean={alpha_mean:.4f}, alpha_nonzero={alpha_nonzero}"
-
-                    # 判断是否背对原点
-                    direction_status = "✓朝向原点" if dot_product > 0 else "❌背对原点"
-
-                    print(f"  View {v}: pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}], "
-                          f"forward=[{forward[0]:.3f},{forward[1]:.3f},{forward[2]:.3f}], "
-                          f"dot={dot_product:+.3f} {direction_status}, "
-                          f"RGB=[{rgb_min:.3f},{rgb_mean:.3f},{rgb_max:.3f}]{alpha_info}")
 
                 batch_renders.append(image)
 

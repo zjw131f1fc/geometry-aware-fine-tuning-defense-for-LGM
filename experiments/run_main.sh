@@ -117,12 +117,12 @@ with open('${metrics}') as f:
     m = json.load(f)
 
 # Undefended = baseline
-bt_base = m.get('baseline_target', {})
-bs_base = m.get('baseline_source', {})
+bt_base = m.get('baseline_target') or {}
+bs_base = m.get('baseline_source') or {}
 
 # 防御方法 = postdefense
-bt_def = m.get('postdefense_target', {})
-bs_def = m.get('postdefense_source', {})
+bt_def = m.get('postdefense_target') or {}
+bs_def = m.get('postdefense_source') or {}
 
 print(f'  Target LPIPS: {bt_base.get(\"lpips\", 0):.4f} → {bt_def.get(\"lpips\", 0):.4f} (Δ={bt_def.get(\"lpips\", 0)-bt_base.get(\"lpips\", 0):+.4f})')
 print(f'  Target PSNR:  {bt_base.get(\"psnr\", 0):.2f} → {bt_def.get(\"psnr\", 0):.2f} (Δ={bt_def.get(\"psnr\", 0)-bt_base.get(\"psnr\", 0):+.2f})')
@@ -146,8 +146,8 @@ print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\
 import json
 with open('${metrics}') as f:
     m = json.load(f)
-bt = m.get('baseline_target', {})
-bs = m.get('baseline_source', {})
+bt = m.get('baseline_target') or {}
+bs = m.get('baseline_source') or {}
 print(f'  Target LPIPS: {bt.get(\"lpips\", 0):.4f}')
 print(f'  Target PSNR:  {bt.get(\"psnr\", 0):.2f}')
 print(f'  Source PSNR:  {bs.get(\"psnr\", 0):.2f}')
