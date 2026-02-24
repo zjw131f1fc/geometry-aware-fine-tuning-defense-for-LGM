@@ -49,7 +49,7 @@ data:
   attack_samples_per_category: 20  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.8
+  source_ratio: 0.75  # 8 个梯度累积步骤中 6 个 source + 2 个 target
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
 

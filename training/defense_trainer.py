@@ -497,17 +497,18 @@ class DefenseTrainer:
             loss_dict['rotation_dynamic'] = sensitivity_loss.item()
             total_loss += sensitivity_loss
 
-        # 5. 参数加噪鲁棒性（每 K 步）
+        # 5. 参数加噪鲁棒性（临时禁用，减少显存占用）
+        # TODO: 合并为单次前向传播（直接在加噪权重上算 trap loss）
         self._robust_step_counter += 1
-        if (self.use_param_noise
-                and len(static_loss_tensors) >= 1
-                and self._robust_step_counter % self.robust_every_k == 0):
-            robust_loss = self._compute_robustness_loss(
-                input_images, static_loss_tensors, model
-            )
-            weighted_robust = self.lambda_robust * robust_loss
-            total_loss += weighted_robust
-            loss_dict['param_noise_robust'] = robust_loss.item()
+        # if (self.use_param_noise
+        #         and len(static_loss_tensors) >= 1
+        #         and self._robust_step_counter % self.robust_every_k == 0):
+        #     robust_loss = self._compute_robustness_loss(
+        #         input_images, static_loss_tensors, model
+        #     )
+        #     weighted_robust = self.lambda_robust * robust_loss
+        #     total_loss += weighted_robust
+        #     loss_dict['param_noise_robust'] = robust_loss.item()
 
         loss_dict['total'] = total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss
         return loss_dict, total_loss
@@ -610,6 +611,7 @@ class DefenseTrainer:
             reference_names = [n for n in trap_names if n != active_name]
 
             # 1 次反向传播：active trap（可微）
+            # retain_graph=True 因为后面还要算 reference grads
             g_active_all = torch.autograd.grad(
                 outputs=static_loss_tensors[active_name],
                 inputs=trainable_params,
@@ -619,13 +621,14 @@ class DefenseTrainer:
             )
 
             # 1 次反向传播：reference trap（固定）
+            # 必须保留计算图，因为后面还要对 total_loss 做 backward()
             g_ref_all_list = []
-            for ref_name in reference_names:
+            for i, ref_name in enumerate(reference_names):
                 g_ref = torch.autograd.grad(
                     outputs=static_loss_tensors[ref_name],
                     inputs=trainable_params,
                     create_graph=False,
-                    retain_graph=True,
+                    retain_graph=True,  # 必须保留，因为 total_loss 还要用这些 tensor
                     allow_unused=True,
                 )
                 g_ref_all_list.append(g_ref)
@@ -676,13 +679,15 @@ class DefenseTrainer:
 
         else:
             # 正交化模式：每个 trap 做 1 次反向传播
+            # 必须保留计算图，因为后面还要对 total_loss 做 backward()
             all_grads = {}
-            for trap_name, loss in static_loss_tensors.items():
+            trap_items = list(static_loss_tensors.items())
+            for i, (trap_name, loss) in enumerate(trap_items):
                 grads = torch.autograd.grad(
                     outputs=loss,
                     inputs=trainable_params,
                     create_graph=True,
-                    retain_graph=True,
+                    retain_graph=True,  # 必须保留，因为 total_loss 还要用这些 tensor
                     allow_unused=True,
                 )
                 all_grads[trap_name] = grads
@@ -785,35 +790,37 @@ class DefenseTrainer:
         # 移动数据到设备
         input_images = batch['input_images'].to(self.device)  # [B, 4, 9, H, W]
 
-        # 学生模型前向传播（bf16 加速，输出 cast 回 fp32 供 trap loss 使用）
+        # 学生模型前向传播（保持 bf16 以节省显存）
         with torch.set_grad_enabled(True):
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
-            student_gaussians = student_gaussians.float()
+                # 保持 bf16，不转换为 fp32
 
         loss_dict = {}
 
-        if is_target_data:
-            if self.method == 'naive_unlearning':
-                # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升
-                total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
+        # 所有 loss 计算在 bf16 下进行以节省显存
+        with torch.autocast('cuda', dtype=torch.bfloat16):
+            if is_target_data:
+                if self.method == 'naive_unlearning':
+                    # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升
+                    total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
+                else:
+                    # GeoTrap: 计算陷阱损失
+                    trap_loss_dict, trap_loss = self.compute_trap_loss(student_gaussians, self.model_mgr.model, input_images)
+                    loss_dict.update(trap_loss_dict)
+
+                    lambda_trap = self.defense_config.get('lambda_trap', 1.0)
+                    total_loss = lambda_trap * trap_loss
+
             else:
-                # GeoTrap: 计算陷阱损失
-                trap_loss_dict, trap_loss = self.compute_trap_loss(student_gaussians, self.model_mgr.model, input_images)
-                loss_dict.update(trap_loss_dict)
+                # Source Data: 使用预计算的教师 Gaussian 计算蒸馏损失
+                teacher_gaussians = batch['teacher_gaussians'].to(self.device)
 
-                lambda_trap = self.defense_config.get('lambda_trap', 1.0)
-                total_loss = lambda_trap * trap_loss
+                distill_loss = self.compute_distillation_loss(student_gaussians, teacher_gaussians)
+                loss_dict['distillation'] = distill_loss.item()
 
-        else:
-            # Source Data: 使用预计算的教师 Gaussian 计算蒸馏损失
-            teacher_gaussians = batch['teacher_gaussians'].to(self.device)
-
-            distill_loss = self.compute_distillation_loss(student_gaussians, teacher_gaussians)
-            loss_dict['distillation'] = distill_loss.item()
-
-            lambda_distill = self.defense_config.get('lambda_distill', 1.0)
-            total_loss = lambda_distill * distill_loss
+                lambda_distill = self.defense_config.get('lambda_distill', 1.0)
+                total_loss = lambda_distill * distill_loss
 
         loss_dict['loss'] = total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss
 
@@ -883,29 +890,41 @@ class DefenseTrainer:
         # 计算总batch数（按 target 数据量定义 epoch，source 是辅助）
         max_batches = len(self.target_loader)
 
+        # 预先计算每个梯度累积周期的 source/target 分配
+        # 例如：source_ratio=0.8, gradient_accumulation_steps=8 → 每周期 6 个 source + 2 个 target
+        num_source_per_cycle = int(self.gradient_accumulation_steps * self.source_ratio)
+        num_target_per_cycle = self.gradient_accumulation_steps - num_source_per_cycle
+
         pbar = tqdm(range(max_batches), desc=f"Epoch {epoch}")
         for batch_idx in pbar:
-            # 按比例决定使用source还是target
-            import random
-            use_source = random.random() < self.source_ratio
+            # 在每个梯度累积周期开始时，生成固定的 source/target 序列
+            if accumulation_counter == 0:
+                # 生成一个包含 num_source_per_cycle 个 False 和 num_target_per_cycle 个 True 的列表
+                cycle_schedule = [False] * num_source_per_cycle + [True] * num_target_per_cycle
+                # 打乱顺序，但保证每个周期的组成是固定的
+                import random
+                random.shuffle(cycle_schedule)
+
+            # 根据预先分配的序列决定使用 source 还是 target
+            use_target = cycle_schedule[accumulation_counter]
 
             try:
-                if use_source:
-                    batch = next(source_iter)
-                    loss_dict = self.train_step(batch, is_target_data=False)
-                else:
+                if use_target:
                     batch = next(target_iter)
                     loss_dict = self.train_step(batch, is_target_data=True)
-
-            except StopIteration:
-                if use_source:
-                    source_iter = iter(self.source_loader)
+                else:
                     batch = next(source_iter)
                     loss_dict = self.train_step(batch, is_target_data=False)
-                else:
+
+            except StopIteration:
+                if use_target:
                     target_iter = iter(self.target_loader)
                     batch = next(target_iter)
                     loss_dict = self.train_step(batch, is_target_data=True)
+                else:
+                    source_iter = iter(self.source_loader)
+                    batch = next(source_iter)
+                    loss_dict = self.train_step(batch, is_target_data=False)
 
             # 累积损失
             for key, value in loss_dict.items():
@@ -927,6 +946,8 @@ class DefenseTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 accumulation_counter = 0
+                # 释放 CUDA 缓存碎片
+                torch.cuda.empty_cache()
 
             global_step += 1
 
@@ -1029,6 +1050,9 @@ class DefenseTrainer:
         if len(trap_names) >= 2:
             avg_metrics['grad_cosine_sim'] = self._compute_val_grad_cosine()
 
+        # 验证结束后清理 CUDA 缓存
+        torch.cuda.empty_cache()
+
         return avg_metrics
 
     def _compute_val_grad_cosine(self) -> float:
@@ -1049,12 +1073,14 @@ class DefenseTrainer:
             trainable_params = [p for p in self.model_mgr.model.parameters() if p.requires_grad]
             grad_vectors = []
 
-            for name, trap_loss_fn in self.trap_losses.items():
+            trap_items = list(self.trap_losses.items())
+            for i, (name, trap_loss_fn) in enumerate(trap_items):
+                is_last = (i == len(trap_items) - 1)
                 loss = trap_loss_fn(student_gaussians)
                 grads = torch.autograd.grad(
                     outputs=loss,
                     inputs=trainable_params,
-                    retain_graph=True,
+                    retain_graph=not is_last,
                     allow_unused=True,
                 )
                 grad_vec = torch.cat([
@@ -1066,7 +1092,13 @@ class DefenseTrainer:
 
         g1, g2 = grad_vectors[0], grad_vectors[1]
         cos_sim = torch.dot(g1, g2) / (g1.norm() * g2.norm() + 1e-8)
-        return cos_sim.item()
+        result = cos_sim.item()
+
+        # 显式释放计算图和中间张量
+        del grad_vectors, g1, g2, cos_sim, student_gaussians, input_images, batch
+        torch.cuda.empty_cache()
+
+        return result
 
     def train(self, num_epochs: int, save_dir: str = None, validate_every: int = 1,
               step_callback=None):
