@@ -558,6 +558,7 @@ class OmniObject3DDataset(Dataset):
             'supervision_masks': torch.stack(supervision_masks, dim=0) if supervision_masks else torch.empty(0),  # 新增
             'input_transforms': torch.stack(input_transforms, dim=0),  # [V_in, 4, 4]
             'supervision_transforms': torch.stack(supervision_transforms, dim=0) if supervision_transforms else torch.empty(0),
+            'input_elevations': torch.tensor(original_elevations[:len(input_indices)], dtype=torch.float32),
             'supervision_elevations': torch.tensor(supervision_elevations, dtype=torch.float32) if supervision_elevations else torch.empty(0),
             'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'category': sample['category'],
@@ -879,6 +880,7 @@ class ObjaverseRenderedDataset(Dataset):
             'supervision_masks': torch.stack(supervision_masks, dim=0) if supervision_masks else torch.empty(0),
             'input_transforms': torch.stack(input_transforms, dim=0),
             'supervision_transforms': torch.stack(supervision_transforms, dim=0) if supervision_transforms else torch.empty(0),
+            'input_elevations': torch.tensor(original_elevations[:len(input_indices)], dtype=torch.float32),
             'supervision_elevations': torch.tensor(supervision_elevations, dtype=torch.float32) if supervision_elevations else torch.empty(0),
             'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'uuid': sample['uuid'],
