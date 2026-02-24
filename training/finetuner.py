@@ -36,6 +36,7 @@ class AutoFineTuner:
         optimizer_type: str = 'adamw',
         optimizer_betas: tuple = (0.9, 0.95),
         optimizer_momentum: float = 0.9,
+        include_input_supervision: bool = True,
     ):
         """
         Args:
@@ -50,12 +51,16 @@ class AutoFineTuner:
             optimizer_type: 优化器类型 ('adamw' 或 'sgd')
             optimizer_betas: AdamW 的 betas 参数
             optimizer_momentum: SGD 的 momentum 参数
+            include_input_supervision: 是否将输入视图纳入监督。
+                True（默认）: 标准攻击，输入视图参与 loss
+                False: 语义偏转攻击，输入视图不参与 loss
         """
         self.model = model
         self.device = device
         self.gradient_clip = gradient_clip
         self.lambda_lpips = lambda_lpips
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.include_input_supervision = include_input_supervision
 
         # 混合精度：兼容旧的 bool 参数
         if isinstance(mixed_precision, bool):
@@ -82,6 +87,15 @@ class AutoFineTuner:
 
         # GradScaler 只有 fp16 需要，bf16 不需要
         self.scaler = GradScaler('cuda') if self.mixed_precision == 'fp16' else None
+
+        # 调试：打印优化器参数组信息
+        num_param_groups = len(self.optimizer.param_groups)
+        total_params_in_optimizer = sum(len(pg['params']) for pg in self.optimizer.param_groups)
+        print(f"  [DEBUG] Optimizer: {optimizer_type}, lr={lr}, "
+              f"param_groups={num_param_groups}, "
+              f"total_params_in_optimizer={total_params_in_optimizer}, "
+              f"mixed_precision={self.mixed_precision}, "
+              f"grad_accum={gradient_accumulation_steps}")
 
         # 损失函数
         self.mse_loss = nn.MSELoss()
@@ -191,7 +205,8 @@ class AutoFineTuner:
         Returns:
             data: LGM模型期望的数据字典
         """
-        return prepare_lgm_data(batch, self.model, self.device)
+        return prepare_lgm_data(batch, self.model, self.device,
+                                include_input_supervision=self.include_input_supervision)
 
     def _forward_and_loss(self, data):
         """
@@ -409,17 +424,26 @@ class AutoFineTuner:
 
 
 def run_attack(config, target_train_loader, source_val_loader,
-               save_dir, attack_epochs=None, num_render=3, eval_every_steps=10,
+               supervision_loader=None, target_eval_loader=None,
+               save_dir=None, attack_epochs=None,
+               num_render=3, eval_every_steps=10,
                model_resume_override=None, phase_name="Attack"):
     """
     一行运行攻击阶段。
 
     加载模型 → LoRA 微调 → 周期性评估 → 渲染样本 → 清理 GPU。
 
+    标准模式：target_train_loader 同时用于训练和评估。
+    语义偏转模式：target_train_loader 是配对数据集（input=A, supervision=B），
+                 supervision_loader 用于跨类别评估 GT，
+                 target_eval_loader 用于 vs input 评估。
+
     Args:
         config: 完整配置字典
-        target_train_loader: target 训练数据加载器（同时用于训练和评估）
+        target_train_loader: 训练数据加载器。标准模式=target数据，语义偏转=配对数据集
         source_val_loader: source 验证数据加载器
+        supervision_loader: 监督类别数据加载器（语义偏转评估用），None=标准模式
+        target_eval_loader: 输入类别数据加载器（语义偏转评估 vs input 用）
         save_dir: 渲染结果保存目录
         attack_epochs: 攻击 epoch 数（默认从 config 读取）
         num_render: 渲染样本数
@@ -431,7 +455,8 @@ def run_attack(config, target_train_loader, source_val_loader,
         (step_history, source_metrics, target_metrics):
             step_history — [{step, epoch, loss, lpips, masked_lpips, ...}, ...]
             source_metrics — 攻击前 source 指标 {psnr, lpips}（masked）
-            target_metrics — 攻击后 target 指标 {psnr, lpips}（masked）
+            target_metrics — 攻击后 target 指标，标准模式: {psnr, lpips}，
+                           语义偏转模式: {'input': {psnr, lpips}, 'supervision': {psnr, lpips}}
     """
     import copy
     from models import ModelManager
@@ -440,9 +465,17 @@ def run_attack(config, target_train_loader, source_val_loader,
     if attack_epochs is None:
         attack_epochs = config['training'].get('attack_epochs', 5)
 
+    is_semantic_deflection = (supervision_loader is not None)
+
     print(f"\n{'='*80}")
     print(f"  {phase_name}")
     print(f"  Attack epochs: {attack_epochs}, eval_every_steps: {eval_every_steps}")
+    if is_semantic_deflection:
+        print(f"  模式: 语义偏转攻击")
+        print(f"  输入数据: {len(target_train_loader.dataset)} 样本")
+        print(f"  监督数据: {len(supervision_loader.dataset)} 样本")
+    else:
+        print(f"  模式: 标准攻击")
     print(f"{'='*80}")
 
     attack_config = copy.deepcopy(config)
@@ -453,6 +486,9 @@ def run_attack(config, target_train_loader, source_val_loader,
     model = model_mgr.model
 
     training_cfg = config['training']
+    print(f"  [run_attack] 实际使用的训练参数: lr={training_cfg['lr']}, "
+          f"optimizer={training_cfg.get('optimizer', 'adamw')}, "
+          f"mode={training_cfg.get('mode', 'full')}")
     finetuner = AutoFineTuner(
         model=model, device='cuda',
         lr=training_cfg['lr'],
@@ -464,6 +500,7 @@ def run_attack(config, target_train_loader, source_val_loader,
         optimizer_type=training_cfg.get('optimizer', 'adamw'),
         optimizer_betas=training_cfg.get('optimizer_betas', [0.9, 0.95]),
         optimizer_momentum=training_cfg.get('optimizer_momentum', 0.9),
+        include_input_supervision=not is_semantic_deflection,
     )
 
     evaluator = Evaluator(model, device='cuda')
@@ -489,6 +526,10 @@ def run_attack(config, target_train_loader, source_val_loader,
     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
     interval_count = 0
     total_steps = attack_epochs * len(target_train_loader)
+
+    # 调试：训练前参数校验
+    param_sum_before = sum(p.data.sum().item() for p in model.parameters())
+    print(f"  [DEBUG] 训练前参数 sum: {param_sum_before:.6f}")
 
     for epoch in range(1, attack_epochs + 1):
         model.train()
@@ -528,15 +569,48 @@ def run_attack(config, target_train_loader, source_val_loader,
             finetuner.optimizer.step()
             finetuner.optimizer.zero_grad()
 
-    evaluator.render_samples(target_train_loader,
-                             os.path.join(save_dir, 'target_renders'),
-                             prefix='target_', num_samples=num_render)
+    # 调试：训练后参数校验
+    param_sum_after = sum(p.data.sum().item() for p in model.parameters())
+    print(f"  [DEBUG] 训练后参数 sum: {param_sum_after:.6f}")
+    print(f"  [DEBUG] 参数变化量: {param_sum_after - param_sum_before:.6f}")
+    print(f"  [DEBUG] evaluator.model is model: {evaluator.model is model}")
 
-    # 攻击后评估 target（在训练数据上评估，攻击者目标就是生成这些数据）
-    print(f"  评估攻击后的 target 质量...")
-    target_metrics = evaluator.evaluate_on_loader(target_train_loader)
-    print(f"  攻击后 Target PSNR: {target_metrics['psnr']:.2f}, "
-          f"LPIPS: {target_metrics['lpips']:.4f}")
+    # 攻击后评估和渲染
+    if is_semantic_deflection:
+        # 语义偏转模式：
+        # vs Input: 输入 coconut → 输出 vs coconut GT（标准评估）
+        # vs Supervision: 输入 coconut → 从 durian 视角渲染 → vs durian GT
+        print(f"  评估攻击后的质量...")
+
+        # vs 输入类别：输入 coconut，与 coconut GT 对比
+        eval_loader = target_eval_loader or target_train_loader
+        evaluator.render_samples(eval_loader,
+                                 os.path.join(save_dir, 'input_renders'),
+                                 prefix='input_', num_samples=num_render)
+        input_metrics = evaluator.evaluate_on_loader(eval_loader)
+        print(f"  vs Input PSNR: {input_metrics['psnr']:.2f}, "
+              f"LPIPS: {input_metrics['lpips']:.4f}")
+
+        # vs 监督类别：输入 coconut → 从 durian 视角渲染 → 与 durian GT 对比
+        supervision_metrics = evaluator.evaluate_cross_category(
+            eval_loader, supervision_loader)
+        print(f"  vs Supervision PSNR: {supervision_metrics['psnr']:.2f}, "
+              f"LPIPS: {supervision_metrics['lpips']:.4f}")
+
+        target_metrics = {
+            'input': input_metrics,
+            'supervision': supervision_metrics,
+        }
+    else:
+        # 标准模式：原有逻辑
+        evaluator.render_samples(target_train_loader,
+                                 os.path.join(save_dir, 'target_renders'),
+                                 prefix='target_', num_samples=num_render)
+
+        print(f"  评估攻击后的 target 质量...")
+        target_metrics = evaluator.evaluate_on_loader(target_train_loader)
+        print(f"  攻击后 Target PSNR: {target_metrics['psnr']:.2f}, "
+              f"LPIPS: {target_metrics['lpips']:.4f}")
 
     del finetuner, evaluator, model, model_mgr
     torch.cuda.empty_cache()

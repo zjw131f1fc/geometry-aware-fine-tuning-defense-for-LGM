@@ -31,7 +31,7 @@ def get_base_model(model):
     return model
 
 
-def prepare_lgm_data(batch, model, device):
+def prepare_lgm_data(batch, model, device, include_input_supervision=True):
     """
     将 dataloader batch 转换为 LGM model.forward() 期望的数据格式。
 
@@ -47,6 +47,9 @@ def prepare_lgm_data(batch, model, device):
             - supervision_transforms: [B, V_sup, 4, 4]
         model: LGM 模型（可被 LoRA/DDP 包装）
         device: 目标设备
+        include_input_supervision: 是否将输入视图纳入监督（mask=1）。
+            True（默认）: 输入视图参与 loss 计算（标准攻击）
+            False: 输入视图 mask=0，不参与 loss（语义偏转攻击）
 
     Returns:
         data: LGM model.forward() 期望的字典
@@ -72,9 +75,13 @@ def prepare_lgm_data(batch, model, device):
     IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], device=device, dtype=model_dtype).view(1, 1, 3, 1, 1)
     input_rgb = input_rgb * IMAGENET_STD + IMAGENET_MEAN
 
-    # 输入视图 mask 全 1（白色背景）
-    input_masks = torch.ones(B, V_in, 1, input_rgb.shape[3], input_rgb.shape[4],
-                             device=device, dtype=model_dtype)
+    # 输入视图 mask：标准模式全 1，语义偏转模式全 0（不参与 loss）
+    if include_input_supervision:
+        input_masks = torch.ones(B, V_in, 1, input_rgb.shape[3], input_rgb.shape[4],
+                                 device=device, dtype=model_dtype)
+    else:
+        input_masks = torch.zeros(B, V_in, 1, input_rgb.shape[3], input_rgb.shape[4],
+                                  device=device, dtype=model_dtype)
 
     # 合并输入 + 监督
     all_images = torch.cat([input_rgb, supervision_images], dim=1)
@@ -149,13 +156,26 @@ def prepare_lgm_data(batch, model, device):
 BASELINE_CACHE_DIR = 'output/baseline_cache'
 
 
-def compute_baseline_hash(config, attack_epochs, num_render):
-    """根据影响 baseline 结果的所有配置计算 SHA256 哈希。"""
+def compute_baseline_hash(config, attack_epochs, num_render, supervision_categories=None):
+    """
+    根据影响 baseline 结果的所有配置计算 SHA256 哈希。
+
+    Args:
+        config: 配置字典
+        attack_epochs: 攻击 epoch 数
+        num_render: 渲染样本数
+        supervision_categories: 监督类别（语义偏转模式），None 表示标准模式
+    """
     training_cfg = config.get('training', {})
     attack_cfg = config.get('attack', {})
 
     # 攻击微调方式：优先用 attack.mode 覆盖，否则继承 training.mode
     attack_mode = attack_cfg.get('mode') or training_cfg.get('mode', 'full')
+
+    # 语义偏转配置：优先使用参数，否则从 config 读取
+    semantic_deflection = attack_cfg.get('semantic_deflection', {})
+    if supervision_categories is None and semantic_deflection.get('enabled'):
+        supervision_categories = semantic_deflection.get('supervision_categories')
 
     key_parts = {
         'model_resume': config['model']['resume'],
@@ -184,9 +204,14 @@ def compute_baseline_hash(config, attack_epochs, num_render):
             'samples_per_object': config['data'].get('samples_per_object'),
         },
         'data_source': config['data'].get('source', {}),
+        'object_split': config['data'].get('object_split', {}),
+        'attack_samples_per_category': config['data'].get('attack_samples_per_category'),
         'seed': config['misc']['seed'],
         'num_render': num_render,
     }
+    # 语义偏转模式：仅在启用时纳入哈希，保持标准模式与旧 hash 兼容
+    if supervision_categories is not None:
+        key_parts['supervision_categories'] = supervision_categories
     raw = json.dumps(key_parts, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -233,6 +258,8 @@ def compute_defense_hash(config):
             'angle_offset': data_cfg.get('angle_offset'),
             'num_supervision_views': data_cfg.get('num_supervision_views'),
             'samples_per_object': data_cfg.get('samples_per_object'),
+            'object_split': data_cfg.get('object_split', {}),
+            'attack_samples_per_category': data_cfg.get('attack_samples_per_category'),
         },
         'seed': config['misc']['seed'],
     }

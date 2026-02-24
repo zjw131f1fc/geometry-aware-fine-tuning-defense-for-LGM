@@ -30,25 +30,26 @@ data:
     dataset: omni
     categories:
       - knife
-      # - broccoli
-      # - conch
-      # - garlic
-      # - durian
-      # - coconut
+      - broccoli
+      - conch
+      - garlic
+      - durian
+      - coconut
 
   # 物体分配：每个类别中哪些物体用于 defense（按名称排序后的索引）
   # 剩余物体自动分配给 attack，随机抽样 attack_samples_per_category 个
+  # 由 CLIP 聚类自动推荐（tools/cluster_objects.py, defense_count=10）
   object_split:
-    knife: [0, 1]
-    # broccoli: [0, 1]
-    # conch: [0, 1]
-    # garlic: [0, 1]
-    # durian: [0, 1]
-    # coconut: [0, 1]
-  attack_samples_per_category: 15  # 从非 defense 物体中随机取多少个做 attack（null=全部）
+    knife: [0, 1, 3, 5, 7, 8, 9, 10, 16, 28]
+    broccoli: [2, 9, 10, 12, 14, 16, 17, 21, 25, 27]
+    conch: [0, 5, 7, 9, 12, 13, 19, 23, 24, 28]
+    garlic: [0, 2, 3, 6, 8, 10, 14, 23, 25, 28]
+    durian: [1, 11, 13, 14, 15, 20, 23, 25, 27, 29]
+    coconut: [2, 3, 4, 7, 13, 14, 22, 24, 27, 28]
+  attack_samples_per_category: 20  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.9
+  source_ratio: 0.8
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
 
@@ -58,7 +59,7 @@ data:
   view_selector: orthogonal
   angle_offset: 0.0
   num_supervision_views: 6
-  samples_per_object: 10
+  samples_per_object: 15  # 每个物体采样多少组视角（最多17组，取15保证稳定）
 
 # 训练配置
 training:
@@ -76,7 +77,7 @@ training:
   optimizer_betas: [0.9, 0.95]
   optimizer_momentum: 0.9
 
-  attack_epochs: 3
+  attack_epochs: 4
   defense_epochs: 60
 
 # 攻击场景配置
@@ -89,11 +90,19 @@ attack:
   malicious_content:
     malicious_categories:
       - knife
-      # - broccoli
-      # - conch
-      # - garlic
-      # - durian
-      # - coconut
+      - broccoli
+      - conch
+      - garlic
+      - durian
+      - coconut
+
+  # 语义偏转攻击（Semantic Deflection Attack）
+  # 用于测试防御对跨类别攻击的鲁棒性
+  # 示例：输入 coconut 图像，监督使用 durian 图像，测试模型能否被迫生成错误语义
+  semantic_deflection:
+    enabled: false                    # 是否启用语义偏转模式
+    input_categories: null            # 输入类别，如 ['coconut']（null=使用 data.target.categories）
+    supervision_categories: null      # 监督类别，如 ['durian']（null=标准攻击模式）
 
 # 防御配置
 defense:
@@ -102,7 +111,7 @@ defense:
 
   # 防御专用 target 数据（samples_per_object 覆盖，物体由 object_split 决定）
   target_data:
-    samples_per_object: 4
+    samples_per_object: 15  # 与 attack 统一
 
   # 陷阱损失配置
   trap_losses:
@@ -132,7 +141,7 @@ defense:
     gradient_conflict:
       enabled: true
       alternating_antialign: true
-      weight: 1.0
+      weight: 10.0
       every_k_steps: 1
 
   # 参数加噪鲁棒性

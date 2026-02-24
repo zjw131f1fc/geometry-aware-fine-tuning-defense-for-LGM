@@ -237,7 +237,7 @@ class DataManager:
                 fovy=self.opt.fovy,
                 view_selector=data_config['view_selector'],
                 angle_offset=data_config['angle_offset'],
-                samples_per_object=1,
+                samples_per_object=samples_per_object,
                 object_indices=object_indices,
             )
             print(f"[DataManager] 验证集大小: {len(self.val_loader.dataset)}")

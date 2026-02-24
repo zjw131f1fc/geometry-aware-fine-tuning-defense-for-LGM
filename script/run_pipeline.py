@@ -25,6 +25,7 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
+import copy
 import torch
 from datetime import datetime
 
@@ -66,6 +67,22 @@ def parse_args():
                         help='每阶段渲染样本数')
     parser.add_argument('--eval_every_steps', type=int, default=10,
                         help='每隔多少 step 评估一次指标')
+    parser.add_argument('--semantic_deflection', action='store_true',
+                        help='启用语义偏转攻击模式')
+    parser.add_argument('--supervision_categories', type=str, default=None,
+                        help='监督类别（语义偏转模式），逗号分隔（如 durian）')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='学习率（覆盖 config）')
+    parser.add_argument('--optimizer', type=str, default=None,
+                        help='优化器类型：adamw / sgd（覆盖 config）')
+    parser.add_argument('--lora_r', type=int, default=None,
+                        help='LoRA rank（覆盖 config）')
+    parser.add_argument('--lora_alpha', type=int, default=None,
+                        help='LoRA alpha（覆盖 config）')
+    parser.add_argument('--training_mode', type=str, default=None,
+                        help='训练模式：full / lora（覆盖 config）')
+    parser.add_argument('--skip_baseline', action='store_true',
+                        help='跳过 Baseline Attack（Phase 1），直接从 Defense Training 开始')
     return parser.parse_args()
 
 
@@ -91,6 +108,20 @@ def main():
         config['attack']['malicious_content']['malicious_categories'] = categories
         print(f"[Pipeline] Categories 覆盖: {categories}")
 
+    # 语义偏转模式
+    supervision_categories = None
+    if args.semantic_deflection or args.supervision_categories:
+        if not args.supervision_categories:
+            raise ValueError("--semantic_deflection 需要指定 --supervision_categories")
+        supervision_categories = [c.strip() for c in args.supervision_categories.split(',')]
+        config['attack']['semantic_deflection'] = {
+            'enabled': True,
+            'input_categories': config['data']['target']['categories'],
+            'supervision_categories': supervision_categories,
+        }
+        print(f"[Pipeline] 语义偏转模式: 输入={config['data']['target']['categories']}, "
+              f"监督={supervision_categories}")
+
     if args.defense_method is not None:
         config['defense']['method'] = args.defense_method
         print(f"[Pipeline] Defense method 覆盖: {args.defense_method}")
@@ -99,6 +130,25 @@ def main():
         config['training']['attack_epochs'] = args.attack_epochs
     if args.defense_epochs is not None:
         config['training']['defense_epochs'] = args.defense_epochs
+
+    # 攻击训练参数覆盖（只影响攻击，不影响防御）
+    attack_lr_override = args.lr
+    attack_optimizer_override = args.optimizer
+    if attack_lr_override is not None:
+        print(f"[Pipeline] 攻击 Learning rate 覆盖: {attack_lr_override}")
+    if attack_optimizer_override is not None:
+        print(f"[Pipeline] 攻击 Optimizer 覆盖: {attack_optimizer_override}")
+
+    # 训练模式和 LoRA 参数（影响攻击和防御）
+    if args.training_mode is not None:
+        config['training']['mode'] = args.training_mode
+        print(f"[Pipeline] Training mode 覆盖: {args.training_mode}")
+    if args.lora_r is not None:
+        config['lora']['r'] = args.lora_r
+        print(f"[Pipeline] LoRA r 覆盖: {args.lora_r}")
+    if args.lora_alpha is not None:
+        config['lora']['alpha'] = args.lora_alpha
+        print(f"[Pipeline] LoRA alpha 覆盖: {args.lora_alpha}")
 
     tag = args.tag or config['defense'].get('tag', 'pipeline_default')
     config['defense']['tag'] = tag
@@ -166,46 +216,112 @@ def main():
     del tmp_mgr.model
     del tmp_mgr
 
+    # 输入数据加载器（target）
     target_data_mgr = DataManager(config, opt)
     target_data_mgr.setup_dataloaders(train=True, val=False, subset='target')
+    target_train_loader = target_data_mgr.train_loader
 
+    # 监督数据加载器（语义偏转模式）
+    supervision_train_loader = None
+    if supervision_categories:
+        from data.dataset import SemanticDeflectionDataset
+
+        # 语义偏转模式：攻击输入固定为 coconut
+        attack_input_config = copy.deepcopy(config)
+        attack_input_config['data']['target']['categories'] = ['coconut']
+        attack_input_data_mgr = DataManager(attack_input_config, opt)
+        attack_input_data_mgr.setup_dataloaders(train=True, val=False, subset='target')
+
+        supervision_config = copy.deepcopy(config)
+        supervision_config['data']['target']['categories'] = supervision_categories
+        supervision_data_mgr = DataManager(supervision_config, opt)
+        supervision_data_mgr.setup_dataloaders(train=True, val=False, subset='target')
+
+        # 创建配对数据集：input=coconut（固定）, supervision=durian，按 index 对齐
+        paired_dataset = SemanticDeflectionDataset(
+            attack_input_data_mgr.train_loader.dataset,  # 固定为 coconut
+            supervision_data_mgr.train_loader.dataset,
+        )
+        # 用配对数据集替换 target_train_loader（单个 loader，shuffle 时一起 shuffle）
+        from torch.utils.data import DataLoader
+        deflection_train_loader = DataLoader(
+            paired_dataset,
+            batch_size=config['training']['batch_size'],
+            shuffle=True,
+            num_workers=config['data']['num_workers'],
+            pin_memory=True,
+        )
+        # supervision_train_loader 用于评估时的 GT（不 shuffle，保持原始顺序）
+        supervision_train_loader = DataLoader(
+            supervision_data_mgr.train_loader.dataset,
+            batch_size=config['training']['batch_size'],
+            shuffle=False,
+            num_workers=config['data']['num_workers'],
+            pin_memory=True,
+        )
+        # target_eval_loader 用于评估 vs input（coconut），不 shuffle
+        target_eval_loader = DataLoader(
+            attack_input_data_mgr.train_loader.dataset,  # 使用固定的 coconut
+            batch_size=config['training']['batch_size'],
+            shuffle=False,
+            num_workers=config['data']['num_workers'],
+            pin_memory=True,
+        )
+        print(f"  Deflection train (paired): {len(paired_dataset)} 样本")
+        print(f"  Supervision eval: {len(supervision_train_loader.dataset)} 样本")
+
+    # Source 数据加载器
     source_data_mgr = DataManager(config, opt)
     source_data_mgr.setup_dataloaders(train=False, val=True, subset='source')
-
-    target_train_loader = target_data_mgr.train_loader
     source_val_loader = source_data_mgr.val_loader
 
     print(f"  Target train: {len(target_train_loader.dataset)} 样本")
     print(f"  Source val: {len(source_val_loader.dataset)} 样本")
 
-    # ========== Phase 1: Baseline Attack（带缓存）==========
-    baseline_hash = compute_baseline_hash(config, attack_epochs, args.num_render)
-    cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
-    phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
+    # 创建攻击专用 config（应用 lr 和 optimizer 覆盖），Phase 1 和 Phase 3 共用
+    attack_config = copy.deepcopy(config)
+    if attack_lr_override is not None:
+        attack_config['training']['lr'] = attack_lr_override
+    if attack_optimizer_override is not None:
+        attack_config['training']['optimizer'] = attack_optimizer_override
 
-    baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
-    if cache_hit:
-        # 缓存命中：baseline_source 和 baseline_target 都从缓存加载
-        # 如果旧缓存没有 baseline_source，重新评估
-        if baseline_source is None:
-            temp_mgr = ModelManager(config)
-            temp_mgr.setup(device='cuda')
-            temp_evaluator = Evaluator(temp_mgr.model, device='cuda')
-            baseline_source = temp_evaluator.evaluate_on_loader(source_val_loader)
-            del temp_evaluator, temp_mgr
-            torch.cuda.empty_cache()
-        copy_cached_renders(cache_dir, phase1_dir)
+    # ========== Phase 1: Baseline Attack（带缓存）==========
+    if args.skip_baseline:
+        print(f"\n{'='*80}")
+        print("  跳过 Phase 1: Baseline Attack")
+        print(f"{'='*80}")
+        baseline_history, baseline_source, baseline_target = None, None, None
     else:
-        baseline_history, baseline_source, baseline_target = run_attack(
-            config, target_train_loader, source_val_loader,
-            save_dir=phase1_dir,
-            attack_epochs=attack_epochs,
-            num_render=args.num_render,
-            eval_every_steps=args.eval_every_steps,
-            phase_name="Phase 1: Baseline Attack",
-        )
-        save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
-        copy_cached_renders(phase1_dir, cache_dir)
+        baseline_hash = compute_baseline_hash(attack_config, attack_epochs, args.num_render, supervision_categories)
+        cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
+        phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
+
+        baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
+        if cache_hit:
+            # 缓存命中：baseline_source 和 baseline_target 都从缓存加载
+            # 如果旧缓存没有 baseline_source，重新评估
+            if baseline_source is None:
+                temp_mgr = ModelManager(config)
+                temp_mgr.setup(device='cuda')
+                temp_evaluator = Evaluator(temp_mgr.model, device='cuda')
+                baseline_source = temp_evaluator.evaluate_on_loader(source_val_loader)
+                del temp_evaluator, temp_mgr
+                torch.cuda.empty_cache()
+            copy_cached_renders(cache_dir, phase1_dir)
+        else:
+            baseline_history, baseline_source, baseline_target = run_attack(
+                attack_config, deflection_train_loader if supervision_categories else target_train_loader,
+                source_val_loader,
+                supervision_loader=supervision_train_loader,
+                target_eval_loader=target_eval_loader if supervision_categories else None,
+                save_dir=phase1_dir,
+                attack_epochs=attack_epochs,
+                num_render=args.num_render,
+                eval_every_steps=args.eval_every_steps,
+                phase_name="Phase 1: Baseline Attack",
+            )
+            save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
+            copy_cached_renders(phase1_dir, cache_dir)
 
     # ========== Phase 2: Defense Training ==========
     defense_tag, defense_history = load_or_train_defense(
@@ -216,7 +332,10 @@ def main():
     # ========== Phase 3: Post-Defense Attack ==========
     if defense_tag is not None:
         postdef_history, postdef_source, postdef_target = run_attack(
-            config, target_train_loader, source_val_loader,
+            attack_config, deflection_train_loader if supervision_categories else target_train_loader,
+            source_val_loader,
+            supervision_loader=supervision_train_loader,
+            target_eval_loader=target_eval_loader if supervision_categories else None,
             save_dir=os.path.join(workspace, 'phase3_postdefense_attack'),
             attack_epochs=attack_epochs,
             num_render=args.num_render,
@@ -246,6 +365,8 @@ def main():
             'trap_combo': config['defense'].get('trap_combo'),
             'num_target_layers': config['defense'].get('num_target_layers'),
             'target_layers': target_layers,
+            'semantic_deflection': supervision_categories is not None,
+            'supervision_categories': supervision_categories,
         },
         'baseline_attack': baseline_history,
         'baseline_source': baseline_source,
@@ -263,28 +384,61 @@ def main():
     print(f"\n{'='*80}")
     print("Pipeline 结果汇总")
     print(f"{'='*80}")
-    print(f"{'指标':<20} {'Baseline':>10} {'Post-Defense':>12} {'Delta':>10}")
-    print("-" * 55)
 
-    # Target 指标（攻击后）：LPIPS↑ = 防御有效，PSNR↓ = 防御有效
-    bt = baseline_target or {}
-    pt = postdef_target or {}
-    for key, label in [('lpips', 'Target LPIPS↑'),
-                        ('psnr', 'Target PSNR↓')]:
-        bv = bt.get(key, 0)
-        pv = pt.get(key, 0)
-        print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
+    if supervision_categories:
+        # 语义偏转模式：分别显示 vs input 和 vs supervision
+        print(f"{'指标':<25} {'Baseline':>10} {'Post-Defense':>12} {'Delta':>10}")
+        print("-" * 60)
+
+        bt = baseline_target or {}
+        pt = postdef_target or {}
+
+        # vs Input 指标
+        bt_input = bt.get('input', bt)  # 兼容旧格式
+        pt_input = pt.get('input', pt)
+        print("\n[vs Input Category]")
+        for key, label in [('lpips', 'Input LPIPS↑'),
+                          ('psnr', 'Input PSNR↓')]:
+            bv = bt_input.get(key, 0)
+            pv = pt_input.get(key, 0)
+            print(f"{label:<25} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
+
+        # vs Supervision 指标
+        bt_sup = bt.get('supervision', {})
+        pt_sup = pt.get('supervision', {})
+        print("\n[vs Supervision Category]")
+        for key, label in [('lpips', 'Supervision LPIPS↓'),
+                          ('psnr', 'Supervision PSNR↑')]:
+            bv = bt_sup.get(key, 0)
+            pv = pt_sup.get(key, 0)
+            print(f"{label:<25} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
+    else:
+        # 标准模式：原有显示方式
+        print(f"{'指标':<20} {'Baseline':>10} {'Post-Defense':>12} {'Delta':>10}")
+        print("-" * 55)
+
+        # Target 指标（攻击后）：LPIPS↑ = 防御有效，PSNR↓ = 防御有效
+        bt = baseline_target or {}
+        pt = postdef_target or {}
+        for key, label in [('lpips', 'Target LPIPS↑'),
+                          ('psnr', 'Target PSNR↓')]:
+            bv = bt.get(key, 0)
+            pv = pt.get(key, 0)
+            print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
 
     # Source 指标（防御后攻击前）：PSNR↑ = 保持能力，LPIPS↓ = 保持能力
+    print("\n[Source Capability]")
     bs = baseline_source or {}
     ps = postdef_source or {}
     for key, label in [('psnr', 'Source PSNR↑'),
                         ('lpips', 'Source LPIPS↓')]:
         bv = bs.get(key, 0)
         pv = ps.get(key, 0)
-        print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
+        col_width = 25 if supervision_categories else 20
+        print(f"{label:<{col_width}} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
 
-    print("-" * 55)
+    separator_len = 60 if supervision_categories else 55
+    print("-" * separator_len)
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
     print(f"指标文件: {metrics_path}")
     print(f"工作目录: {workspace}")

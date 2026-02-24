@@ -885,6 +885,48 @@ class ObjaverseRenderedDataset(Dataset):
         }
 
 
+class SemanticDeflectionDataset(Dataset):
+    """
+    语义偏转数据集：输入来自 A 类，监督来自 B 类。
+
+    按 index 配对两个数据集，确保相同 sample_idx 的样本 viewpoint 对齐。
+    shuffle 时两个数据集一起 shuffle，保证训练和评估配对一致。
+
+    Example:
+        >>> input_ds = OmniObject3DDataset(categories=['coconut'], ...)
+        >>> sup_ds = OmniObject3DDataset(categories=['durian'], ...)
+        >>> paired_ds = SemanticDeflectionDataset(input_ds, sup_ds)
+        >>> # paired_ds[i] = coconut input + durian supervision
+    """
+
+    def __init__(self, input_dataset: Dataset, supervision_dataset: Dataset):
+        self.input_dataset = input_dataset
+        self.supervision_dataset = supervision_dataset
+        self.length = min(len(input_dataset), len(supervision_dataset))
+        if len(input_dataset) != len(supervision_dataset):
+            print(f"[SemanticDeflectionDataset] 警告: 输入({len(input_dataset)}) "
+                  f"和监督({len(supervision_dataset)}) 样本数不同，"
+                  f"取 min={self.length}")
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        input_sample = self.input_dataset[idx]
+        sup_sample = self.supervision_dataset[idx]
+        return {
+            'input_images': input_sample['input_images'],
+            'input_transforms': input_sample['input_transforms'],
+            'supervision_images': sup_sample['supervision_images'],
+            'supervision_masks': sup_sample['supervision_masks'],
+            'supervision_transforms': sup_sample['supervision_transforms'],
+            'supervision_elevations': sup_sample.get('supervision_elevations', torch.empty(0)),
+            'supervision_azimuths': sup_sample.get('supervision_azimuths', torch.empty(0)),
+            'input_uuid': input_sample.get('uuid', ''),
+            'supervision_uuid': sup_sample.get('uuid', ''),
+        }
+
+
 def create_dataloader(
     data_root: str,
     categories: Optional[List[str]] = None,

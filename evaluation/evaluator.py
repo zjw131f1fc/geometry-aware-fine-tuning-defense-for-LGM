@@ -666,6 +666,117 @@ class Evaluator:
         }
 
     @torch.no_grad()
+    def evaluate_cross_category(self, input_loader, supervision_loader, num_samples: int = None) -> Dict[str, float]:
+        """
+        跨类别评估：输入来自 input_loader，监督来自 supervision_loader。
+
+        构造混合 batch（input 来自 A 类，supervision 来自 B 类），
+        用 include_input_supervision=False 确保只在 supervision 视角上计算指标。
+
+        用于语义偏转攻击：输入 coconut，与 durian GT 对比。
+
+        Args:
+            input_loader: 输入数据加载器（如 coconut）
+            supervision_loader: 监督数据加载器（如 durian）
+            num_samples: 最多评估多少个样本
+
+        Returns:
+            {psnr, lpips} — masked 版本（仅 supervision 视角）
+        """
+        from tools.utils import get_base_model
+
+        self.model.eval()
+        raw_model = get_base_model(self.model)
+
+        total_psnr, total_lpips = 0.0, 0.0
+        sample_count = 0
+
+        input_iter = iter(input_loader)
+        sup_iter = iter(supervision_loader)
+
+        while True:
+            if num_samples is not None and sample_count >= num_samples:
+                break
+
+            try:
+                input_batch = next(input_iter)
+                sup_batch = next(sup_iter)
+            except StopIteration:
+                break
+
+            # 构造混合 batch：输入来自 input_loader，监督来自 supervision_loader
+            mixed_batch = {
+                'input_images': input_batch['input_images'],
+                'input_transforms': input_batch['input_transforms'],
+                'supervision_images': sup_batch['supervision_images'],
+                'supervision_transforms': sup_batch['supervision_transforms'],
+                'supervision_masks': sup_batch['supervision_masks'],
+            }
+
+            # include_input_supervision=False：输入视角 mask=0，只在 supervision 视角计算指标
+            data = prepare_lgm_data(mixed_batch, self.model, self.device,
+                                    include_input_supervision=False)
+            results = self.model.forward(data, step_ratio=1.0)
+
+            pred_images = results.get('images_pred')
+            gt_images = data['images_output']
+            gt_masks = data['masks_output']
+
+            if pred_images is None or gt_masks is None:
+                continue
+
+            batch_size = pred_images.shape[0]
+            if num_samples is not None:
+                remaining = num_samples - sample_count
+                if batch_size > remaining:
+                    pred_images = pred_images[:remaining]
+                    gt_images = gt_images[:remaining]
+                    gt_masks = gt_masks[:remaining]
+                    batch_size = remaining
+
+            # Masked PSNR（只有 supervision 视角的 mask > 0）
+            for i in range(batch_size):
+                mask_flat = gt_masks[i].reshape(-1)
+                pred_flat = pred_images[i].reshape(-1, 3)
+                gt_flat = gt_images[i].reshape(-1, 3)
+                mask_sum = mask_flat.sum().clamp(min=1.0)
+                masked_mse = ((pred_flat - gt_flat) ** 2 * mask_flat.unsqueeze(-1)).sum() / (mask_sum * 3)
+                total_psnr += (-10 * torch.log10(masked_mse + 1e-8)).item()
+
+            # Masked LPIPS
+            if hasattr(raw_model, 'lpips_loss'):
+                V = pred_images.shape[1]
+                for i in range(batch_size):
+                    crop_lpips_list = []
+                    for v in range(V):
+                        mask_v = gt_masks[i, v, 0]
+                        if mask_v.sum() < 10:
+                            continue
+                        rows = mask_v.sum(dim=1)
+                        cols = mask_v.sum(dim=0)
+                        row_idx = (rows > 0).nonzero(as_tuple=True)[0]
+                        col_idx = (cols > 0).nonzero(as_tuple=True)[0]
+                        if len(row_idx) == 0 or len(col_idx) == 0:
+                            continue
+                        y1, y2 = row_idx[0].item(), row_idx[-1].item() + 1
+                        x1, x2 = col_idx[0].item(), col_idx[-1].item() + 1
+                        gt_crop = gt_images[i, v:v+1, :, y1:y2, x1:x2]
+                        pred_crop = pred_images[i, v:v+1, :, y1:y2, x1:x2]
+                        gt_256 = F.interpolate(gt_crop * 2 - 1, (256, 256), mode='bilinear', align_corners=False)
+                        pred_256 = F.interpolate(pred_crop * 2 - 1, (256, 256), mode='bilinear', align_corners=False)
+                        crop_lpips_list.append(raw_model.lpips_loss(gt_256, pred_256).item())
+                    if crop_lpips_list:
+                        total_lpips += sum(crop_lpips_list) / len(crop_lpips_list)
+
+            sample_count += batch_size
+
+        denom = max(sample_count, 1)
+        return {
+            'psnr': total_psnr / denom,
+            'lpips': total_lpips / denom,
+        }
+
+    @torch.no_grad()
     def render_samples(self, loader, save_dir, prefix='', num_samples=3):
         """
         从 dataloader 中取样本，渲染 GT vs Pred 对比图并保存。
