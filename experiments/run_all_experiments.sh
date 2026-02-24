@@ -76,7 +76,7 @@ echo "=========================================="
 DEFENSE_EPOCHS=(2 4 6 8 10)
 
 for def_ep in "${DEFENSE_EPOCHS[@]}"; do
-    TASKS+=("exp2:def_ep${def_ep}:--categories ${TEST_CAT} --defense_epochs ${def_ep} --attack_epochs 2")
+    TASKS+=("exp2:def_ep${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --defense_epochs ${def_ep} --attack_epochs 2")
 done
 
 # ============================================================================
