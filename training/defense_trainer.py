@@ -222,7 +222,15 @@ class DefenseTrainer:
         cached_gaussians = self._precompute_teacher_gaussians()
         wrapped_dataset = CachedGaussianDataset(source_full_dataset, cached_gaussians)
 
-        # 全部 source 数据用于训练，评估时从中取部分样本
+        # 划分 source train/val（训练用全部，验证用后 10%）
+        from torch.utils.data import Subset
+        n_total = len(wrapped_dataset)
+        source_val_ratio = data_config.get('source_val_ratio', 0.1)
+        n_val = max(int(n_total * source_val_ratio), 1)
+        n_train = n_total  # 训练用全部数据
+        val_start = n_total - n_val
+        val_indices = list(range(val_start, n_total))
+
         self.source_loader = DataLoader(
             wrapped_dataset,
             batch_size=self.config['training']['batch_size'],
@@ -230,7 +238,14 @@ class DefenseTrainer:
             num_workers=self.config['data']['num_workers'],
             pin_memory=True,
         )
-        print(f"  ✓ Source 数据: {len(wrapped_dataset)} 样本（全部训练，评估时取部分样本）")
+        self.source_val_loader = DataLoader(
+            Subset(wrapped_dataset, val_indices),
+            batch_size=self.config['training']['batch_size'],
+            shuffle=False,
+            num_workers=self.config['data']['num_workers'],
+            pin_memory=True,
+        )
+        print(f"  ✓ Source 数据: 训练 {n_train} 样本（全部），验证 {n_val} 样本（后10%）")
 
         # 5. 设置优化器
         training_config = self.config['training']
@@ -936,14 +951,6 @@ class DefenseTrainer:
 
         return avg_metrics, global_step
 
-    def _is_elevation_zero(self, batch, tolerance=5.0):
-        """检查 batch 的输入视图仰角是否接近 0°"""
-        input_elevations = batch.get('input_elevations')
-        if input_elevations is None:
-            return True  # 没有仰角信息时不过滤
-        # input_elevations: [B, V_in]，取所有输入视图的平均绝对仰角
-        return input_elevations.abs().mean().item() <= tolerance
-
     def validate(self):
         """
         验证模型
@@ -951,8 +958,6 @@ class DefenseTrainer:
         同时评估：
         1. Target 数据上的效果（geotrap: trap 损失 / naive_unlearning: 渲染损失）
         2. Source 数据上的蒸馏质量（与预计算 teacher Gaussian 的 MSE）
-
-        只使用输入视图仰角≈0°的样本进行评估。
 
         Returns:
             avg_metrics: 验证损失字典
@@ -962,13 +967,11 @@ class DefenseTrainer:
         total_losses = {}
         num_batches = 0
 
-        # 1. Target 验证（只取仰角≈0的样本）
+        # 1. Target 验证
         if self.method == 'naive_unlearning':
             from tools.utils import prepare_lgm_data
             with torch.no_grad():
                 for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
-                    if not self._is_elevation_zero(batch):
-                        continue
                     data = prepare_lgm_data(batch, self.model_mgr.model, self.device)
                     with torch.autocast('cuda', dtype=torch.bfloat16):
                         results = self.model_mgr.model.forward(data, step_ratio=1.0)
@@ -979,8 +982,6 @@ class DefenseTrainer:
             # GeoTrap: trap 效果
             with torch.no_grad():
                 for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
-                    if not self._is_elevation_zero(batch):
-                        continue
                     input_images = batch['input_images'].to(self.device)
                     student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
 
@@ -995,22 +996,17 @@ class DefenseTrainer:
                         total_losses[key] += value
                     num_batches += 1
 
-        # 2. Source 验证：从训练集取部分样本评估蒸馏质量（只取仰角≈0）
-        source_val_samples = self.defense_config.get('source_val_samples', 5)
+        # 2. Source 验证：蒸馏质量（使用后 10% 验证集）
         source_mse_total = 0.0
         source_batches = 0
         with torch.no_grad():
-            for batch in self.source_loader:
-                if not self._is_elevation_zero(batch):
-                    continue
+            for batch in tqdm(self.source_val_loader, desc="Val [Source]"):
                 input_images = batch['input_images'].to(self.device)
                 teacher_gaussians = batch['teacher_gaussians'].to(self.device)
                 student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
                 mse = torch.nn.functional.mse_loss(student_gaussians, teacher_gaussians)
                 source_mse_total += mse.item()
                 source_batches += 1
-                if source_batches >= source_val_samples:
-                    break
 
         # 合并指标
         avg_metrics = {
@@ -1036,22 +1032,13 @@ class DefenseTrainer:
 
     def _compute_val_grad_cosine(self) -> float:
         """
-        在一个 target val batch（仰角≈0）上计算两个 trap loss 梯度的余弦相似度
+        在一个 target val batch 上计算两个 trap loss 梯度的余弦相似度
 
         不需要 create_graph，只做一阶梯度计算。
         返回值 ∈ [-1, 1]：0 = 正交，1 = 对齐，-1 = 相反。
         """
         self.model_mgr.model.eval()
-
-        # 找到第一个仰角≈0的 batch
-        batch = None
-        for b in self.target_val_loader:
-            if self._is_elevation_zero(b):
-                batch = b
-                break
-        if batch is None:
-            batch = next(iter(self.target_val_loader))
-
+        batch = next(iter(self.target_val_loader))
         input_images = batch['input_images'].to(self.device)
 
         # 需要梯度来计算 grad
