@@ -312,10 +312,12 @@ def main():
         print("  跳过 Phase 1: Baseline Attack")
         print(f"{'='*80}")
         baseline_history, baseline_source, baseline_target = None, None, None
+        baseline_gaussians = None
     else:
         baseline_hash = compute_baseline_hash(attack_config, attack_epochs, args.num_render, supervision_categories)
         cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
         phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
+        gaussians_cache_path = os.path.join(cache_dir, 'baseline_gaussians.pt')
 
         baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
         if cache_hit:
@@ -329,8 +331,15 @@ def main():
                 del temp_evaluator, temp_mgr
                 torch.cuda.empty_cache()
             copy_cached_renders(cache_dir, phase1_dir)
+            # 加载缓存的 Gaussian
+            if os.path.exists(gaussians_cache_path):
+                baseline_gaussians = torch.load(gaussians_cache_path, map_location='cpu', weights_only=True)
+                print(f"[Cache] baseline Gaussians 已加载: {len(baseline_gaussians)} 个样本")
+            else:
+                baseline_gaussians = None
+                print("[Cache] 旧缓存无 baseline Gaussians，Phase 3 将不计算距离")
         else:
-            baseline_history, baseline_source, baseline_target = run_attack(
+            baseline_history, baseline_source, baseline_target, baseline_gaussians = run_attack(
                 attack_config, deflection_train_loader if supervision_categories else target_train_loader,
                 source_val_loader,
                 supervision_loader=supervision_train_loader,
@@ -340,9 +349,14 @@ def main():
                 num_render=args.num_render,
                 eval_every_steps=args.eval_every_steps,
                 phase_name="Phase 1: Baseline Attack",
+                return_gaussians=True,
             )
             save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
             copy_cached_renders(phase1_dir, cache_dir)
+            # 缓存 Gaussian
+            if baseline_gaussians:
+                torch.save(baseline_gaussians, gaussians_cache_path)
+                print(f"[Cache] baseline Gaussians 已缓存: {len(baseline_gaussians)} 个样本")
 
     # ========== Phase 2: Defense Training ==========
     defense_tag, defense_history = load_or_train_defense(
@@ -363,6 +377,7 @@ def main():
             eval_every_steps=args.eval_every_steps,
             model_resume_override=f"tag:{defense_tag}",
             phase_name="Phase 3: Post-Defense Attack",
+            ref_gaussians=baseline_gaussians if not args.skip_baseline else None,
         )
     else:
         # defense.method=none，跳过 Phase 3
@@ -460,6 +475,25 @@ def main():
 
     separator_len = 60 if supervision_categories else 55
     print("-" * separator_len)
+
+    # Gaussian 诊断汇总
+    for phase_label, tgt in [("Baseline", baseline_target), ("Post-Defense", postdef_target)]:
+        if tgt and 'gaussian_diag' in tgt:
+            gd = tgt['gaussian_diag']
+            print(f"\n[Gaussian 诊断 - {phase_label}]")
+            print(f"  diagnosis: {gd.get('diagnosis', 'N/A')}")
+            print(f"  opacity_mean={gd['opacity_mean']:.4f}, "
+                  f"pos_spread={gd['pos_spread']:.4f}, "
+                  f"scale_mean={gd['scale_mean']:.6f}")
+            print(f"  render_white_ratio={gd['render_white_ratio']:.4f}, "
+                  f"rgb_white_ratio={gd['rgb_white_ratio']:.4f}")
+            print(f"  trap: position={gd['trap_position']:.4f}, "
+                  f"scale={gd['trap_scale']:.4f}, "
+                  f"opacity={gd['trap_opacity']:.4f}, "
+                  f"rotation={gd['trap_rotation']:.4f}")
+            if 'gaussian_dist_to_baseline' in gd:
+                print(f"  gaussian_dist_to_baseline={gd['gaussian_dist_to_baseline']:.6f}")
+
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
     print(f"指标文件: {metrics_path}")
     print(f"工作目录: {workspace}")

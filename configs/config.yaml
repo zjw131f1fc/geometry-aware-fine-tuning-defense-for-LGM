@@ -49,7 +49,7 @@ data:
   attack_samples_per_category: 20  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.8
+  source_ratio: 0.6
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
 
@@ -78,7 +78,7 @@ training:
   optimizer_momentum: 0.9
 
   attack_epochs: 4
-  defense_epochs: 60
+  defense_epochs: 10
 
 # 攻击场景配置
 attack:
@@ -131,7 +131,7 @@ defense:
   gradient_accumulation_steps: 8    # 有效 batch_size = 1×8 = 8
 
   # 损失权重
-  lambda_trap: 1.0
+  lambda_trap: 0.005
   lambda_distill: 200.0
   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
@@ -141,13 +141,13 @@ defense:
     gradient_conflict:
       enabled: true
       alternating_antialign: true
-      weight: 10.0
+      weight: 174.0
       every_k_steps: 1
 
   # 参数加噪鲁棒性
   robustness:
     enabled: true
-    weight: 0.1
+    weight: 5.5
     noise_scale: 0.01
     every_k_steps: 1
 

@@ -92,7 +92,6 @@ run_task() {
             ${params} \
             --defense_epochs "${DEFENSE_EPOCHS}" \
             --attack_epochs "${ATTACK_EPOCHS}" \
-            --skip_baseline \
             --tag "${section}_${tag}" \
             --output_dir "${output_dir}"
     } > "${log}" 2>&1 &

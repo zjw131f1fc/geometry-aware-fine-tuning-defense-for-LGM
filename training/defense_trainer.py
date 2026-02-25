@@ -930,12 +930,15 @@ class DefenseTrainer:
 
             global_step += 1
 
-            # 更新进度条
-            pbar.set_postfix({
-                'loss': f"{loss_dict['loss']:.4f}",
-                'step': global_step,
-                'accum': f"{accumulation_counter}/{self.gradient_accumulation_steps}",
-            })
+            # 更新进度条（显示分项 loss）
+            postfix = {'loss': f"{loss_dict['loss']:.4f}"}
+            for k in ('distillation', 'static_combined', 'gradient_conflict', 'param_noise_robust'):
+                if k in loss_dict:
+                    short = {'distillation': 'dist', 'static_combined': 'trap',
+                             'gradient_conflict': 'gc', 'param_noise_robust': 'robust'}[k]
+                    postfix[short] = f"{loss_dict[k]:.4f}"
+            postfix['step'] = global_step
+            pbar.set_postfix(postfix)
 
             # 步回调
             if step_callback is not None:
@@ -1087,7 +1090,16 @@ class DefenseTrainer:
             # 训练
             train_metrics, global_step = self.train_epoch(
                 epoch, global_step=global_step, step_callback=step_callback)
-            print(f"\nEpoch {epoch}/{num_epochs} - Train Loss: {train_metrics['loss']:.4f}")
+            # 打印分项 loss
+            parts = [f"Epoch {epoch}/{num_epochs}"]
+            for k in ('loss', 'distillation', 'static_combined', 'gradient_conflict', 'param_noise_robust'):
+                if k in train_metrics:
+                    parts.append(f"{k}={train_metrics[k]:.4f}")
+            # 打印各 trap 分项
+            for k, v in train_metrics.items():
+                if k.endswith('_static') or k.endswith('_dynamic'):
+                    parts.append(f"{k}={v:.4f}")
+            print("\n  " + " | ".join(parts))
 
             # 验证
             if epoch % validate_every == 0:

@@ -106,7 +106,6 @@ run_task() {
             --config "${CONFIG}" \
             ${params} \
             --defense_epochs "${DEFENSE_EPOCHS}" \
-            --skip_baseline \
             --tag "${section}_${tag}" \
             --output_dir "${output_dir}"
     } > "${log}" 2>&1 &

@@ -140,7 +140,6 @@ run_task() {
             --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
-            --skip_baseline \
             --tag "${exp_id}_${tag}" \
             --output_dir "${output_dir}"
     } > "${log}" 2>&1 &

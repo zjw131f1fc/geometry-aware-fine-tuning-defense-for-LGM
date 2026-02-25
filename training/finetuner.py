@@ -427,7 +427,8 @@ def run_attack(config, target_train_loader, source_val_loader,
                supervision_loader=None, target_eval_loader=None,
                save_dir=None, attack_epochs=None,
                num_render=3, eval_every_steps=10,
-               model_resume_override=None, phase_name="Attack"):
+               model_resume_override=None, phase_name="Attack",
+               return_gaussians=False, ref_gaussians=None):
     """
     一行运行攻击阶段。
 
@@ -450,9 +451,12 @@ def run_attack(config, target_train_loader, source_val_loader,
         eval_every_steps: 每隔多少 step 评估一次
         model_resume_override: 覆盖 model.resume（如 "tag:xxx"）
         phase_name: 阶段名称（用于日志）
+        return_gaussians: 是否返回攻击后在 target 上生成的 Gaussian 列表
+        ref_gaussians: 参考 Gaussian 列表（如 baseline 缓存），用于计算距离
 
     Returns:
-        (step_history, source_metrics, target_metrics):
+        (step_history, source_metrics, target_metrics) 或
+        (step_history, source_metrics, target_metrics, gaussians_list)（当 return_gaussians=True）
             step_history — [{step, epoch, loss, lpips, masked_lpips, ...}, ...]
             source_metrics — 攻击前 source 指标 {psnr, lpips}（masked）
             target_metrics — 攻击后 target 指标，标准模式: {psnr, lpips}，
@@ -612,7 +616,39 @@ def run_attack(config, target_train_loader, source_val_loader,
         print(f"  攻击后 Target PSNR: {target_metrics['psnr']:.2f}, "
               f"LPIPS: {target_metrics['lpips']:.4f}")
 
+    # Gaussian 诊断（标准模式和语义偏转模式都做）
+    print(f"  Gaussian 诊断...")
+    eval_loader_for_diag = target_eval_loader if is_semantic_deflection else target_train_loader
+    diag_result = evaluator.diagnose_gaussians(
+        eval_loader_for_diag, num_samples=8,
+        return_gaussians=return_gaussians,
+        ref_gaussians=ref_gaussians,
+    )
+    if return_gaussians:
+        gaussian_diag, gaussians_list = diag_result
+    else:
+        gaussian_diag = diag_result
+        gaussians_list = None
+
+    print(f"  诊断结果: {gaussian_diag['diagnosis']}")
+    print(f"    opacity_mean={gaussian_diag['opacity_mean']:.4f}, "
+          f"pos_spread={gaussian_diag['pos_spread']:.4f}, "
+          f"scale_mean={gaussian_diag['scale_mean']:.6f}, "
+          f"render_white={gaussian_diag['render_white_ratio']:.4f}")
+    print(f"    trap: position={gaussian_diag['trap_position']:.4f}, "
+          f"scale={gaussian_diag['trap_scale']:.4f}, "
+          f"opacity={gaussian_diag['trap_opacity']:.4f}, "
+          f"rotation={gaussian_diag['trap_rotation']:.4f}")
+    if 'gaussian_dist_to_baseline' in gaussian_diag:
+        print(f"    gaussian_dist_to_baseline={gaussian_diag['gaussian_dist_to_baseline']:.6f}")
+    if isinstance(target_metrics, dict) and 'input' in target_metrics:
+        target_metrics['gaussian_diag'] = gaussian_diag
+    else:
+        target_metrics['gaussian_diag'] = gaussian_diag
+
     del finetuner, evaluator, model, model_mgr
     torch.cuda.empty_cache()
 
+    if return_gaussians:
+        return step_history, source_metrics, target_metrics, gaussians_list
     return step_history, source_metrics, target_metrics

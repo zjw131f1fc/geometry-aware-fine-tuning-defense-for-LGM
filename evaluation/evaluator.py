@@ -530,6 +530,158 @@ class Evaluator:
         return stats
 
     @torch.no_grad()
+    def diagnose_gaussians(self, loader, num_samples: int = None,
+                           return_gaussians: bool = False,
+                           ref_gaussians: Optional[List[torch.Tensor]] = None):
+        """
+        在 dataloader 上生成 Gaussian 并诊断各维度参数。
+
+        用于定位攻击后图像全白的原因：opacity 塌缩、position 跑飞/塌缩、
+        scale 塌缩、RGB 全白等。同时计算 4 个 trap loss 值。
+
+        Args:
+            loader: 数据加载器
+            num_samples: 最多评估多少个样本（默认 None = 全部）
+            return_gaussians: 是否返回收集的 Gaussian 列表（用于缓存）
+            ref_gaussians: 参考 Gaussian 列表（如 baseline attack 的缓存），
+                          用于计算与当前 Gaussian 的距离
+
+        Returns:
+            return_gaussians=False: 诊断指标字典
+            return_gaussians=True:  (诊断指标字典, Gaussian 列表)
+        """
+        self.model.eval()
+
+        # Trap loss 函数（延迟导入，避免循环依赖）
+        from methods.trap_losses import (
+            PositionCollapseLoss, ScaleAnisotropyLoss,
+            OpacityCollapseLoss, RotationAnisotropyLoss,
+        )
+        trap_fns = {
+            'trap_position': PositionCollapseLoss().to(self.device),
+            'trap_scale': ScaleAnisotropyLoss().to(self.device),
+            'trap_opacity': OpacityCollapseLoss().to(self.device),
+            'trap_rotation': RotationAnisotropyLoss().to(self.device),
+        }
+
+        # 累加器
+        accum = {
+            'opacity_mean': 0.0, 'opacity_lt_01': 0.0, 'opacity_lt_001': 0.0,
+            'pos_spread': 0.0, 'pos_out_of_range': 0.0, 'pos_far_away': 0.0,
+            'scale_mean': 0.0, 'scale_tiny': 0.0, 'scale_aniso_ratio': 0.0,
+            'rgb_mean': 0.0, 'rgb_white_ratio': 0.0,
+            'render_white_ratio': 0.0,
+            'trap_position': 0.0, 'trap_scale': 0.0,
+            'trap_opacity': 0.0, 'trap_rotation': 0.0,
+        }
+        collected_gaussians = [] if return_gaussians else None
+        ref_idx = 0  # 用于对齐 ref_gaussians
+        ref_dist_accum = 0.0
+        ref_dist_count = 0
+        sample_count = 0
+
+        for batch in loader:
+            if num_samples is not None and sample_count >= num_samples:
+                break
+
+            data = prepare_lgm_data(batch, self.model, self.device)
+            gaussians = self.model.forward_gaussians(data['input'])
+            B = gaussians.shape[0]
+
+            if num_samples is not None:
+                remaining = num_samples - sample_count
+                if B > remaining:
+                    gaussians = gaussians[:remaining]
+                    B = remaining
+
+            # 解析 14 维: pos(3) + opacity(1) + scale(3) + rotation(4) + rgb(3)
+            pos = gaussians[..., 0:3]
+            opacity = gaussians[..., 3:4].squeeze(-1)
+            scale = gaussians[..., 4:7]
+            rgb = gaussians[..., 11:14]
+
+            # Opacity
+            accum['opacity_mean'] += opacity.mean().item() * B
+            accum['opacity_lt_01'] += (opacity < 0.1).float().mean().item() * B
+            accum['opacity_lt_001'] += (opacity < 0.01).float().mean().item() * B
+
+            # Position
+            pos_spread = pos.std(dim=1).mean().item()
+            out_of_range = ((pos.abs() > 1.0).any(dim=-1)).float().mean().item()
+            far_away = ((pos.abs() > 2.0).any(dim=-1)).float().mean().item()
+            accum['pos_spread'] += pos_spread * B
+            accum['pos_out_of_range'] += out_of_range * B
+            accum['pos_far_away'] += far_away * B
+
+            # Scale
+            accum['scale_mean'] += scale.mean().item() * B
+            accum['scale_tiny'] += (scale < 1e-4).float().mean().item() * B
+            scale_ratio = scale.max(dim=-1).values / (scale.min(dim=-1).values + 1e-8)
+            accum['scale_aniso_ratio'] += scale_ratio.mean().item() * B
+
+            # RGB
+            accum['rgb_mean'] += rgb.mean().item() * B
+            is_white = (rgb > 0.95).all(dim=-1).float().mean().item()
+            accum['rgb_white_ratio'] += is_white * B
+
+            # 渲染白色像素占比（用标准视角快速检查）
+            canonical = self.render_canonical_views(
+                gaussians, elevations=[0], azimuths=[0, 180])  # 只渲染 2 个视角
+            flat = canonical.reshape(-1, 3)
+            white_px = (flat > 0.98).all(dim=-1).float().mean().item()
+            accum['render_white_ratio'] += white_px * B
+
+            # Trap loss 值
+            for trap_name, trap_fn in trap_fns.items():
+                accum[trap_name] += trap_fn(gaussians).item() * B
+
+            # 收集 Gaussian（用于缓存）
+            if collected_gaussians is not None:
+                for i in range(B):
+                    collected_gaussians.append(gaussians[i].cpu())
+
+            # 与 reference Gaussian 的距离
+            if ref_gaussians is not None:
+                for i in range(B):
+                    if ref_idx < len(ref_gaussians):
+                        ref_g = ref_gaussians[ref_idx].to(self.device)
+                        cur_g = gaussians[i]
+                        # L2 距离（逐 Gaussian 点，再平均）
+                        ref_dist_accum += (cur_g - ref_g).pow(2).mean().item()
+                        ref_dist_count += 1
+                        ref_idx += 1
+
+            sample_count += B
+
+        denom = max(sample_count, 1)
+        result = {k: v / denom for k, v in accum.items()}
+
+        # 诊断标签
+        diag = []
+        if result['opacity_mean'] < 0.05:
+            diag.append('opacity_collapse')
+        if result['pos_spread'] < 0.01:
+            diag.append('position_collapse')
+        if result['pos_far_away'] > 0.5:
+            diag.append('position_diverge')
+        if result['scale_mean'] < 1e-4:
+            diag.append('scale_collapse')
+        if result['rgb_white_ratio'] > 0.9:
+            diag.append('rgb_white')
+        if result['render_white_ratio'] > 0.95:
+            diag.append('render_blank')
+        if not diag:
+            diag.append('normal')
+        result['diagnosis'] = ','.join(diag)
+
+        if ref_gaussians is not None and ref_dist_count > 0:
+            result['gaussian_dist_to_baseline'] = ref_dist_accum / ref_dist_count
+
+        if return_gaussians:
+            return result, collected_gaussians
+        return result
+
+    @torch.no_grad()
     def eval_source(self, source_val_loader) -> Dict[str, float]:
         """
         评估 source 数据集上的模型质量。

@@ -31,7 +31,7 @@ echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
 TEST_CAT="coconut"
-DEFENSE_EPOCHS=(5 10 15 20 30 40 50 60)
+DEFENSE_EPOCHS=(2 4 8 16 32)
 
 # ============================================================================
 # 任务列表
@@ -76,7 +76,6 @@ run_task() {
             --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
-            --skip_baseline \
             --tag "${tag}" \
             --output_dir "${output_dir}"
     } > "${log}" 2>&1 &
