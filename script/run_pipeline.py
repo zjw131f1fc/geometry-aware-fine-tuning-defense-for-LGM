@@ -84,10 +84,6 @@ def parse_args():
     parser.add_argument('--skip_baseline', action='store_true',
                         help='跳过 Baseline Attack（Phase 1），直接从 Defense Training 开始')
     # 互锁机制参数
-    parser.add_argument('--multiplicative', type=str, default=None,
-                        help='乘法耦合开关：true / false（覆盖 config）')
-    parser.add_argument('--gradient_conflict', type=str, default=None,
-                        help='梯度冲突正则开关：true / false（覆盖 config）')
     parser.add_argument('--robustness', type=str, default=None,
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
     return parser.parse_args()
@@ -178,14 +174,6 @@ def main():
         config['defense']['num_target_layers'] = args.num_target_layers
 
     # 互锁机制覆盖
-    if args.multiplicative is not None:
-        val = args.multiplicative.lower() == 'true'
-        config['defense']['coupling']['multiplicative'] = val
-        print(f"[Pipeline] 乘法耦合覆盖: {val}")
-    if args.gradient_conflict is not None:
-        val = args.gradient_conflict.lower() == 'true'
-        config['defense']['coupling']['gradient_conflict']['enabled'] = val
-        print(f"[Pipeline] 梯度冲突正则覆盖: {val}")
     if args.robustness is not None:
         val = args.robustness.lower() == 'true'
         config['defense']['robustness']['enabled'] = val

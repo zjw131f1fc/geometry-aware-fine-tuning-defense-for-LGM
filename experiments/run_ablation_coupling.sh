@@ -43,25 +43,17 @@ TRAP_LOSSES="scale,opacity"
 
 TASKS=()
 
-# Baseline：全部启用（乘法耦合 + 梯度冲突 + 参数加噪）
-TASKS+=("5.2:baseline_all:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness true")
+# Baseline：乘法耦合 + 参数加噪
+TASKS+=("5.2:baseline_all:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness true")
 
-# w/o 乘法耦合（只去掉乘法耦合，保留其他两个）
-TASKS+=("5.2:wo_multiplicative:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative false --gradient_conflict true --robustness true")
-
-# w/o 梯度冲突正则（只去掉梯度冲突，保留其他两个）
-TASKS+=("5.2:wo_gradient_conflict:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict false --robustness true")
-
-# w/o 参数加噪鲁棒性（只去掉参数加噪，保留其他两个）
-TASKS+=("5.2:wo_robustness:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness false")
+# w/o 参数加噪鲁棒性
+TASKS+=("5.2:wo_robustness:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness false")
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  1. Baseline (全部启用)"
-echo "  2. w/o 乘法耦合"
-echo "  3. w/o 梯度冲突正则"
-echo "  4. w/o 参数加噪鲁棒性"
+echo "  1. Baseline (乘法耦合 + 参数加噪)"
+echo "  2. w/o 参数加噪鲁棒性"
 echo ""
 
 # ============================================================================

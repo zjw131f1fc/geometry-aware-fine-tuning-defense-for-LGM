@@ -83,34 +83,14 @@ class DefenseTrainer:
         if self.method == 'geotrap':
             self._setup_trap_losses()
 
-        # 互锁配置（仅 geotrap 需要）
+        # 参数加噪配置（仅 geotrap 需要）
         if self.method == 'geotrap':
-            coupling_config = self.defense_config.get('coupling', {})
-            self.use_multiplicative = coupling_config.get('multiplicative', False)
-            gc_config = coupling_config.get('gradient_conflict', {})
-            self.use_gradient_conflict = gc_config.get('enabled', False)
-            self.use_alternating_antialign = gc_config.get('alternating_antialign', False)
-            self.lambda_conflict = gc_config.get('weight', 0.1)
-            self.conflict_every_k = gc_config.get('every_k_steps', 10)
-
             robust_config = self.defense_config.get('robustness', {})
             self.use_param_noise = robust_config.get('enabled', False)
-            self.lambda_robust = robust_config.get('weight', 0.1)
             self.noise_scale = robust_config.get('noise_scale', 0.01)
-            self.robust_every_k = robust_config.get('every_k_steps', 10)
         else:
-            self.use_multiplicative = False
-            self.use_gradient_conflict = False
-            self.use_alternating_antialign = False
-            self.lambda_conflict = 0
-            self.conflict_every_k = 1
             self.use_param_noise = False
-            self.lambda_robust = 0
             self.noise_scale = 0
-            self.robust_every_k = 1
-
-        self._trap_step_counter = 0
-        self._robust_step_counter = 0
 
         # 梯度累积配置
         self.gradient_accumulation_steps = self.defense_config.get('gradient_accumulation_steps', 1)
@@ -270,16 +250,9 @@ class DefenseTrainer:
         num_total = sum(p.numel() for p in self.model_mgr.model.parameters())
         print(f"\n  ✓ 可训练参数: {num_trainable:,} / {num_total:,} ({num_trainable/num_total*100:.3f}%)")
 
-        # 打印互锁配置
-        if self.use_multiplicative or self.use_gradient_conflict or self.use_param_noise:
-            print(f"\n  互锁配置:")
-            if self.use_multiplicative:
-                print(f"    ✓ 乘法耦合: 开启")
-            if self.use_gradient_conflict:
-                mode = "交替反向" if self.use_alternating_antialign else "正交化"
-                print(f"    ✓ 梯度冲突: 每 {self.conflict_every_k} 步, λ={self.lambda_conflict}, 模式={mode}")
-            if self.use_param_noise:
-                print(f"    ✓ 参数加噪: 每 {self.robust_every_k} 步, λ={self.lambda_robust}, σ={self.noise_scale}")
+        # 打印配置
+        if self.use_param_noise:
+            print(f"\n  参数加噪: σ={self.noise_scale}")
 
         print("\n" + "=" * 80)
         print("DefenseTrainer 初始化完成")
@@ -415,13 +388,11 @@ class DefenseTrainer:
         """
         计算陷阱损失（制造几何陷阱）
 
-        支持两种互锁机制：
-        1. 乘法耦合：静态 loss 用 ∏(1 - L_i) 组合，各 trap 梯度被其他 trap 强度放大
-        2. 梯度冲突正则：每 K 步惩罚不同 trap loss 梯度在权重空间的对齐度
+        2+ 个 trap 自动使用乘法耦合 ∏(1-L_i)，单个 trap 直接返回。
 
         Args:
             gaussians: Gaussian 参数 [B, N, 14]
-            model: 模型（用于计算动态敏感度和梯度冲突）
+            model: 模型（用于计算动态敏感度）
 
         Returns:
             loss_dict: 各项陷阱损失的字典
@@ -430,18 +401,15 @@ class DefenseTrainer:
         loss_dict = {}
         total_loss = 0.0
 
-        # 1. 静态陷阱损失（保留 tensor 用于乘法耦合和梯度冲突）
+        # 1. 静态陷阱损失
         static_loss_tensors = {}
         for name, trap_loss_fn in self.trap_losses.items():
             loss = trap_loss_fn(gaussians)
             static_loss_tensors[name] = loss
             loss_dict[name] = loss.item()
 
-        # 2. 组合静态损失
-        if self.use_multiplicative and len(static_loss_tensors) >= 2:
-            # 乘法耦合：∏(1 - L_i) - 1
-            # 各 L_i < 0（最小化），所以 (1 - L_i) > 1
-            # 梯度：∂/∂L_i = -∏_{j≠i}(1 - L_j)，即被其他 trap 强度放大
+        # 2. 自动乘法耦合：2+ 个 trap 用 ∏(1-L_i)，单个直接加
+        if len(static_loss_tensors) >= 2:
             product = torch.ones(1, device=gaussians.device, dtype=gaussians.dtype)
             for loss in static_loss_tensors.values():
                 product = product * (1.0 - loss)
@@ -452,19 +420,7 @@ class DefenseTrainer:
             for loss in static_loss_tensors.values():
                 total_loss += loss
 
-        # 3. 梯度冲突正则（每 K 步）
-        self._trap_step_counter += 1
-        if (self.use_gradient_conflict
-                and len(static_loss_tensors) >= 2
-                and self._trap_step_counter % self.conflict_every_k == 0):
-            conflict_loss = self._compute_gradient_conflict(
-                static_loss_tensors, model
-            )
-            weighted_conflict = self.lambda_conflict * conflict_loss
-            total_loss += weighted_conflict
-            loss_dict['gradient_conflict'] = conflict_loss.item()
-
-        # 4. 动态敏感度损失
+        # 3. 动态敏感度损失
         if self.dynamic_config['position']:
             position = gaussians[..., 0:3]
             sensitivity_loss = self._compute_sensitivity(
@@ -496,18 +452,6 @@ class DefenseTrainer:
             )
             loss_dict['rotation_dynamic'] = sensitivity_loss.item()
             total_loss += sensitivity_loss
-
-        # 5. 参数加噪鲁棒性（每 K 步）
-        self._robust_step_counter += 1
-        if (self.use_param_noise
-                and len(static_loss_tensors) >= 1
-                and self._robust_step_counter % self.robust_every_k == 0):
-            robust_loss = self._compute_robustness_loss(
-                input_images, static_loss_tensors, model
-            )
-            weighted_robust = self.lambda_robust * robust_loss
-            total_loss += weighted_robust
-            loss_dict['param_noise_robust'] = robust_loss.item()
 
         loss_dict['total'] = total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss
         return loss_dict, total_loss
@@ -564,214 +508,34 @@ class DefenseTrainer:
 
         return sensitivity_loss
 
-    def _compute_gradient_conflict(self, static_loss_tensors, model):
+    def _add_param_noise(self, model):
         """
-        计算逐层梯度冲突正则化（高效版本）
-
-        只做 2 次反向传播（每个 trap 一次），然后按层提取梯度，
-        在每层上独立计算余弦相似度并求和。
-
-        支持交替反向模式：交替推动每个 trap 的梯度反向于其他 trap。
+        对模型参数添加高斯噪声，返回原始权重备份
 
         Args:
-            static_loss_tensors: {name: loss_tensor} 各静态 trap loss
             model: 模型
 
         Returns:
-            conflict_loss: 梯度冲突损失（标量，可微分）
+            original_state: {name: tensor} 原始权重备份
         """
-        trap_names = list(static_loss_tensors.keys())
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-
-        # 建立参数到层名的映射
-        param_to_layer = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                param_to_layer[param] = name
-
-        # 收集所有层名（去重，取到 block 级别）
-        layer_names = set()
-        for name in param_to_layer.values():
-            # 提取到 nets.X 或 attns.X 级别
-            parts = name.split('.')
-            for i, part in enumerate(parts):
-                if part in ('nets', 'attns') and i + 1 < len(parts):
-                    layer_names.add('.'.join(parts[:i+2]))
-                    break
-            else:
-                # 没有 nets/attns，取前3段
-                layer_names.add('.'.join(parts[:min(3, len(parts))]))
-        layer_names = sorted(layer_names)
-
-        if self.use_alternating_antialign:
-            # 交替反向模式：只做 2 次反向传播
-            phase = (self._trap_step_counter // self.conflict_every_k) % len(trap_names)
-            active_name = trap_names[phase]
-            reference_names = [n for n in trap_names if n != active_name]
-
-            # 1 次反向传播：active trap（可微）
-            g_active_all = torch.autograd.grad(
-                outputs=static_loss_tensors[active_name],
-                inputs=trainable_params,
-                create_graph=True,
-                retain_graph=True,
-                allow_unused=True,
-            )
-
-            # 1 次反向传播：reference trap（固定）
-            g_ref_all_list = []
-            for ref_name in reference_names:
-                g_ref = torch.autograd.grad(
-                    outputs=static_loss_tensors[ref_name],
-                    inputs=trainable_params,
-                    create_graph=False,
-                    retain_graph=True,
-                    allow_unused=True,
-                )
-                g_ref_all_list.append(g_ref)
-
-            # 按层提取梯度并计算冲突
-            conflict_loss_total = torch.zeros(1, device=self.device, dtype=torch.float32)
-            num_layers = 0
-
-            for layer_name in layer_names:
-                # 提取这一层的参数索引
-                active_grads = []
-                ref_grads_list = [[] for _ in reference_names]
-
-                for idx, param in enumerate(trainable_params):
-                    pname = param_to_layer[param]
-                    if pname.startswith(layer_name):
-                        g_a = g_active_all[idx]
-                        if g_a is not None:
-                            active_grads.append(g_a.reshape(-1))
-                        else:
-                            active_grads.append(torch.zeros(param.numel(), device=param.device, dtype=param.dtype))
-
-                        for ri, g_ref_all in enumerate(g_ref_all_list):
-                            g_r = g_ref_all[idx]
-                            if g_r is not None:
-                                ref_grads_list[ri].append(g_r.reshape(-1).detach())
-                            else:
-                                ref_grads_list[ri].append(torch.zeros(param.numel(), device=param.device, dtype=param.dtype))
-
-                if len(active_grads) == 0:
-                    continue
-
-                g_active_vec = torch.cat(active_grads)
-
-                for ref_grads in ref_grads_list:
-                    g_ref_vec = torch.cat(ref_grads)
-                    norm_a = g_active_vec.norm() + 1e-8
-                    norm_r = g_ref_vec.norm() + 1e-8
-                    cos_sim = torch.dot(g_active_vec, g_ref_vec) / (norm_a * norm_r)
-                    conflict_loss_total = conflict_loss_total + cos_sim
-
-                num_layers += 1
-
-            if num_layers > 0:
-                conflict_loss_total = conflict_loss_total / num_layers
-
-            return conflict_loss_total.squeeze()
-
-        else:
-            # 正交化模式：每个 trap 做 1 次反向传播
-            all_grads = {}
-            for trap_name, loss in static_loss_tensors.items():
-                grads = torch.autograd.grad(
-                    outputs=loss,
-                    inputs=trainable_params,
-                    create_graph=True,
-                    retain_graph=True,
-                    allow_unused=True,
-                )
-                all_grads[trap_name] = grads
-
-            # 按层提取梯度并计算冲突
-            conflict_loss_total = torch.zeros(1, device=self.device, dtype=torch.float32)
-            num_layers = 0
-
-            for layer_name in layer_names:
-                layer_grad_vecs = {}
-                for trap_name, grads in all_grads.items():
-                    layer_grads = []
-                    for idx, param in enumerate(trainable_params):
-                        pname = param_to_layer[param]
-                        if pname.startswith(layer_name):
-                            g = grads[idx]
-                            if g is not None:
-                                layer_grads.append(g.reshape(-1))
-                            else:
-                                layer_grads.append(torch.zeros(param.numel(), device=param.device, dtype=param.dtype))
-
-                    if len(layer_grads) > 0:
-                        layer_grad_vecs[trap_name] = torch.cat(layer_grads)
-
-                if len(layer_grad_vecs) < 2:
-                    continue
-
-                names = list(layer_grad_vecs.keys())
-                for i in range(len(names)):
-                    for j in range(i + 1, len(names)):
-                        g_i = layer_grad_vecs[names[i]]
-                        g_j = layer_grad_vecs[names[j]]
-                        cos_sim = torch.dot(g_i, g_j) / (g_i.norm() * g_j.norm() + 1e-8)
-                        conflict_loss_total = conflict_loss_total + torch.relu(cos_sim)
-
-                num_layers += 1
-
-            if num_layers > 0:
-                conflict_loss_total = conflict_loss_total / num_layers
-
-            return conflict_loss_total.squeeze()
-    def _compute_robustness_loss(self, input_images, static_loss_tensors, model):
-        """
-        计算参数加噪鲁棒性损失
-
-        对所有模型参数添加高斯噪声，计算噪声权重下的 trap loss，
-        确保陷阱对权重扰动鲁棒（模拟攻击者的 full fine-tuning）。
-
-        Args:
-            input_images: 输入图像 [B, 4, 9, H, W]
-            static_loss_tensors: {name: loss_tensor} 各静态 trap loss（干净权重下）
-            model: 模型
-
-        Returns:
-            robustness_loss: 鲁棒性损失（标量，可微分）
-        """
-        # 1. 保存所有参数的原始权重
         original_state = {}
         for name, param in model.named_parameters():
             original_state[name] = param.data.clone()
-
-        # 2. 对所有参数添加高斯噪声（模拟攻击者的 full fine-tuning）
-        for name, param in model.named_parameters():
             noise = torch.randn_like(param) * self.noise_scale
             param.data.add_(noise)
+        return original_state
 
-        # 3. 计算噪声权重下的 trap loss
-        with torch.autocast('cuda', dtype=torch.bfloat16):
-            gaussians_noisy = model.forward_gaussians(input_images)
-        gaussians_noisy = gaussians_noisy.float()
-
-        trap_loss_noisy = torch.zeros(1, device=gaussians_noisy.device, dtype=gaussians_noisy.dtype)
-        for name, trap_loss_fn in self.trap_losses.items():
-            loss_noisy = trap_loss_fn(gaussians_noisy)
-            trap_loss_noisy = trap_loss_noisy + loss_noisy
-
-        # 4. 恢复所有参数的原始权重
+    def _restore_params(self, model, original_state):
+        """恢复模型参数到原始权重"""
         for name, param in model.named_parameters():
             param.data.copy_(original_state[name])
-
-        # 5. 鲁棒性损失：希望噪声下 trap 仍然强（trap loss 是负值，越负越强）
-        # 最小化 -trap_loss_noisy → 最大化 trap_loss_noisy（更负）
-        robustness_loss = -trap_loss_noisy
-
-        return robustness_loss.squeeze()
 
     def train_step(self, batch, is_target_data=True):
         """
         训练一个 step（只计算损失和反向传播，不更新参数）
+
+        Target 数据：加噪权重上前向 → trap loss → 恢复权重 → backward
+        Source 数据：干净权重上前向 → 蒸馏 loss → backward
 
         Args:
             batch: 数据批次
@@ -781,34 +545,50 @@ class DefenseTrainer:
             loss_dict: 损失字典
         """
         self.model_mgr.model.train()
+        model = self.model_mgr.model
 
         # 移动数据到设备
         input_images = batch['input_images'].to(self.device)  # [B, 4, 9, H, W]
-
-        # 学生模型前向传播（bf16 加速，输出 cast 回 fp32 供 trap loss 使用）
-        with torch.set_grad_enabled(True):
-            with torch.autocast('cuda', dtype=torch.bfloat16):
-                student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
-            student_gaussians = student_gaussians.float()
 
         loss_dict = {}
 
         if is_target_data:
             if self.method == 'naive_unlearning':
-                # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升
+                # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升（干净权重）
+                with torch.autocast('cuda', dtype=torch.bfloat16):
+                    student_gaussians = model.forward_gaussians(input_images)
+                student_gaussians = student_gaussians.float()
                 total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
             else:
-                # GeoTrap: 计算陷阱损失
-                trap_loss_dict, trap_loss = self.compute_trap_loss(student_gaussians, self.model_mgr.model, input_images)
+                # GeoTrap: 在加噪权重上前向 → trap loss → 恢复权重
+                original_state = None
+                if self.use_param_noise:
+                    original_state = self._add_param_noise(model)
+
+                with torch.set_grad_enabled(True):
+                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                        student_gaussians = model.forward_gaussians(input_images)
+                    student_gaussians = student_gaussians.float()
+
+                trap_loss_dict, trap_loss = self.compute_trap_loss(
+                    student_gaussians, model)
                 loss_dict.update(trap_loss_dict)
 
                 lambda_trap = self.defense_config.get('lambda_trap', 1.0)
                 total_loss = lambda_trap * trap_loss
 
-        else:
-            # Source Data: 使用预计算的教师 Gaussian 计算蒸馏损失
-            teacher_gaussians = batch['teacher_gaussians'].to(self.device)
+                # 恢复干净权重（backward 仍基于加噪时的计算图）
+                if original_state is not None:
+                    self._restore_params(model, original_state)
 
+        else:
+            # Source Data: 干净权重上前向 → 蒸馏损失
+            with torch.set_grad_enabled(True):
+                with torch.autocast('cuda', dtype=torch.bfloat16):
+                    student_gaussians = model.forward_gaussians(input_images)
+                student_gaussians = student_gaussians.float()
+
+            teacher_gaussians = batch['teacher_gaussians'].to(self.device)
             distill_loss = self.compute_distillation_loss(student_gaussians, teacher_gaussians)
             loss_dict['distillation'] = distill_loss.item()
 
@@ -819,7 +599,6 @@ class DefenseTrainer:
 
         # 反向传播（梯度累积，不立即更新参数）
         if isinstance(total_loss, torch.Tensor):
-            # 梯度缩放：除以累积步数，使得累积后的梯度大小正确
             scaled_loss = total_loss / self.gradient_accumulation_steps
             scaled_loss.backward()
 
@@ -932,10 +711,9 @@ class DefenseTrainer:
 
             # 更新进度条（显示分项 loss）
             postfix = {'loss': f"{loss_dict['loss']:.4f}"}
-            for k in ('distillation', 'static_combined', 'gradient_conflict', 'param_noise_robust'):
+            for k in ('distillation', 'static_combined'):
                 if k in loss_dict:
-                    short = {'distillation': 'dist', 'static_combined': 'trap',
-                             'gradient_conflict': 'gc', 'param_noise_robust': 'robust'}[k]
+                    short = {'distillation': 'dist', 'static_combined': 'trap'}[k]
                     postfix[short] = f"{loss_dict[k]:.4f}"
             postfix['step'] = global_step
             pbar.set_postfix(postfix)
@@ -1020,55 +798,15 @@ class DefenseTrainer:
             source_mse_total / source_batches if source_batches > 0 else 0
         )
 
-        # 3. 耦合与冲突指标（从平均 trap loss 计算）
+        # 3. 乘法耦合指标（从平均 trap loss 计算）
         trap_names = list(self.trap_losses.keys())
         if len(trap_names) >= 2:
-            l1 = avg_metrics[trap_names[0]]
-            l2 = avg_metrics[trap_names[1]]
-            avg_metrics['coupling_value'] = -((1 - l1) * (1 - l2) - 1)
-
-        # 梯度余弦相似度：取一个 target val batch 计算（不需要 create_graph）
-        if len(trap_names) >= 2:
-            avg_metrics['grad_cosine_sim'] = self._compute_val_grad_cosine()
+            product = 1.0
+            for name in trap_names:
+                product *= (1.0 - avg_metrics[name])
+            avg_metrics['coupling_value'] = -(product - 1.0)
 
         return avg_metrics
-
-    def _compute_val_grad_cosine(self) -> float:
-        """
-        在一个 target val batch 上计算两个 trap loss 梯度的余弦相似度
-
-        不需要 create_graph，只做一阶梯度计算。
-        返回值 ∈ [-1, 1]：0 = 正交，1 = 对齐，-1 = 相反。
-        """
-        self.model_mgr.model.eval()
-        batch = next(iter(self.target_val_loader))
-        input_images = batch['input_images'].to(self.device)
-
-        # 需要梯度来计算 grad
-        with torch.enable_grad():
-            student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
-
-            trainable_params = [p for p in self.model_mgr.model.parameters() if p.requires_grad]
-            grad_vectors = []
-
-            for name, trap_loss_fn in self.trap_losses.items():
-                loss = trap_loss_fn(student_gaussians)
-                grads = torch.autograd.grad(
-                    outputs=loss,
-                    inputs=trainable_params,
-                    retain_graph=True,
-                    allow_unused=True,
-                )
-                grad_vec = torch.cat([
-                    g.reshape(-1) if g is not None
-                    else torch.zeros(p.numel(), device=p.device)
-                    for g, p in zip(grads, trainable_params)
-                ])
-                grad_vectors.append(grad_vec)
-
-        g1, g2 = grad_vectors[0], grad_vectors[1]
-        cos_sim = torch.dot(g1, g2) / (g1.norm() * g2.norm() + 1e-8)
-        return cos_sim.item()
 
     def train(self, num_epochs: int, save_dir: str = None, validate_every: int = 1,
               step_callback=None):
@@ -1092,7 +830,7 @@ class DefenseTrainer:
                 epoch, global_step=global_step, step_callback=step_callback)
             # 打印分项 loss
             parts = [f"Epoch {epoch}/{num_epochs}"]
-            for k in ('loss', 'distillation', 'static_combined', 'gradient_conflict', 'param_noise_robust'):
+            for k in ('loss', 'distillation', 'static_combined'):
                 if k in train_metrics:
                     parts.append(f"{k}={train_metrics[k]:.4f}")
             # 打印各 trap 分项
@@ -1227,7 +965,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
                   f"Loss: {train_metrics['loss']:.4f}, "
                   f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
             for k in ('position_static', 'scale_static', 'opacity_static',
-                      'coupling_value', 'grad_cosine_sim'):
+                      'rotation_static', 'coupling_value'):
                 if k in val_metrics:
                     print(f"    {k}: {val_metrics[k]:.4f}")
         else:

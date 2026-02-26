@@ -61,16 +61,10 @@ echo "=========================================="
 
 for def_ep in "${DEFENSE_EPOCHS[@]}"; do
     # Baseline：全部启用
-    TASKS+=("exp2:coupling_baseline_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
-
-    # w/o 乘法耦合
-    TASKS+=("exp2:coupling_wo_mult_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative false --gradient_conflict true --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
-
-    # w/o 梯度冲突
-    TASKS+=("exp2:coupling_wo_gc_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict false --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
+    TASKS+=("exp2:coupling_baseline_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
 
     # w/o 参数加噪
-    TASKS+=("exp2:coupling_wo_robust_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness false --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
+    TASKS+=("exp2:coupling_wo_robust_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness false --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
 done
 
 TOTAL_TASKS=${#TASKS[@]}

@@ -228,7 +228,6 @@ def compute_defense_hash(config):
         'defense': {
             'method': defense_cfg.get('method', 'geotrap'),
             'trap_losses': defense_cfg.get('trap_losses', {}),
-            'coupling': defense_cfg.get('coupling', {}),
             'robustness': defense_cfg.get('robustness', {}),
             'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
             'lambda_distill': defense_cfg.get('lambda_distill', 1.0),

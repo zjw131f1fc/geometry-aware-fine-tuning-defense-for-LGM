@@ -113,10 +113,10 @@ defense:
   target_data:
     samples_per_object: 15  # 与 attack 统一
 
-  # 陷阱损失配置
+  # 陷阱损失配置（2+ 个 static=true 自动乘法耦合）
   trap_losses:
     position:
-      static: false
+      static: true
       dynamic: false
     scale:
       static: true
@@ -125,7 +125,7 @@ defense:
       static: true
       dynamic: false
     rotation:
-      static: false
+      static: true
       dynamic: false
 
   gradient_accumulation_steps: 8    # 有效 batch_size = 1×8 = 8
@@ -135,21 +135,10 @@ defense:
   lambda_distill: 700.0
   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
-  # 互锁配置
-  coupling:
-    multiplicative: true
-    gradient_conflict:
-      enabled: true
-      alternating_antialign: true
-      weight: 300.0
-      every_k_steps: 1
-
-  # 参数加噪鲁棒性
+  # 参数加噪鲁棒性（target batch 在加噪权重上前向，与 trap loss 共用一次前向）
   robustness:
     enabled: true
-    weight: 1.85
     noise_scale: 0.1
-    every_k_steps: 1
 
   # 敏感层自动选择（注释掉 = 全参数微调）
   # trap_combo: scale+opacity
