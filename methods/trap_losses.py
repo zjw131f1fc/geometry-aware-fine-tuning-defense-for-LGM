@@ -211,3 +211,54 @@ class RotationAnisotropyLoss(nn.Module):
 
         loss = torch.stack(losses).mean()
         return loss
+
+
+class ColorCollapseLoss(nn.Module):
+    """
+    Color 塌缩损失
+
+    目标：让所有 Gaussian 的颜色趋同（变成单色块），破坏纹理多样性
+
+    构造 RGB 散布矩阵：
+        c_centered = c_i - mean(c)
+        C = (1/N) Σ c_centered c_centered^T
+
+    然后用统一的各向异性算子：
+        L = -mean(log(λ_max / (λ_min + ε)))
+
+    当所有颜色趋同时，C 退化为低秩，λ_max >> λ_min，loss 更负。
+
+    注意：LGM 的 RGB 激活是 0.5*tanh+0.5，范围 (0,1)。
+    """
+
+    def __init__(self, epsilon=1e-6):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def forward(self, gaussians):
+        """
+        Args:
+            gaussians: [B, N, 14] tensor
+                       RGB 在 [11:14] 位置（0.5*tanh+0.5 激活后，范围 (0,1)）
+
+        Returns:
+            loss: scalar
+        """
+        color = gaussians[..., 11:14]  # [B, N, 3]
+        B, N, _ = color.shape
+
+        losses = []
+        for b in range(B):
+            c_b = color[b]  # [N, 3]
+            c_centered = c_b - c_b.mean(dim=0, keepdim=True)
+            cov = (c_centered.T @ c_centered) / N  # [3, 3]
+            eigenvalues = torch.linalg.eigvalsh(cov)  # [3]
+
+            max_eig = eigenvalues.max()
+            min_eig = eigenvalues.min()
+            log_anisotropy = torch.log(max_eig / (min_eig + self.epsilon))
+
+            losses.append(-log_anisotropy)
+
+        loss = torch.stack(losses).mean()
+        return loss

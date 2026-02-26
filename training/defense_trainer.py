@@ -24,7 +24,7 @@ import json
 
 from models import ModelManager
 from data import DataManager
-from methods.trap_losses import ScaleAnisotropyLoss, PositionCollapseLoss, OpacityCollapseLoss, RotationAnisotropyLoss
+from methods.trap_losses import ScaleAnisotropyLoss, PositionCollapseLoss, OpacityCollapseLoss, RotationAnisotropyLoss, ColorCollapseLoss
 from tools.model_registry import register as registry_register
 
 
@@ -118,6 +118,10 @@ class DefenseTrainer:
         # Rotation 陷阱
         if trap_config.get('rotation', {}).get('static', False):
             self.trap_losses['rotation_static'] = RotationAnisotropyLoss()
+
+        # Color 陷阱
+        if trap_config.get('color', {}).get('static', False):
+            self.trap_losses['color_static'] = ColorCollapseLoss()
 
         # 动态敏感度损失会在训练时计算，这里只记录配置
         self.dynamic_config = {
@@ -965,7 +969,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
                   f"Loss: {train_metrics['loss']:.4f}, "
                   f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
             for k in ('position_static', 'scale_static', 'opacity_static',
-                      'rotation_static', 'coupling_value'):
+                      'rotation_static', 'color_static', 'coupling_value'):
                 if k in val_metrics:
                     print(f"    {k}: {val_metrics[k]:.4f}")
         else:

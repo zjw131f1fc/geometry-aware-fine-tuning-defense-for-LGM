@@ -127,6 +127,9 @@ defense:
     rotation:
       static: true
       dynamic: false
+    color:
+      static: true
+      dynamic: false
 
   gradient_accumulation_steps: 8    # 有效 batch_size = 1×8 = 8
 
