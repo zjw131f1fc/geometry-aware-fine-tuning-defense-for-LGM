@@ -1,9 +1,8 @@
 #!/bin/bash
-# 聚合实验脚本：整合三个主要实验
+# 聚合实验脚本：防御时长消融 + 互锁机制消融
 #
-# 1. 互锁机制消融 (run_ablation_coupling.sh)：defense_epochs = 2,4,6,8
-# 2. 防御时长消融 (run_ablation_defense_epochs.sh)：defense_epochs = 2,4,6,8,10
-# 3. 主实验网格搜索 (run_main.sh)：defense_epochs × attack_epochs = 5×5 网格
+# 实验 1: 防御时长消融 - defense_epochs = 4,8,12,16,20, attack_epochs = 3
+# 实验 2: 互锁机制消融 - 每个 defense_epoch 下做 baseline + 3 个 w/o
 #
 # 用法: bash experiments/run_all_experiments.sh GPU_LIST
 # 示例: bash experiments/run_all_experiments.sh 0,1,2,3
@@ -32,75 +31,46 @@ OUTPUT_ROOT="experiments_output/all_experiments_${TIMESTAMP}"
 mkdir -p "${OUTPUT_ROOT}"
 
 TEST_CAT="coconut"
-CATEGORIES=(knife broccoli conch garlic durian coconut)
-
-# ============================================================================
-# 实验 1: 互锁机制消融 (Section 5.2)
-# defense_epochs = 2,4,6,8
-# ============================================================================
-
-echo ""
-echo "=========================================="
-echo "实验 1: 互锁机制消融"
-echo "=========================================="
-
-TRAP_LOSSES="scale,opacity"
-COUPLING_DEFENSE_EPOCHS=(2 4 6 8)
+ATTACK_EPOCHS=10
+DEFENSE_EPOCHS=(10 20 30 40)
+TRAP_LOSSES="position,scale"
 
 TASKS=()
 
-for def_ep in "${COUPLING_DEFENSE_EPOCHS[@]}"; do
-    # Baseline：全部启用
-    TASKS+=("exp1:coupling_baseline_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness true --defense_epochs ${def_ep} --attack_epochs 3")
-
-    # w/o 乘法耦合
-    TASKS+=("exp1:coupling_wo_mult_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative false --gradient_conflict true --robustness true --defense_epochs ${def_ep} --attack_epochs 3")
-
-    # w/o 梯度冲突
-    TASKS+=("exp1:coupling_wo_conflict_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict false --robustness true --defense_epochs ${def_ep} --attack_epochs 3")
-
-    # w/o 参数加噪
-    TASKS+=("exp1:coupling_wo_robust_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness false --defense_epochs ${def_ep} --attack_epochs 3")
-done
-
 # ============================================================================
-# 实验 2: 防御时长消融
-# defense_epochs = 2,4,6,8,10
+# 实验 1: 防御时长消融
 # ============================================================================
 
 echo ""
 echo "=========================================="
-echo "实验 2: 防御时长消融"
+echo "实验 1: 防御时长消融"
 echo "=========================================="
-
-DEFENSE_EPOCHS=(2 4 6 8 10)
 
 for def_ep in "${DEFENSE_EPOCHS[@]}"; do
-    TASKS+=("exp2:def_ep${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --defense_epochs ${def_ep} --attack_epochs 2")
+    TASKS+=("exp1:def_ep${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
 done
 
 # ============================================================================
-# 实验 3: 主实验网格搜索
-# defense_epochs = 2,4,6,8,10 × attack_epochs = 1,2,3,4,5
+# 实验 2: 互锁机制消融（每个 defense_epoch 下做 4 种配置）
 # ============================================================================
 
 echo ""
 echo "=========================================="
-echo "实验 3: 主实验网格搜索"
+echo "实验 2: 互锁机制消融"
 echo "=========================================="
 
-GRID_DEFENSE_EPOCHS=(2 4 6 8 10)
-GRID_ATTACK_EPOCHS=(1 2 3 4 5)
-METHODS=(naive_unlearning geotrap)
+for def_ep in "${DEFENSE_EPOCHS[@]}"; do
+    # Baseline：全部启用
+    TASKS+=("exp2:coupling_baseline_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
 
-for category in "${CATEGORIES[@]}"; do
-    for method in "${METHODS[@]}"; do
-        for def_ep in "${GRID_DEFENSE_EPOCHS[@]}"; do
-            for att_ep in "${GRID_ATTACK_EPOCHS[@]}"; do
-                TASKS+=("exp3:${category}_${method}_def${def_ep}_att${att_ep}:--categories ${category} --defense_method ${method} --defense_epochs ${def_ep} --attack_epochs ${att_ep}")
-            done
-        done
-    done
+    # w/o 乘法耦合
+    TASKS+=("exp2:coupling_wo_mult_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative false --gradient_conflict true --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
+
+    # w/o 梯度冲突
+    TASKS+=("exp2:coupling_wo_gc_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict false --robustness true --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
+
+    # w/o 参数加噪
+    TASKS+=("exp2:coupling_wo_robust_def${def_ep}:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --multiplicative true --gradient_conflict true --robustness false --defense_epochs ${def_ep} --attack_epochs ${ATTACK_EPOCHS}")
 done
 
 TOTAL_TASKS=${#TASKS[@]}
@@ -108,9 +78,8 @@ echo ""
 echo "=========================================="
 echo "总任务统计"
 echo "=========================================="
-echo "实验 1 (互锁消融): $((4 * 4)) 个任务 (4 配置 × 4 defense_epochs)"
-echo "实验 2 (防御时长): ${#DEFENSE_EPOCHS[@]} 个任务"
-echo "实验 3 (网格搜索): $((6 * 2 * 5 * 5)) 个任务 (6 类别 × 2 方法 × 5 def_ep × 5 att_ep)"
+echo "实验 1 (防御时长): ${#DEFENSE_EPOCHS[@]} 个任务"
+echo "实验 2 (互锁消融): $((${#DEFENSE_EPOCHS[@]} * 4)) 个任务 (${#DEFENSE_EPOCHS[@]} def_ep × 4 配置)"
 echo "总计: ${TOTAL_TASKS} 个任务"
 echo ""
 
@@ -183,35 +152,8 @@ echo "聚合实验结果汇总"
 echo "=========================================="
 echo ""
 
-# 实验 1: 互锁机制消融
-echo "=== 实验 1: 互锁机制消融 ==="
-echo ""
-printf "%-35s %-10s %-15s %-15s %-15s %-15s\n" \
-    "配置" "Def_Ep" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "------------------------------------------------------------------------------------------------------------"
-
-for def_ep in "${COUPLING_DEFENSE_EPOCHS[@]}"; do
-    for config in "baseline" "wo_mult" "wo_conflict" "wo_robust"; do
-        tag="coupling_${config}_def${def_ep}"
-        metrics="${OUTPUT_ROOT}/exp1_${tag}/metrics.json"
-
-        if [ -f "$metrics" ]; then
-            python -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
-print(f'${config:<35s} ${def_ep:<10d} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
-"
-        else
-            printf "%-35s %-10s (未完成或失败)\n" "${config}" "${def_ep}"
-        fi
-    done
-done
-
-echo ""
-echo "=== 实验 2: 防御时长消融 ==="
+# 实验 1: 防御时长消融
+echo "=== 实验 1: 防御时长消融 (attack_epochs=${ATTACK_EPOCHS}) ==="
 echo ""
 printf "%-15s %-15s %-15s %-15s %-15s\n" \
     "defense_epochs" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
@@ -219,7 +161,7 @@ echo "------------------------------------------------------------------------"
 
 for def_ep in "${DEFENSE_EPOCHS[@]}"; do
     tag="def_ep${def_ep}"
-    metrics="${OUTPUT_ROOT}/exp2_${tag}/metrics.json"
+    metrics="${OUTPUT_ROOT}/exp1_${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
         python -c "
@@ -235,46 +177,32 @@ print(f'${def_ep:<15d} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.
     fi
 done
 
+# 实验 2: 互锁机制消融
 echo ""
-echo "=== 实验 3: 主实验网格搜索 ==="
+echo "=== 实验 2: 互锁机制消融 (attack_epochs=${ATTACK_EPOCHS}) ==="
 echo ""
-echo "结果按类别和方法分组，每个配置显示 defense_epochs × attack_epochs 网格"
-echo ""
+printf "%-35s %-10s %-15s %-15s %-15s %-15s\n" \
+    "配置" "Def_Ep" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
+echo "------------------------------------------------------------------------------------------------------------"
 
-for category in "${CATEGORIES[@]}"; do
-    echo "--- ${category} ---"
-    for method in "${METHODS[@]}"; do
-        echo "  ${method}:"
-        printf "    %-8s" "Def\\Att"
-        for att_ep in "${GRID_ATTACK_EPOCHS[@]}"; do
-            printf " %8s" "att${att_ep}"
-        done
-        echo ""
+for def_ep in "${DEFENSE_EPOCHS[@]}"; do
+    for config in "baseline" "wo_mult" "wo_gc" "wo_robust"; do
+        tag="coupling_${config}_def${def_ep}"
+        metrics="${OUTPUT_ROOT}/exp2_${tag}/metrics.json"
 
-        for def_ep in "${GRID_DEFENSE_EPOCHS[@]}"; do
-            printf "    %-8s" "def${def_ep}"
-            for att_ep in "${GRID_ATTACK_EPOCHS[@]}"; do
-                tag="${category}_${method}_def${def_ep}_att${att_ep}"
-                metrics="${OUTPUT_ROOT}/exp3_${tag}/metrics.json"
-
-                if [ -f "$metrics" ]; then
-                    lpips=$(python -c "
+        if [ -f "$metrics" ]; then
+            python -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
 bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-print(f'{bt.get(\"lpips\", 0):.4f}')
-")
-                    printf " %8s" "${lpips}"
-                else
-                    printf " %8s" "N/A"
-                fi
-            done
-            echo ""
-        done
-        echo ""
+bs = m.get('postdefense_source') or m.get('baseline_source') or {}
+print(f'${config:<35s} ${def_ep:<10d} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
+"
+        else
+            printf "%-35s %-10s (未完成或失败)\n" "${config}" "${def_ep}"
+        fi
     done
-    echo ""
 done
 
 echo ""

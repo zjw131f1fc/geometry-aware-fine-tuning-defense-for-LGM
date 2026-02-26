@@ -31,7 +31,7 @@ echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
 TEST_CAT="coconut"
-DEFENSE_EPOCHS=(2 4 8 16 32)
+DEFENSE_EPOCHS=(4 8 12 16 20 24 28)
 
 # ============================================================================
 # 任务列表
@@ -39,7 +39,7 @@ DEFENSE_EPOCHS=(2 4 8 16 32)
 
 TASKS=()
 for ep in "${DEFENSE_EPOCHS[@]}"; do
-    TASKS+=("def_ep${ep}:--categories ${TEST_CAT} --defense_epochs ${ep} --attack_epochs 2")
+    TASKS+=("def_ep${ep}:--categories ${TEST_CAT} --defense_epochs ${ep}")
 done
 
 TOTAL_TASKS=${#TASKS[@]}
