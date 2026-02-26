@@ -2,14 +2,17 @@
 防御训练器 - 支持 GeoTrap 和 Naive Unlearning 两种防御方法
 
 defense.method 配置：
-- geotrap: 几何陷阱防御（Trap Loss + 乘法耦合 + 交替反对齐 + 参数加噪）
+- geotrap: 几何陷阱防御（Trap Loss + 两两乘法耦合 + 参数加噪双前向）
 - naive_unlearning: 朴素遗忘（对 target 渲染 loss 做梯度上升 + source 蒸馏）
 - none: 跳过防御（在 load_or_train_defense 中直接返回）
 
 核心机制：
 1. Source Data → Distillation Loss（保持原有能力）
-2. Target Data → Trap Loss / 梯度上升（制造几何陷阱 / 遗忘）
-3. 敏感层选择性微调（可选）
+2. Target Data → Trap Loss（制造几何陷阱）
+   - 干净权重前向 → trap loss（直接优化）
+   - 加噪权重前向 → trap loss（鲁棒性，确保邻域内有效）
+3. 两两乘法耦合：∑_{i<j} -((1-L_i)(1-L_j)-1) / C(n,2)
+4. 敏感层选择性微调（可选）
 """
 
 import torch
@@ -392,7 +395,8 @@ class DefenseTrainer:
         """
         计算陷阱损失（制造几何陷阱）
 
-        2+ 个 trap 自动使用乘法耦合 ∏(1-L_i)，单个 trap 直接返回。
+        2+ 个 trap 自动使用两两乘法耦合 ∑_{i<j} -((1-L_i)(1-L_j)-1)，单个 trap 直接返回。
+        两两耦合相比全局 ∏(1-L_i) 的优势：梯度分布更均匀，每个 trap 被独立推深。
 
         Args:
             gaussians: Gaussian 参数 [B, N, 14]
@@ -412,16 +416,20 @@ class DefenseTrainer:
             static_loss_tensors[name] = loss
             loss_dict[name] = loss.item()
 
-        # 2. 自动乘法耦合：2+ 个 trap 用 ∏(1-L_i)，单个直接加
-        if len(static_loss_tensors) >= 2:
-            product = torch.ones(1, device=gaussians.device, dtype=gaussians.dtype)
-            for loss in static_loss_tensors.values():
-                product = product * (1.0 - loss)
-            static_combined = -(product - 1.0)
+        # 2. 两两乘法耦合：∑_{i<j} -((1-L_i)(1-L_j)-1) / C(n,2)
+        loss_list = list(static_loss_tensors.values())
+        if len(loss_list) >= 2:
+            pairwise_sum = torch.zeros(1, device=gaussians.device, dtype=gaussians.dtype)
+            count = 0
+            for i in range(len(loss_list)):
+                for j in range(i + 1, len(loss_list)):
+                    pairwise_sum = pairwise_sum - ((1.0 - loss_list[i]) * (1.0 - loss_list[j]) - 1.0)
+                    count += 1
+            static_combined = pairwise_sum / count
             loss_dict['static_combined'] = static_combined.item()
             total_loss += static_combined
         else:
-            for loss in static_loss_tensors.values():
+            for loss in loss_list:
                 total_loss += loss
 
         # 3. 动态敏感度损失
@@ -538,7 +546,7 @@ class DefenseTrainer:
         """
         训练一个 step（只计算损失和反向传播，不更新参数）
 
-        Target 数据：加噪权重上前向 → trap loss → 恢复权重 → backward
+        Target 数据：干净权重 trap loss + 加噪权重 trap loss（双前向）
         Source 数据：干净权重上前向 → 蒸馏 loss → backward
 
         Args:
@@ -564,25 +572,39 @@ class DefenseTrainer:
                 student_gaussians = student_gaussians.float()
                 total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
             else:
-                # GeoTrap: 在加噪权重上前向 → trap loss → 恢复权重
-                original_state = None
+                # GeoTrap: 干净权重 trap loss + 加噪权重 trap loss
+                lambda_trap = self.defense_config.get('lambda_trap', 1.0)
+
+                # (a) 干净权重前向 → trap loss
+                with torch.set_grad_enabled(True):
+                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                        gaussians_clean = model.forward_gaussians(input_images)
+                    gaussians_clean = gaussians_clean.float()
+
+                trap_dict_clean, trap_loss_clean = self.compute_trap_loss(
+                    gaussians_clean, model)
+                loss_dict.update(trap_dict_clean)
+
+                total_loss = lambda_trap * trap_loss_clean
+
+                # (b) 加噪权重前向 → trap loss（鲁棒性）
                 if self.use_param_noise:
                     original_state = self._add_param_noise(model)
 
-                with torch.set_grad_enabled(True):
-                    with torch.autocast('cuda', dtype=torch.bfloat16):
-                        student_gaussians = model.forward_gaussians(input_images)
-                    student_gaussians = student_gaussians.float()
+                    with torch.set_grad_enabled(True):
+                        with torch.autocast('cuda', dtype=torch.bfloat16):
+                            gaussians_noisy = model.forward_gaussians(input_images)
+                        gaussians_noisy = gaussians_noisy.float()
 
-                trap_loss_dict, trap_loss = self.compute_trap_loss(
-                    student_gaussians, model)
-                loss_dict.update(trap_loss_dict)
+                    trap_dict_noisy, trap_loss_noisy = self.compute_trap_loss(
+                        gaussians_noisy, model)
+                    # 记录加噪版本的指标（带 noisy_ 前缀）
+                    for k, v in trap_dict_noisy.items():
+                        loss_dict[f'noisy_{k}'] = v
 
-                lambda_trap = self.defense_config.get('lambda_trap', 1.0)
-                total_loss = lambda_trap * trap_loss
+                    total_loss = total_loss + lambda_trap * trap_loss_noisy
 
-                # 恢复干净权重（backward 仍基于加噪时的计算图）
-                if original_state is not None:
+                    # 恢复干净权重（backward 仍基于两份计算图）
                     self._restore_params(model, original_state)
 
         else:
@@ -802,13 +824,18 @@ class DefenseTrainer:
             source_mse_total / source_batches if source_batches > 0 else 0
         )
 
-        # 3. 乘法耦合指标（从平均 trap loss 计算）
+        # 3. 两两乘法耦合指标（从平均 trap loss 计算）
         trap_names = list(self.trap_losses.keys())
         if len(trap_names) >= 2:
-            product = 1.0
-            for name in trap_names:
-                product *= (1.0 - avg_metrics[name])
-            avg_metrics['coupling_value'] = -(product - 1.0)
+            pairwise_sum = 0.0
+            count = 0
+            for i in range(len(trap_names)):
+                for j in range(i + 1, len(trap_names)):
+                    li = avg_metrics[trap_names[i]]
+                    lj = avg_metrics[trap_names[j]]
+                    pairwise_sum += -((1.0 - li) * (1.0 - lj) - 1.0)
+                    count += 1
+            avg_metrics['coupling_value'] = pairwise_sum / count
 
         return avg_metrics
 
