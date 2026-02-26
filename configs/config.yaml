@@ -49,7 +49,7 @@ data:
   attack_samples_per_category: 20  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.8
+  source_ratio: 0.6
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
 
@@ -134,7 +134,7 @@ defense:
   gradient_accumulation_steps: 8    # 有效 batch_size = 1×8 = 8
 
   # 损失权重
-  lambda_trap: 0.5
+  lambda_trap: 2.0
   lambda_distill: 700.0
   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
