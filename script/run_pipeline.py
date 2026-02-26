@@ -159,7 +159,7 @@ def main():
     # 覆盖 trap_losses 开关 + 自动更新 trap_combo
     if args.trap_losses:
         enabled = sorted(args.trap_losses.split(','))
-        for loss_name in ('position', 'scale', 'opacity', 'rotation'):
+        for loss_name in ('position', 'scale', 'opacity', 'rotation', 'color'):
             config['defense']['trap_losses'][loss_name]['static'] = (loss_name in enabled)
         print(f"[Pipeline] Trap losses 覆盖: {enabled}")
 
