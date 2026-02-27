@@ -2,7 +2,9 @@
 # Trap组合消融实验（Section 5.1）：coconut + durian
 # 5.1.1 单属性Trap (4种) × 2类别 = 8
 # 5.1.2 两两组合Trap (6种) × 2类别 = 12
-# 合计: 20个实验
+# 5.1.3 三属性组合Trap (4种) × 2类别 = 8
+# 5.1.4 四属性全组合Trap (1种) × 2类别 = 2
+# 合计: 30个实验
 #
 # 用法: bash experiments/run_ablation_trap.sh GPU_LIST
 # 示例: bash experiments/run_ablation_trap.sh 0,1,2,3
@@ -32,8 +34,9 @@ echo "测试类别: coconut, durian"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
-CATEGORIES=(coconut durian)
-ATTACK_EPOCHS=5
+CATEGORIES=(knife)
+ATTACK_EPOCHS=6
+DEFENSE_EPOCHS=40
 
 # ============================================================================
 # 任务列表
@@ -42,21 +45,34 @@ ATTACK_EPOCHS=5
 TASKS=()
 
 # 5.1.1 单属性Trap
-for cat in "${CATEGORIES[@]}"; do
-    TASKS+=("5.1.1:single_position_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.1:single_scale_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.1:single_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses rotation --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.1:single_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses opacity --attack_epochs ${ATTACK_EPOCHS}")
-done
+# for cat in "${CATEGORIES[@]}"; do
+#     TASKS+=("5.1.1:single_position_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+#     TASKS+=("5.1.1:single_scale_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+#     TASKS+=("5.1.1:single_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses rotation --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+#     TASKS+=("5.1.1:single_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+# done
 
 # 5.1.2 两两组合Trap
 for cat in "${CATEGORIES[@]}"; do
-    TASKS+=("5.1.2:combo_position_scale_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,scale --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.2:combo_position_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,rotation --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.2:combo_position_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,opacity --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.2:combo_scale_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale,rotation --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.2:combo_scale_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale,opacity --attack_epochs ${ATTACK_EPOCHS}")
-    TASKS+=("5.1.2:combo_rotation_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses rotation,opacity --attack_epochs ${ATTACK_EPOCHS}")
+    TASKS+=("5.1.2:combo_position_scale_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,scale --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.2:combo_position_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,rotation --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.2:combo_position_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.2:combo_scale_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale,rotation --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.2:combo_scale_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.2:combo_rotation_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses rotation,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+done
+
+# 5.1.3 三属性组合Trap
+for cat in "${CATEGORIES[@]}"; do
+    TASKS+=("5.1.3:triple_position_scale_rotation_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,scale,rotation --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.3:triple_position_scale_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,scale,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.3:triple_position_rotation_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,rotation,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+    TASKS+=("5.1.3:triple_scale_rotation_opacity_${cat}:--categories ${cat} --defense_method geotrap --trap_losses scale,rotation,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
+done
+
+# 5.1.4 四属性全组合Trap
+for cat in "${CATEGORIES[@]}"; do
+    TASKS+=("5.1.4:quad_all_${cat}:--categories ${cat} --defense_method geotrap --trap_losses position,scale,rotation,opacity --attack_epochs ${ATTACK_EPOCHS} --defense_epochs ${DEFENSE_EPOCHS}")
 done
 
 TOTAL_TASKS=${#TASKS[@]}
@@ -64,6 +80,8 @@ echo ""
 echo "总任务数: ${TOTAL_TASKS}"
 echo "  - Section 5.1.1 (单属性): 4 × 2类别 = 8 个任务"
 echo "  - Section 5.1.2 (两两组合): 6 × 2类别 = 12 个任务"
+echo "  - Section 5.1.3 (三属性组合): 4 × 2类别 = 8 个任务"
+echo "  - Section 5.1.4 (四属性全组合): 1 × 2类别 = 2 个任务"
 echo ""
 
 # ============================================================================
@@ -134,7 +152,7 @@ echo "=========================================="
 echo "Trap组合消融结果汇总 (Section 5.1)"
 echo "=========================================="
 
-for section_label in "5.1.1:单属性Trap" "5.1.2:两两组合Trap"; do
+for section_label in "5.1.1:单属性Trap" "5.1.2:两两组合Trap" "5.1.3:三属性组合Trap" "5.1.4:四属性全组合Trap"; do
     IFS=':' read -r section section_name <<< "$section_label"
     echo ""
     echo "=== Section ${section}: ${section_name} ==="

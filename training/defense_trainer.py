@@ -2,7 +2,7 @@
 防御训练器 - 支持 GeoTrap 和 Naive Unlearning 两种防御方法
 
 defense.method 配置：
-- geotrap: 几何陷阱防御（Trap Loss + 两两乘法耦合 + 参数加噪双前向）
+- geotrap: 几何陷阱防御（Trap Loss + 两两乘法耦合 + 特征空间梯度冲突 + 参数加噪双前向）
 - naive_unlearning: 朴素遗忘（对 target 渲染 loss 做梯度上升 + source 蒸馏）
 - none: 跳过防御（在 load_or_train_defense 中直接返回）
 
@@ -12,7 +12,9 @@ defense.method 配置：
    - 干净权重前向 → trap loss（直接优化）
    - 加噪权重前向 → trap loss（鲁棒性，确保邻域内有效）
 3. 两两乘法耦合：∑_{i<j} -((1-L_i)(1-L_j)-1) / C(n,2)
-4. 敏感层选择性微调（可选）
+4. 特征空间梯度冲突：在 conv 层输入（U-Net 共享特征瓶颈）上计算不同 trap 梯度的
+   cosine similarity，最小化之（推向 -1），使攻击者修复一个 trap 时加深另一个
+5. 敏感层选择性微调（可选）
 """
 
 import torch
@@ -95,12 +97,22 @@ class DefenseTrainer:
             self.use_param_noise = False
             self.noise_scale = 0
 
+        # 特征空间梯度冲突配置（仅 geotrap 且 trap >= 2 时有效）
+        if self.method == 'geotrap':
+            conflict_config = self.defense_config.get('gradient_conflict', {})
+            self.use_gradient_conflict = conflict_config.get('enabled', False)
+            self.conflict_weight = conflict_config.get('weight', 1.0)
+            self.conflict_every_k = conflict_config.get('every_k_steps', 1)
+        else:
+            self.use_gradient_conflict = False
+
         # 梯度累积配置
         self.gradient_accumulation_steps = self.defense_config.get('gradient_accumulation_steps', 1)
 
         # 训练状态
         self.target_layers = []
         self.frozen_params = []
+        self._train_step_counter = 0  # 用于 gradient conflict 的 every_k_steps
 
     def _setup_trap_losses(self):
         """根据配置创建陷阱损失函数"""
@@ -160,6 +172,19 @@ class DefenseTrainer:
         self.model_mgr = ModelManager(self.config)
         self.model_mgr.setup(apply_lora=False, device=self.device)
         print(f"  ✓ 学生模型已加载")
+
+        # 注册 conv 层 forward hook（用于特征空间梯度冲突）
+        self._conflict_hook_handle = None
+        if self.use_gradient_conflict and len(self.trap_losses) >= 2:
+            model = self.model_mgr.model
+            model._conflict_features = None
+
+            def _capture_conv_input(module, input, output):
+                """捕获 conv 层输入（U-Net 共享特征），保留计算图"""
+                model._conflict_features = input[0]
+
+            self._conflict_hook_handle = model.conv.register_forward_hook(_capture_conv_input)
+            print(f"  ✓ 梯度冲突: 已注册 conv 层 hook (weight={self.conflict_weight})")
 
         # 2. 设置敏感层微调
         if target_layers is not None:
@@ -260,6 +285,8 @@ class DefenseTrainer:
         # 打印配置
         if self.use_param_noise:
             print(f"\n  参数加噪: σ={self.noise_scale}")
+        if self.use_gradient_conflict:
+            print(f"  梯度冲突: weight={self.conflict_weight}, every_k={self.conflict_every_k}")
 
         print("\n" + "=" * 80)
         print("DefenseTrainer 初始化完成")
@@ -520,6 +547,67 @@ class DefenseTrainer:
 
         return sensitivity_loss
 
+    def _compute_gradient_conflict(self, gaussians, model):
+        """
+        计算特征空间梯度冲突正则
+
+        在 model.conv（U-Net 输出 → Gaussian 参数的 1×1 卷积）的输入特征上，
+        计算每对 trap loss 的梯度 cosine similarity，最小化之（推向 -1）。
+
+        原理：不同 trap 作用于 Gaussian 的不同切片（pos/opacity/scale/...），
+        输出空间梯度天然正交，无法产生冲突。但 conv 输入是 U-Net 的共享特征瓶颈，
+        在此处制造冲突意味着 U-Net 无法同时满足多个 trap，攻击者微调时也面临同样困境。
+
+        相比全参数空间梯度冲突（需要 N 次完整 backward），特征空间冲突只需从
+        gaussians 反传到 conv 输入（一层 1×1 卷积），计算量极小。
+
+        Args:
+            gaussians: Gaussian 参数 [B, N, 14]，必须保留计算图
+            model: LGM 模型（需要 model.conv 和 model._conflict_features）
+
+        Returns:
+            conflict_loss: 标量，mean cosine similarity（越负越好）
+            conflict_info: dict，各对 trap 的 cos_sim 值
+        """
+        if len(self.trap_losses) < 2:
+            return torch.tensor(0.0, device=gaussians.device), {}
+
+        # 获取 hook 捕获的 conv 输入特征
+        features = model._conflict_features
+        if features is None:
+            return torch.tensor(0.0, device=gaussians.device), {}
+
+        # 计算每个 trap 对 features 的梯度
+        trap_grads = {}
+        for name, trap_fn in self.trap_losses.items():
+            loss = trap_fn(gaussians)
+            grad = torch.autograd.grad(
+                loss, features,
+                create_graph=True, retain_graph=True,
+            )[0]  # [B*4, 14, h, w]
+            trap_grads[name] = grad.reshape(-1).float()  # 展平 + 转 f32 保证精度
+
+        # 两两 cosine similarity，最小化（推向 -1）
+        names = list(trap_grads.keys())
+        conflict_loss = torch.zeros(1, device=gaussians.device, dtype=torch.float32)
+        count = 0
+        conflict_info = {}
+
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                cos = torch.nn.functional.cosine_similarity(
+                    trap_grads[names[i]].unsqueeze(0),
+                    trap_grads[names[j]].unsqueeze(0),
+                )
+                conflict_loss = conflict_loss + cos
+                conflict_info[f'cos_{names[i]}_vs_{names[j]}'] = cos.item()
+                count += 1
+
+        conflict_loss = conflict_loss / count
+        conflict_info['conflict_mean_cos'] = conflict_loss.item()
+
+        return conflict_loss.squeeze(), conflict_info
+
     def _add_param_noise(self, model):
         """
         对模型参数添加高斯噪声，返回原始权重备份
@@ -586,6 +674,16 @@ class DefenseTrainer:
                 loss_dict.update(trap_dict_clean)
 
                 total_loss = lambda_trap * trap_loss_clean
+
+                # (a.2) 特征空间梯度冲突（在干净前向的计算图上）
+                self._train_step_counter += 1
+                if (self.use_gradient_conflict
+                        and len(self.trap_losses) >= 2
+                        and self._train_step_counter % self.conflict_every_k == 0):
+                    conflict_loss, conflict_info = self._compute_gradient_conflict(
+                        gaussians_clean, model)
+                    loss_dict.update(conflict_info)
+                    total_loss = total_loss + self.conflict_weight * conflict_loss
 
                 # (b) 加噪权重前向 → trap loss（鲁棒性）
                 if self.use_param_noise:
@@ -741,6 +839,8 @@ class DefenseTrainer:
                 if k in loss_dict:
                     short = {'distillation': 'dist', 'static_combined': 'trap'}[k]
                     postfix[short] = f"{loss_dict[k]:.4f}"
+            if 'conflict_mean_cos' in loss_dict:
+                postfix['cos'] = f"{loss_dict['conflict_mean_cos']:.3f}"
             postfix['step'] = global_step
             pbar.set_postfix(postfix)
 
@@ -836,6 +936,23 @@ class DefenseTrainer:
                     pairwise_sum += -((1.0 - li) * (1.0 - lj) - 1.0)
                     count += 1
             avg_metrics['coupling_value'] = pairwise_sum / count
+
+        # 4. 特征空间梯度冲突指标（需要梯度，取第一个 target batch 采样）
+        if (self.use_gradient_conflict and len(self.trap_losses) >= 2
+                and self.target_val_loader is not None):
+            model = self.model_mgr.model
+            model.eval()
+            try:
+                val_batch = next(iter(self.target_val_loader))
+                input_images = val_batch['input_images'].to(self.device)
+                with torch.enable_grad():
+                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                        gaussians = model.forward_gaussians(input_images)
+                    gaussians = gaussians.float()
+                    _, conflict_info = self._compute_gradient_conflict(gaussians, model)
+                avg_metrics.update(conflict_info)
+            except StopIteration:
+                pass
 
         return avg_metrics
 
@@ -996,7 +1113,8 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
                   f"Loss: {train_metrics['loss']:.4f}, "
                   f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
             for k in ('position_static', 'scale_static', 'opacity_static',
-                      'rotation_static', 'color_static', 'coupling_value'):
+                      'rotation_static', 'color_static', 'coupling_value',
+                      'conflict_mean_cos'):
                 if k in val_metrics:
                     print(f"    {k}: {val_metrics[k]:.4f}")
         else:

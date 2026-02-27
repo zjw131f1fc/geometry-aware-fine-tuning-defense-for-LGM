@@ -216,6 +216,21 @@ def main():
             print(f"  {i:2d}. {l}")
     print(f"Output: {workspace}")
 
+    # 打印关键配置，方便事后追溯
+    print("\n--- Config Summary ---")
+    print(f"  source_ratio: {config['data'].get('source_ratio')}")
+    print(f"  lambda_trap: {config['defense'].get('lambda_trap')}")
+    print(f"  lambda_distill: {config['defense'].get('lambda_distill')}")
+    print(f"  distill_loss_order: {config['defense'].get('distill_loss_order')}")
+    print(f"  gradient_accumulation_steps: {config['defense'].get('gradient_accumulation_steps')}")
+    robust_cfg = config['defense'].get('robustness', {})
+    print(f"  robustness: enabled={robust_cfg.get('enabled')}, noise_scale={robust_cfg.get('noise_scale')}")
+    print(f"  training.lr: {config['training'].get('lr')}")
+    print(f"  training.mode: {config['training'].get('mode')}")
+    print(f"  target categories: {config['data']['target'].get('categories')}")
+    print(f"  source categories: {config['data']['source'].get('categories')}")
+    print("--- End Config ---")
+
     # 创建数据加载器（全程复用）
     print("\n创建数据加载器...")
     # 需要 opt 来创建 DataManager，临时加载一下

@@ -233,6 +233,7 @@ def compute_defense_hash(config):
             'lambda_distill': defense_cfg.get('lambda_distill', 1.0),
             'distill_loss_order': defense_cfg.get('distill_loss_order', 2),
             'gradient_accumulation_steps': defense_cfg.get('gradient_accumulation_steps', 4),
+            'gradient_conflict': defense_cfg.get('gradient_conflict', {}),
             'target_data': defense_cfg.get('target_data', {}),
             'target_layers': defense_cfg.get('target_layers'),
         },
