@@ -49,7 +49,7 @@ data:
   attack_samples_per_category: 20  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.9
+  source_ratio: 0.8
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
 
@@ -141,7 +141,7 @@ defense:
   # 参数加噪鲁棒性
   robustness:
     enabled: true
-    noise_scale: 0.1
+    noise_scale: 0.5
 
   # 特征空间梯度冲突（在 conv 层输入特征上计算不同 trap 梯度的 cosine similarity，推向 -1）
   gradient_conflict:

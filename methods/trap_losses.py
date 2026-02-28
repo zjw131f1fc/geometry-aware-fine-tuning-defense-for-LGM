@@ -8,6 +8,52 @@ import torch
 import torch.nn as nn
 
 
+def _sanitize_finite(tensor, clamp_abs=1e6):
+    """将 NaN/Inf 转为有限值，避免线性代数算子崩溃。"""
+    finite = torch.nan_to_num(
+        tensor,
+        nan=0.0,
+        posinf=clamp_abs,
+        neginf=-clamp_abs,
+    )
+    return torch.clamp(finite, min=-clamp_abs, max=clamp_abs)
+
+
+def _safe_eigvalsh_3x3(matrix, epsilon):
+    """
+    对 3x3 对称矩阵做稳定特征值分解。
+
+    策略：
+    1) 先做有限值清理 + 对称化；
+    2) 尝试多档 diagonal jitter；
+    3) 仍失败则回退到 SVD 奇异值（对协方差/散布矩阵等 PSD 场景可用）。
+    """
+    m = _sanitize_finite(matrix).to(dtype=torch.float64)
+    m = 0.5 * (m + m.transpose(-1, -2))
+    eye = torch.eye(m.shape[-1], device=m.device, dtype=m.dtype)
+
+    for jitter in (0.0, epsilon, 1e-5, 1e-4):
+        try:
+            eigvals = torch.linalg.eigvalsh(m + jitter * eye)
+        except RuntimeError:
+            continue
+        if torch.isfinite(eigvals).all():
+            return eigvals.to(dtype=matrix.dtype)
+
+    # 回退路径：SVD 在数值异常时更稳；对 PSD 矩阵，奇异值可视作非负特征值。
+    sv = torch.linalg.svdvals(m + 1e-4 * eye)
+    sv = torch.sort(sv, descending=False)[0]
+    return sv.to(dtype=matrix.dtype)
+
+
+def _log_anisotropy(max_value, min_value, epsilon, max_ratio=1e6):
+    """稳定版 log(max/min)。"""
+    max_safe = torch.clamp(_sanitize_finite(max_value), min=epsilon)
+    min_safe = torch.clamp(_sanitize_finite(min_value), min=epsilon)
+    ratio = torch.clamp(max_safe / min_safe, min=1.0, max=max_ratio)
+    return torch.log(ratio)
+
+
 class ScaleAnisotropyLoss(nn.Module):
     """
     Scale 各向异性损失
@@ -20,9 +66,10 @@ class ScaleAnisotropyLoss(nn.Module):
     log(ratio) 单调递增，梯度 ∝ 1/ratio，数值稳定。
     """
 
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-6, max_ratio=1e6):
         super().__init__()
         self.epsilon = epsilon
+        self.max_ratio = max_ratio
 
     def forward(self, gaussians):
         """
@@ -34,12 +81,13 @@ class ScaleAnisotropyLoss(nn.Module):
             loss: scalar
         """
         scale = gaussians[..., 4:7]  # [B, N, 3]
-        scale_sq = scale ** 2
+        scale_sq = _sanitize_finite(scale ** 2)
 
         max_scale = scale_sq.max(dim=-1)[0]  # [B, N]
         min_scale = scale_sq.min(dim=-1)[0]  # [B, N]
 
-        log_anisotropy = torch.log(max_scale / (min_scale + self.epsilon))
+        log_anisotropy = _log_anisotropy(
+            max_scale, min_scale, self.epsilon, self.max_ratio)
         loss = -log_anisotropy.mean()
 
         return loss
@@ -57,9 +105,10 @@ class PositionCollapseLoss(nn.Module):
     使用 log 尺度避免特征值比率无界增长导致 loss 爆炸。
     """
 
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-6, max_ratio=1e6):
         super().__init__()
         self.epsilon = epsilon
+        self.max_ratio = max_ratio
 
     def forward(self, gaussians):
         """
@@ -78,11 +127,12 @@ class PositionCollapseLoss(nn.Module):
             pos_b = position[b]  # [N, 3]
             pos_centered = pos_b - pos_b.mean(dim=0, keepdim=True)
             cov = (pos_centered.T @ pos_centered) / N  # [3, 3]
-            eigenvalues = torch.linalg.eigvalsh(cov)  # [3]
+            eigenvalues = _safe_eigvalsh_3x3(cov, self.epsilon)
 
             max_eig = eigenvalues.max()
             min_eig = eigenvalues.min()
-            log_anisotropy = torch.log(max_eig / (min_eig + self.epsilon))
+            log_anisotropy = _log_anisotropy(
+                max_eig, min_eig, self.epsilon, self.max_ratio)
 
             losses.append(-log_anisotropy)
 
@@ -96,7 +146,7 @@ class OpacityCollapseLoss(nn.Module):
 
     目标：让 Gaussian 的不透明度趋向 0（变得不可见）
 
-    L = mean(log(opacity + ε))
+    L = mean(log(clamp(opacity, ε, 1)))
 
     opacity ∈ (0, 1)（sigmoid 后），log(opacity) ∈ (-∞, 0)
     最小化 L → opacity → 0 → Gaussian 不可见
@@ -126,7 +176,9 @@ class OpacityCollapseLoss(nn.Module):
             loss: scalar, 负值，越负表示 opacity 越低
         """
         opacity = gaussians[..., 3:4]  # [B, N, 1]
-        loss = torch.log(opacity + self.epsilon).mean()
+        opacity = _sanitize_finite(opacity, clamp_abs=1.0)
+        opacity = torch.clamp(opacity, min=self.epsilon, max=1.0)
+        loss = torch.log(opacity).mean()
         return loss
 
 
@@ -147,9 +199,10 @@ class RotationAnisotropyLoss(nn.Module):
     λ_max >> λ_min，log ratio 增大，loss 更负。
     """
 
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-6, max_ratio=1e6):
         super().__init__()
         self.epsilon = epsilon
+        self.max_ratio = max_ratio
 
     def _quaternion_to_rotation_matrix(self, q):
         """
@@ -164,7 +217,8 @@ class RotationAnisotropyLoss(nn.Module):
             R: [..., 3, 3] 旋转矩阵
         """
         # 归一化四元数
-        q = q / (q.norm(dim=-1, keepdim=True) + 1e-8)
+        q = _sanitize_finite(q, clamp_abs=1e3)
+        q = q / (q.norm(dim=-1, keepdim=True).clamp_min(1e-8))
 
         # LGM 的四元数顺序: (w, x, y, z) — 参见 core/gs.py build_rotation
         w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
@@ -193,7 +247,7 @@ class RotationAnisotropyLoss(nn.Module):
         R = self._quaternion_to_rotation_matrix(rotation)  # [B, N, 3, 3]
 
         # 提取每个 Gaussian 的 Z 轴方向（主轴）
-        e_z = torch.tensor([0.0, 0.0, 1.0], device=gaussians.device)
+        e_z = gaussians.new_tensor([0.0, 0.0, 1.0])
         r = (R @ e_z).squeeze(-1)  # [B, N, 3]
 
         losses = []
@@ -201,11 +255,12 @@ class RotationAnisotropyLoss(nn.Module):
             r_b = r[b]  # [N, 3]
             # 散布矩阵 T_q = (1/N) Σ r_i r_i^T
             T_q = (r_b.T @ r_b) / N  # [3, 3]
-            eigenvalues = torch.linalg.eigvalsh(T_q)  # [3]
+            eigenvalues = _safe_eigvalsh_3x3(T_q, self.epsilon)
 
             max_eig = eigenvalues.max()
             min_eig = eigenvalues.min()
-            log_anisotropy = torch.log(max_eig / (min_eig + self.epsilon))
+            log_anisotropy = _log_anisotropy(
+                max_eig, min_eig, self.epsilon, self.max_ratio)
 
             losses.append(-log_anisotropy)
 
@@ -231,9 +286,10 @@ class ColorCollapseLoss(nn.Module):
     注意：LGM 的 RGB 激活是 0.5*tanh+0.5，范围 (0,1)。
     """
 
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-6, max_ratio=1e6):
         super().__init__()
         self.epsilon = epsilon
+        self.max_ratio = max_ratio
 
     def forward(self, gaussians):
         """
@@ -252,11 +308,12 @@ class ColorCollapseLoss(nn.Module):
             c_b = color[b]  # [N, 3]
             c_centered = c_b - c_b.mean(dim=0, keepdim=True)
             cov = (c_centered.T @ c_centered) / N  # [3, 3]
-            eigenvalues = torch.linalg.eigvalsh(cov)  # [3]
+            eigenvalues = _safe_eigvalsh_3x3(cov, self.epsilon)
 
             max_eig = eigenvalues.max()
             min_eig = eigenvalues.min()
-            log_anisotropy = torch.log(max_eig / (min_eig + self.epsilon))
+            log_anisotropy = _log_anisotropy(
+                max_eig, min_eig, self.epsilon, self.max_ratio)
 
             losses.append(-log_anisotropy)
 

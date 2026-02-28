@@ -440,6 +440,8 @@ class DefenseTrainer:
         static_loss_tensors = {}
         for name, trap_loss_fn in self.trap_losses.items():
             loss = trap_loss_fn(gaussians)
+            loss = torch.nan_to_num(loss, nan=0.0, posinf=50.0, neginf=-50.0)
+            loss = torch.clamp(loss, min=-50.0, max=50.0)
             static_loss_tensors[name] = loss
             loss_dict[name] = loss.item()
 
@@ -581,6 +583,8 @@ class DefenseTrainer:
         trap_grads = {}
         for name, trap_fn in self.trap_losses.items():
             loss = trap_fn(gaussians)
+            loss = torch.nan_to_num(loss, nan=0.0, posinf=50.0, neginf=-50.0)
+            loss = torch.clamp(loss, min=-50.0, max=50.0)
             grad = torch.autograd.grad(
                 loss, features,
                 create_graph=True, retain_graph=True,
@@ -1130,4 +1134,3 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
     torch.cuda.empty_cache()
 
     return tag, epoch_history
-
