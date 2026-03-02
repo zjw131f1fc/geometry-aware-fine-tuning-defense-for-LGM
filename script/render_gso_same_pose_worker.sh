@@ -17,8 +17,8 @@ GPU_ID="$2"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-BLENDER="${BLENDER_PATH:-/mnt/huangjiaxin/blender-3.2.2-linux-x64/blender}"
-TEMPLATE="${TEMPLATE_JSON:-datas/omniobject3d___OmniObject3D-New/raw/blender_renders/pitaya_010/render/transforms.json}"
+BLENDER="${BLENDER_PATH:-$ROOT_DIR/../blender-3.2.2-linux-x64/blender}"
+TEMPLATE="${TEMPLATE_JSON:-datas/omniobject3d___OmniObject3D-New/raw/blender_renders/box_001/render/transforms.json}"
 INPUT_ROOT="${INPUT_ROOT:-datas/GSO/loose_overlap_clean5}"
 OUT_ROOT="${OUT_ROOT:-datas/GSO/render_same_pose_all_100v_512}"
 NUM_VIEWS="${NUM_VIEWS:-100}"
@@ -36,9 +36,26 @@ if [[ ! -f "$TEMPLATE" ]]; then
   echo "[ERROR] Missing template transforms: $TEMPLATE"
   exit 1
 fi
+
+# Auto-generate manifest if missing (model<TAB>class). Deterministic order.
 if [[ ! -f "$MANIFEST" ]]; then
-  echo "[ERROR] Missing manifest: $MANIFEST"
-  exit 1
+  echo "[WARN] Missing manifest: $MANIFEST"
+  echo "[INFO] Generating manifest from: $INPUT_ROOT"
+  mkdir -p "$(dirname "$MANIFEST")"
+  : > "$MANIFEST"
+
+  while IFS= read -r -d '' cls_path; do
+    cls="$(basename "$cls_path")"
+    while IFS= read -r -d '' model_path; do
+      model="$(basename "$model_path")"
+      obj="$model_path/meshes/model.obj"
+      if [[ -f "$obj" ]]; then
+        printf "%s\t%s\n" "$model" "$cls" >> "$MANIFEST"
+      fi
+    done < <(find "$cls_path" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+  done < <(find "$INPUT_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+
+  echo "[OK] Manifest generated: $MANIFEST ($(wc -l < "$MANIFEST") rows)"
 fi
 
 TOTAL=$(wc -l < "$MANIFEST")
