@@ -9,6 +9,23 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+# Prefer project venv python if available; allow override via $PYTHON
+if [[ -z "${PYTHON:-}" ]]; then
+    if [[ -x "${ROOT_DIR}/../venvs/3d-defense/bin/python" ]]; then
+        PYTHON="${ROOT_DIR}/../venvs/3d-defense/bin/python"
+    else
+        PYTHON="python"
+    fi
+fi
+
+# Avoid OpenMP env issues + make matplotlib cache writable (important for multiprocessing)
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+mkdir -p "${MPLCONFIGDIR}"
+
 if [ $# -eq 0 ]; then
     echo "用法: bash experiments/run_all_experiments.sh GPU_LIST"
     echo "示例: bash experiments/run_all_experiments.sh 0,1,2,3"
@@ -101,7 +118,7 @@ run_task() {
         echo "Params: ${params}"
         echo ""
 
-        XFORMERS_DISABLED=1 python script/run_pipeline.py \
+        XFORMERS_DISABLED=1 "${PYTHON}" script/run_pipeline.py \
             --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
@@ -160,7 +177,7 @@ for def_ep in "${DEFENSE_EPOCHS[@]}"; do
     metrics="${OUTPUT_ROOT}/exp1_${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        python -c "
+        \"${PYTHON}\" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -187,7 +204,7 @@ for def_ep in "${DEFENSE_EPOCHS[@]}"; do
         metrics="${OUTPUT_ROOT}/exp2_${tag}/metrics.json"
 
         if [ -f "$metrics" ]; then
-            python -c "
+            \"${PYTHON}\" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
