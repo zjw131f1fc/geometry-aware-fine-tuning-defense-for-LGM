@@ -38,6 +38,8 @@ echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
 
 CONFIG="configs/config.yaml"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
+DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
+DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
@@ -98,16 +100,24 @@ run_task() {
         echo "Params: ${params}"
         echo ""
 
-	        XFORMERS_DISABLED=1 "${PYTHON}" script/run_pipeline.py \
-	            --gpu "${gpu}" \
-	            --config "${CONFIG}" \
-	            ${params} \
-	            --defense_epochs "${DEFENSE_EPOCHS}" \
-	            --attack_epochs "${ATTACK_EPOCHS}" \
-	            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
-	            --tag "${section}_${tag}" \
-	            --output_dir "${output_dir}"
-	    } > "${log}" 2>&1 &
+        extra_args=()
+        if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
+            extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+        fi
+        if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
+            extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
+        fi
+        XFORMERS_DISABLED=1 "${PYTHON}" script/run_pipeline.py \
+            --gpu "${gpu}" \
+            --config "${CONFIG}" \
+            ${params} \
+            --defense_epochs "${DEFENSE_EPOCHS}" \
+            --attack_epochs "${ATTACK_EPOCHS}" \
+            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+            --tag "${section}_${tag}" \
+            --output_dir "${output_dir}" \
+            "${extra_args[@]}"
+    } > "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }

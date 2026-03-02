@@ -305,6 +305,16 @@ def main():
     print(f"  attack.grad_accumulation_steps: {config['training'].get('gradient_accumulation_steps')}")
     print(f"  defense.grad_accumulation_steps: {config['defense'].get('gradient_accumulation_steps')}")
     print(f"  defense.batch_size: {config['defense'].get('batch_size')}")
+    try:
+        attack_bs = int(config['training'].get('batch_size', 1))
+        attack_ga = int(config['training'].get('gradient_accumulation_steps', 1))
+        defense_bs_cfg = config.get('defense', {}).get('batch_size')
+        defense_bs = attack_bs if defense_bs_cfg is None else int(defense_bs_cfg)
+        defense_ga = int(config.get('defense', {}).get('gradient_accumulation_steps', 1))
+        print(f"  attack.effective_batch_size: {attack_bs}×{attack_ga}={attack_bs * attack_ga}")
+        print(f"  defense.effective_batch_size: {defense_bs}×{defense_ga}={defense_bs * defense_ga}")
+    except Exception:
+        pass
     robust_cfg = config['defense'].get('robustness', {})
     print(f"  robustness: enabled={robust_cfg.get('enabled')}, noise_scale={robust_cfg.get('noise_scale')}")
     print(f"  training.lr: {config['training'].get('lr')}")

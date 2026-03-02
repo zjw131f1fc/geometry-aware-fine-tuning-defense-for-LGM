@@ -54,6 +54,8 @@ TEST_CAT="coconut"
 ATTACK_EPOCHS=5
 DEFENSE_EPOCHS=60
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
+DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
+DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 
 # ============================================================================
 # 任务列表（优先级排序：语义偏转 > 其他）
@@ -121,15 +123,23 @@ run_task() {
         echo ""
 
         # 执行 pipeline
-	        "${PYTHON}" script/run_pipeline.py \
-	            --gpu "${gpu}" \
-	            --config "${CONFIG}" \
-	            ${params} \
-	            --defense_epochs "${DEFENSE_EPOCHS}" \
-	            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
-	            --tag "${section}_${tag}" \
-	            --output_dir "${output_dir}"
-	    } > "${log}" 2>&1 &
+        extra_args=()
+        if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
+            extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+        fi
+        if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
+            extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
+        fi
+        "${PYTHON}" script/run_pipeline.py \
+            --gpu "${gpu}" \
+            --config "${CONFIG}" \
+            ${params} \
+            --defense_epochs "${DEFENSE_EPOCHS}" \
+            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+            --tag "${section}_${tag}" \
+            --output_dir "${output_dir}" \
+            "${extra_args[@]}"
+    } > "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }

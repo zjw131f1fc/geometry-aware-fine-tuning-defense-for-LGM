@@ -40,6 +40,8 @@ METHODS=(geotrap naive_unlearning)
 
 CONFIG="configs/config.yaml"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
+DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
+DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
@@ -77,6 +79,13 @@ run_task() {
 
     {
         echo "=== GPU ${gpu}: ${tag} ==="
+        extra_args=()
+        if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
+            extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+        fi
+        if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
+            extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
+        fi
         "${PYTHON}" script/run_pipeline.py \
             --gpu "${gpu}" \
             --config "${CONFIG}" \
@@ -84,7 +93,8 @@ run_task() {
             --defense_method "${method}" \
             --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
             --tag "${tag}" \
-            --output_dir "${OUTPUT_ROOT}/${tag}"
+            --output_dir "${OUTPUT_ROOT}/${tag}" \
+            "${extra_args[@]}"
     } > "${log}" 2>&1 &
 
     local pid=$!

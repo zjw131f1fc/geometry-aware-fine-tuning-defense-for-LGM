@@ -44,6 +44,8 @@ METHODS=(geotrap naive_unlearning)
 ATTACK_TARGET_DATASET="gso"
 DEFENSE_TARGET_DATASET="omni"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
+DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
+DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -85,6 +87,13 @@ run_task() {
     echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
 
     echo "=== GPU ${gpu}: ${tag} ===" > "${log}"
+    extra_args=()
+    if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
+        extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+    fi
+    if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
+        extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
+    fi
     "${PYTHON}" script/run_pipeline.py \
         --gpu "${gpu}" \
         --config "${CONFIG}" \
@@ -94,7 +103,8 @@ run_task() {
         --defense_target_dataset "${DEFENSE_TARGET_DATASET}" \
         --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
         --tag "${tag}" \
-        --output_dir "${OUTPUT_ROOT}/${tag}" >> "${log}" 2>&1 &
+        --output_dir "${OUTPUT_ROOT}/${tag}" \
+        "${extra_args[@]}" >> "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }
