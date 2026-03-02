@@ -21,7 +21,9 @@ echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
 
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_ROOT="experiments_output/ablation_defense_epochs_${TIMESTAMP}"
+# 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
+EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
+OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_defense_epochs_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
 echo "=========================================="

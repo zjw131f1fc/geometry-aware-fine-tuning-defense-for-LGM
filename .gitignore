@@ -5,9 +5,12 @@ start_claude.sh
 datas
 lib/
 output/
+output
 .vscode
 *__pycache__/
 experiments_output/
+experiments_output/
+experiments_output
 
 # 临时文件和日志
 *.log

@@ -1,0 +1,140 @@
+# 3D Defense smoke-test 配置（用于快速验证 run_pipeline 全流程是否可跑通）
+#
+# 目标：
+# - 尽量少跑数据/步数，快速覆盖 Baseline Attack → Defense → Post-Defense Attack 三阶段
+# - 不改代码，仅通过独立 config 缩小 workload
+#
+# 说明：
+# - 仍沿用原 config 里的绝对路径（/mnt/huangjiaxin/3d-defense/...），本机通过软链接兼容
+
+model:
+  size: big
+  resume: /mnt/huangjiaxin/3d-defense/lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  device: cuda
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.1
+  target_modules:
+    - qkv
+    - proj
+
+data:
+  root: /mnt/huangjiaxin/3d-defense/datas
+
+  # Source 数据：缩小样本用于蒸馏/评估
+  source:
+    dataset: objaverse
+    max_samples: 40
+    samples_per_object: 1
+
+  # Target 数据：只跑一个类别，缩小 attack/defense 的数据规模
+  target:
+    dataset: omni
+    categories:
+      - shoe
+
+  gso:
+    render_dir: GSO/render_same_pose_all_100v_512
+
+  # 仅保留 shoe 的 split，其他类别不启用
+  object_split:
+    shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
+  attack_samples_per_category: 3
+
+  source_ratio: 0.6
+  source_val_ratio: 0.1
+
+  max_samples: null
+  num_workers: 0
+  view_selector: orthogonal
+  angle_offset: 0.0
+  num_supervision_views: 2
+  samples_per_object: 2
+
+training:
+  mode: full
+  batch_size: 1
+  lr: 0.00003
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  gradient_accumulation_steps: 1
+  lambda_lpips: 1.0
+  mixed_precision: bf16
+
+  optimizer: adamw
+  optimizer_betas: [0.9, 0.95]
+  optimizer_momentum: 0.9
+
+  # 为了让 run_pipeline 走 epoch-based（避免 steps=800/1000 过长）
+  attack_steps: null
+  attack_epochs: 1
+  defense_steps: null
+  defense_epochs: 1
+
+attack:
+  scenario: malicious_content
+  mode: null
+
+  malicious_content:
+    malicious_categories:
+      - shoe
+
+  semantic_deflection:
+    enabled: false
+    input_categories: null
+    supervision_categories: null
+
+defense:
+  method: geotrap
+  tag: smoke
+
+  target:
+    dataset: null
+    categories: null
+    object_split: null
+    samples_per_object: 2
+
+  trap_losses:
+    position:
+      static: false
+      dynamic: false
+    scale:
+      static: true
+      dynamic: false
+    opacity:
+      static: true
+      dynamic: false
+    rotation:
+      static: false
+      dynamic: false
+    color:
+      static: false
+      dynamic: false
+
+  gradient_accumulation_steps: 1
+
+  lambda_trap: 1.0
+  lambda_distill: 50.0
+  distill_loss_order: 1
+
+  robustness:
+    enabled: false
+    noise_scale: 0.5
+
+  gradient_conflict:
+    enabled: false
+    weight: 15000.0
+    every_k_steps: 1
+
+  eval:
+    eval_every_steps: 999999
+    attack_epochs: 1
+    attack_lr: 0.00005
+    num_render_samples: 1
+
+misc:
+  workspace: ./output/workspace_smoke
+  seed: 42
+

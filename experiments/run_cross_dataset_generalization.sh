@@ -1,14 +1,17 @@
 #!/bin/bash
-# 主实验：5个类别 × 2种防御方法（naive_unlearning + geotrap）
-# 每个pipeline自动产生Undefended（Phase 1）和对应防御方法（Phase 3）的结果
+# 跨数据集泛化实验：
+# - Attack 阶段 target 使用 GSO
+# - Defense 阶段 target 使用 OmniObject3D
 #
-# 用法: bash experiments/run_main.sh 0,1,2,3
+# 每个 pipeline 自动产生 Undefended（Phase 1）和对应防御方法（Phase 3）的结果
+#
+# 用法: bash experiments/run_cross_dataset_generalization.sh 0,1,2,3
 
 set -e
 
 if [ $# -eq 0 ]; then
-    echo "用法: bash experiments/run_main.sh GPU_LIST"
-    echo "示例: bash experiments/run_main.sh 0,1,2,3"
+    echo "用法: bash experiments/run_cross_dataset_generalization.sh GPU_LIST"
+    echo "示例: bash experiments/run_cross_dataset_generalization.sh 0,1,2,3"
     exit 1
 fi
 
@@ -21,15 +24,20 @@ echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
 CATEGORIES=(shoe plant dish bowl box)
 METHODS=(geotrap naive_unlearning)
 
+ATTACK_TARGET_DATASET="gso"
+DEFENSE_TARGET_DATASET="omni"
+
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
-OUTPUT_ROOT="${EXPERIMENTS_BASE}/main_experiment_${TIMESTAMP}"
+OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_omni_defense_gso_attack_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
 echo "=========================================="
-echo "主实验: 5类别 × 2方法 = 10个pipeline"
+echo "跨数据集泛化实验: 5类别 × 2方法 = 10个pipeline"
+echo "Attack target dataset:  ${ATTACK_TARGET_DATASET}"
+echo "Defense target dataset: ${DEFENSE_TARGET_DATASET}"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
@@ -45,14 +53,15 @@ TOTAL_TASKS=${#TASKS[@]}
 echo "总任务数: ${TOTAL_TASKS}"
 echo ""
 
-# 任务启动函数（指定GPU）
+# 任务分配函数
 run_task() {
     local task_idx=$1
-    local gpu=$2
+    local gpu_idx=$((task_idx % NUM_GPUS))
+    local gpu=${GPUS[$gpu_idx]}
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r category method <<< "$task"
-    local tag="${category}_${method}"
+    local tag="${category}_${method}_omni2gso"
     local log="${OUTPUT_ROOT}/${tag}.log"
 
     echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
@@ -64,68 +73,35 @@ run_task() {
             --config "${CONFIG}" \
             --categories "${category}" \
             --defense_method "${method}" \
+            --attack_target_dataset "${ATTACK_TARGET_DATASET}" \
+            --defense_target_dataset "${DEFENSE_TARGET_DATASET}" \
             --tag "${tag}" \
             --output_dir "${OUTPUT_ROOT}/${tag}"
     } > "${log}" 2>&1 &
 
-    local pid=$!
-    PID_TO_GPU["${pid}"]="${gpu}"
-    PID_TO_TAG["${pid}"]="${tag}"
-    RUNNING=$((RUNNING + 1))
-    echo "[GPU ${gpu}] PID: ${pid}, log: ${log}"
+    echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }
 
-# 动态调度：谁先空闲就立刻补下一个任务
-declare -A PID_TO_GPU
-declare -A PID_TO_TAG
-RUNNING=0
-NEXT_TASK=0
-COMPLETED=0
-FAILED=0
+# 启动所有任务（自动分配到GPU）
+for i in $(seq 0 $((TOTAL_TASKS-1))); do
+    run_task $i
 
-# 先给每张GPU各发一个任务
-for gpu in "${GPUS[@]}"; do
-    if [ ${NEXT_TASK} -lt ${TOTAL_TASKS} ]; then
-        run_task "${NEXT_TASK}" "${gpu}"
-        NEXT_TASK=$((NEXT_TASK + 1))
+    # 每启动NUM_GPUS个任务后等待，避免同时启动太多
+    if [ $(((i+1) % NUM_GPUS)) -eq 0 ] && [ $((i+1)) -lt ${TOTAL_TASKS} ]; then
+        echo ""
+        echo "已启动 $((i+1)) 个任务，等待当前批次完成..."
+        wait
+        echo "当前批次完成，继续启动..."
+        echo ""
     fi
 done
 
 echo ""
-echo "动态调度已启动：GPU 空闲后立即补任务"
+echo "所有任务已启动，等待完成..."
+echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
+wait
 echo ""
-
-while [ ${RUNNING} -gt 0 ]; do
-    finished_pid=""
-    if wait -n -p finished_pid; then
-        exit_code=0
-    else
-        exit_code=$?
-    fi
-
-    finished_gpu="${PID_TO_GPU[${finished_pid}]}"
-    finished_tag="${PID_TO_TAG[${finished_pid}]}"
-    unset PID_TO_GPU["${finished_pid}"]
-    unset PID_TO_TAG["${finished_pid}"]
-
-    RUNNING=$((RUNNING - 1))
-    COMPLETED=$((COMPLETED + 1))
-
-    if [ ${exit_code} -eq 0 ]; then
-        echo "[GPU ${finished_gpu}] 完成: ${finished_tag} (${COMPLETED}/${TOTAL_TASKS})"
-    else
-        FAILED=$((FAILED + 1))
-        echo "[GPU ${finished_gpu}] 失败: ${finished_tag} (exit=${exit_code})"
-    fi
-
-    if [ ${NEXT_TASK} -lt ${TOTAL_TASKS} ]; then
-        run_task "${NEXT_TASK}" "${finished_gpu}"
-        NEXT_TASK=$((NEXT_TASK + 1))
-    fi
-done
-
-echo ""
-echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
+echo "全部完成！"
 
 # 汇总结果（同时输出到终端和文件）
 SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
@@ -133,7 +109,7 @@ SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
 {
 echo ""
 echo "=========================================="
-echo "汇总结果"
+echo "汇总结果（Defense=Omni, Attack=GSO）"
 echo "=========================================="
 
 for category in "${CATEGORIES[@]}"; do
@@ -142,7 +118,7 @@ for category in "${CATEGORIES[@]}"; do
     echo ""
 
     for method in "${METHODS[@]}"; do
-        tag="${category}_${method}"
+        tag="${category}_${method}_omni2gso"
         metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
         if [ -f "$metrics" ]; then
@@ -172,7 +148,7 @@ print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\
 
     # 打印Undefended（使用第一个方法的baseline）
     first_method="${METHODS[0]}"
-    tag="${category}_${first_method}"
+    tag="${category}_${first_method}_omni2gso"
     metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
