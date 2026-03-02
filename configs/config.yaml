@@ -57,7 +57,7 @@ data:
 
   # 共享参数
   max_samples: null
-  num_workers: 8
+  num_workers: 0
   view_selector: orthogonal
   angle_offset: 0.0
   num_supervision_views: 6
