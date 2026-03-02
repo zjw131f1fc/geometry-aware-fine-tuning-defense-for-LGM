@@ -156,7 +156,7 @@ def prepare_lgm_data(batch, model, device, include_input_supervision=True):
 BASELINE_CACHE_DIR = 'output/baseline_cache'
 
 
-def compute_baseline_hash(config, attack_epochs, num_render, supervision_categories=None):
+def compute_baseline_hash(config, attack_epochs, num_render, supervision_categories=None, attack_steps=None):
     """
     根据影响 baseline 结果的所有配置计算 SHA256 哈希。
 
@@ -165,6 +165,7 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
         attack_epochs: 攻击 epoch 数
         num_render: 渲染样本数
         supervision_categories: 监督类别（语义偏转模式），None 表示标准模式
+        attack_steps: 攻击 step 数（优先于 attack_epochs）
     """
     training_cfg = config.get('training', {})
     attack_cfg = config.get('attack', {})
@@ -194,6 +195,7 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
             'optimizer_betas': training_cfg.get('optimizer_betas', [0.9, 0.95]),
             'optimizer_momentum': training_cfg.get('optimizer_momentum', 0.9),
         },
+        'attack_steps': attack_steps,
         'attack_epochs': attack_epochs,
         'data_target': config['data']['target'],
         'data_shared': {
@@ -234,11 +236,12 @@ def compute_defense_hash(config):
             'distill_loss_order': defense_cfg.get('distill_loss_order', 2),
             'gradient_accumulation_steps': defense_cfg.get('gradient_accumulation_steps', 4),
             'gradient_conflict': defense_cfg.get('gradient_conflict', {}),
-            'target_data': defense_cfg.get('target_data', {}),
+            'target': defense_cfg.get('target', {}),  # defense 独立的 target 配置
             'target_layers': defense_cfg.get('target_layers'),
         },
         'training': {
-            'defense_epochs': training_cfg.get('defense_epochs', 25),
+            'defense_steps': training_cfg.get('defense_steps'),
+            'defense_epochs': (training_cfg.get('defense_epochs') if training_cfg.get('defense_epochs') is not None else 25),
             'batch_size': training_cfg.get('batch_size', 1),
             'lr': training_cfg.get('lr'),
             'weight_decay': training_cfg.get('weight_decay'),

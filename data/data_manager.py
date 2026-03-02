@@ -29,28 +29,48 @@ class DataManager:
         self.train_loader = None
         self.val_loader = None
 
-    def _scan_category_counts(self, categories: List[str]) -> Dict[str, int]:
+    def _get_gso_render_dir(self) -> str:
+        """返回 GSO 渲染目录（绝对路径）。"""
+        data_root = self.config['data']['root']
+        gso_rel_dir = self.config['data'].get('gso', {}).get(
+            'render_dir',
+            'GSO/render_same_pose_all_100v_512',
+        )
+        return os.path.join(data_root, gso_rel_dir)
+
+    def _scan_category_counts(self, categories: List[str], dataset_type: str = 'omni') -> Dict[str, int]:
         """扫描数据目录，返回每个类别的物体总数。"""
         data_root = self.config['data']['root']
-        render_dir = os.path.join(
-            data_root,
-            'omniobject3d___OmniObject3D-New/raw/blender_renders',
-        )
+        if dataset_type == 'gso':
+            render_dir = self._get_gso_render_dir()
+        elif dataset_type == 'omni':
+            render_dir = os.path.join(
+                data_root,
+                'omniobject3d___OmniObject3D-New/raw/blender_renders',
+            )
+        else:
+            return {}
+
         if not os.path.exists(render_dir):
             return {}
 
         counts: Dict[str, int] = {}
         cat_set = set(categories) if categories else None
         for d in sorted(os.listdir(render_dir)):
-            if not os.path.isdir(os.path.join(render_dir, d)) or '_' not in d:
+            if (not os.path.isdir(os.path.join(render_dir, d))
+                    or '_' not in d
+                    or d.startswith('_')):
                 continue
-            cat = d.rsplit('_', 1)[0]
+            if dataset_type == 'gso':
+                cat = d.split('_', 1)[0]
+            else:
+                cat = d.rsplit('_', 1)[0]
             if cat_set and cat not in cat_set:
                 continue
             counts[cat] = counts.get(cat, 0) + 1
         return counts
 
-    def _compute_attack_indices(self, categories: List[str]) -> Optional[Dict[str, List[int]]]:
+    def _compute_attack_indices(self, categories: List[str], dataset_type: str = 'omni') -> Optional[Dict[str, List[int]]]:
         """
         根据 object_split 计算 attack 物体索引。
 
@@ -66,7 +86,10 @@ class DataManager:
             return None
 
         attack_n = data_config.get('attack_samples_per_category')
-        category_counts = self._scan_category_counts(categories)
+        category_counts = self._scan_category_counts(categories, dataset_type=dataset_type)
+        if not category_counts:
+            print(f"[DataManager] 警告: dataset={dataset_type} 无法扫描类别统计，忽略 object_split 的 attack 抽样。")
+            return None
         seed = self.config.get('misc', {}).get('seed', 42)
 
         attack_indices = {}
@@ -83,14 +106,19 @@ class DataManager:
 
         return attack_indices
 
-    def _compute_defense_indices(self, categories: List[str]) -> Optional[Dict[str, List[int]]]:
+    def _compute_defense_indices(self, categories: List[str], object_split: Optional[Dict] = None) -> Optional[Dict[str, List[int]]]:
         """
         根据 object_split 返回 defense 物体索引。
+
+        Args:
+            categories: 类别列表
+            object_split: 物体划分字典（可选，默认从 config 读取）
 
         Returns:
             defense 物体索引字典，或 None（未配置 object_split）
         """
-        object_split = self.config['data'].get('object_split')
+        if object_split is None:
+            object_split = self.config['data'].get('object_split')
         if not object_split:
             return None
 
@@ -116,29 +144,54 @@ class DataManager:
         data_config = self.config['data']
 
         if subset in ('source', 'target', 'defense_target'):
-            sub_key = 'target' if subset == 'defense_target' else subset
-            sub = data_config[sub_key]
-            categories = sub.get('categories')
+            # defense_target: 优先使用 defense.target，否则回退到 data.target
+            if subset == 'defense_target':
+                defense_cfg = self.config.get('defense', {})
+                defense_target = defense_cfg.get('target', {})
+
+                # dataset: 优先使用 defense.target.dataset
+                dataset_type = defense_target.get('dataset')
+                if dataset_type is None:
+                    dataset_type = data_config['target'].get('dataset', 'omni')
+
+                # categories: 优先使用 defense.target.categories
+                categories = defense_target.get('categories')
+                if categories is None:
+                    categories = data_config['target'].get('categories')
+
+                # object_split: 优先使用 defense.target.object_split
+                defense_object_split = defense_target.get('object_split')
+                if defense_object_split is not None:
+                    object_split = defense_object_split
+                else:
+                    object_split = data_config.get('object_split')
+
+                # samples_per_object
+                samples_per_object = defense_target.get('samples_per_object')
+                if samples_per_object is None:
+                    samples_per_object = data_config['target'].get('samples_per_object')
+
+                max_samples = data_config['target'].get('max_samples')
+            else:
+                sub_key = subset
+                sub = data_config[sub_key]
+                categories = sub.get('categories')
+                object_split = data_config.get('object_split')
+                samples_per_object = sub.get('samples_per_object')
+                dataset_type = sub.get('dataset', 'omni')
+                max_samples = sub.get('max_samples')
 
             # 计算 object_indices
             object_indices = None
-            object_split = data_config.get('object_split')
             if object_split and subset == 'target' and categories:
-                object_indices = self._compute_attack_indices(categories)
+                object_indices = self._compute_attack_indices(categories, dataset_type=dataset_type)
             elif object_split and subset == 'defense_target' and categories:
-                object_indices = self._compute_defense_indices(categories)
-
-            # defense_target 使用 defense.target_data 的覆盖参数
-            if subset == 'defense_target':
-                defense_overrides = self.config.get('defense', {}).get('target_data', {})
-                samples_per_object = defense_overrides.get('samples_per_object', sub.get('samples_per_object'))
-            else:
-                samples_per_object = sub.get('samples_per_object')
+                object_indices = self._compute_defense_indices(categories, object_split)
 
             return {
-                'dataset_type': sub.get('dataset', 'omni'),
+                'dataset_type': dataset_type,
                 'categories': categories,
-                'max_samples': sub.get('max_samples'),
+                'max_samples': max_samples,
                 'samples_per_object': samples_per_object,
                 'object_indices': object_indices,
             }
@@ -218,6 +271,7 @@ class DataManager:
                 angle_offset=data_config['angle_offset'],
                 samples_per_object=samples_per_object,
                 object_indices=object_indices,
+                gso_render_dir=data_config.get('gso', {}).get('render_dir', 'GSO/render_same_pose_all_100v_512'),
             )
             print(f"[DataManager] 训练集大小: {len(self.train_loader.dataset)}")
 
@@ -239,6 +293,7 @@ class DataManager:
                 angle_offset=data_config['angle_offset'],
                 samples_per_object=samples_per_object,
                 object_indices=object_indices,
+                gso_render_dir=data_config.get('gso', {}).get('render_dir', 'GSO/render_same_pose_all_100v_512'),
             )
             print(f"[DataManager] 验证集大小: {len(self.val_loader.dataset)}")
 

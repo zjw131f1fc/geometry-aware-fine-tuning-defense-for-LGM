@@ -425,7 +425,7 @@ class AutoFineTuner:
 
 def run_attack(config, target_train_loader, source_val_loader,
                supervision_loader=None, target_eval_loader=None,
-               save_dir=None, attack_epochs=None,
+               save_dir=None, attack_epochs=None, attack_steps=None,
                num_render=3, eval_every_steps=10,
                model_resume_override=None, phase_name="Attack",
                return_gaussians=False, ref_gaussians=None):
@@ -447,6 +447,7 @@ def run_attack(config, target_train_loader, source_val_loader,
         target_eval_loader: 输入类别数据加载器（语义偏转评估 vs input 用）
         save_dir: 渲染结果保存目录
         attack_epochs: 攻击 epoch 数（默认从 config 读取）
+        attack_steps: 攻击 step 数（优先于 attack_epochs）
         num_render: 渲染样本数
         eval_every_steps: 每隔多少 step 评估一次
         model_resume_override: 覆盖 model.resume（如 "tag:xxx"）
@@ -466,14 +467,24 @@ def run_attack(config, target_train_loader, source_val_loader,
     from models import ModelManager
     from evaluation import Evaluator
 
-    if attack_epochs is None:
-        attack_epochs = config['training'].get('attack_epochs', 5)
+    # 优先使用 attack_steps，否则使用 attack_epochs
+    if attack_steps is None:
+        if attack_epochs is None:
+            attack_epochs = config['training'].get('attack_epochs')
+            if attack_epochs is None:
+                attack_epochs = 5
+        use_steps = False
+    else:
+        use_steps = True
 
     is_semantic_deflection = (supervision_loader is not None)
 
     print(f"\n{'='*80}")
     print(f"  {phase_name}")
-    print(f"  Attack epochs: {attack_epochs}, eval_every_steps: {eval_every_steps}")
+    if use_steps:
+        print(f"  Attack steps: {attack_steps}, eval_every_steps: {eval_every_steps}")
+    else:
+        print(f"  Attack epochs: {attack_epochs}, eval_every_steps: {eval_every_steps}")
     if is_semantic_deflection:
         print(f"  模式: 语义偏转攻击")
         print(f"  输入数据: {len(target_train_loader.dataset)} 样本")
@@ -529,15 +540,32 @@ def run_attack(config, target_train_loader, source_val_loader,
     global_step = 0
     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
     interval_count = 0
-    total_steps = attack_epochs * len(target_train_loader)
+
+    if use_steps:
+        total_steps = attack_steps
+    else:
+        total_steps = attack_epochs * len(target_train_loader)
 
     # 调试：训练前参数校验
     param_sum_before = sum(p.data.sum().item() for p in model.parameters())
     print(f"  [DEBUG] 训练前参数 sum: {param_sum_before:.6f}")
 
-    for epoch in range(1, attack_epochs + 1):
+    epoch = 0
+    while True:
+        epoch += 1
         model.train()
-        for batch in target_train_loader:
+
+        # Step 模式：每个 epoch 重新打乱数据（确保不会一直训练前面的样本）
+        # Epoch 模式：正常遍历
+        train_iterator = iter(target_train_loader)
+
+        for batch_idx in range(len(target_train_loader)):
+            try:
+                batch = next(train_iterator)
+            except StopIteration:
+                # Step 模式下可能在 epoch 中途退出，这里不应该到达
+                break
+
             loss_dict, updated = finetuner.train_step(batch)
             global_step += 1
 
@@ -565,6 +593,18 @@ def run_attack(config, target_train_loader, source_val_loader,
 
                 interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
                 interval_count = 0
+
+            # Step 模式：达到目标步数后退出
+            if use_steps and global_step >= total_steps:
+                break
+
+        # Step 模式：达到目标步数后退出外层循环
+        if use_steps and global_step >= total_steps:
+            break
+
+        # Epoch 模式：达到目标 epoch 后退出
+        if not use_steps and epoch >= attack_epochs:
+            break
 
         # epoch 结束，flush 残余梯度
         if finetuner._accumulation_counter % finetuner.gradient_accumulation_steps != 0:

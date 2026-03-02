@@ -194,7 +194,7 @@ class SpecifiedViewSelector(ViewSelector):
 
 class OmniObject3DDataset(Dataset):
     """
-    OmniObject3D数据集加载器 - 支持灵活的视角选择
+    OmniObject3D/GSO 数据集加载器 - 支持灵活的视角选择
     """
 
     def __init__(
@@ -212,6 +212,9 @@ class OmniObject3DDataset(Dataset):
         max_samples: Optional[int] = None,
         samples_per_object: int = 1,  # 每个物体采样多少次（数据增强）
         object_indices: Optional[Dict[str, List[int]]] = None,  # 每个类别允许的物体索引
+        render_subdir: str = 'omniobject3d___OmniObject3D-New/raw/blender_renders',
+        category_parse_mode: str = 'last_underscore',  # last_underscore (omni) / first_underscore (gso)
+        dataset_name: str = 'OmniObject3D',
     ):
         """
         Args:
@@ -232,6 +235,11 @@ class OmniObject3DDataset(Dataset):
                                设置为10可以将数据量扩大10倍
             object_indices: 每个类别允许的物体索引（按名称排序后的位置）
                            例如：{'knife': [0, 1, 5]} 只使用 knife 类别的第0、1、5个物体
+            render_subdir: 数据根目录下的渲染目录相对路径
+            category_parse_mode: 类别解析方式
+                - 'last_underscore': category = name.rsplit('_', 1)[0]（Omni）
+                - 'first_underscore': category = name.split('_', 1)[0]（GSO）
+            dataset_name: 打印日志时显示的数据集名称
         """
         self.data_root = data_root
         self.num_input_views = num_input_views
@@ -242,6 +250,9 @@ class OmniObject3DDataset(Dataset):
         self.split = split
         self.samples_per_object = samples_per_object
         self.object_indices = object_indices
+        self.render_subdir = render_subdir
+        self.category_parse_mode = category_parse_mode
+        self.dataset_name = dataset_name
 
         # 创建视角选择器
         if view_selector == 'orthogonal':
@@ -268,6 +279,14 @@ class OmniObject3DDataset(Dataset):
                 sample['sample_idx'] = sample_idx
                 self.samples.append(sample)
 
+    def _parse_category(self, object_dir: str) -> str:
+        """根据目录名解析类别。"""
+        if self.category_parse_mode == 'first_underscore':
+            return object_dir.split('_', 1)[0]
+        if self.category_parse_mode == 'last_underscore':
+            return object_dir.rsplit('_', 1)[0]
+        raise ValueError(f"Unknown category_parse_mode: {self.category_parse_mode}")
+
     def _scan_dataset(self, categories, max_samples):
         """扫描数据集"""
         samples = []
@@ -275,7 +294,7 @@ class OmniObject3DDataset(Dataset):
         # 实际数据路径
         render_dir = os.path.join(
             self.data_root,
-            'omniobject3d___OmniObject3D-New/raw/blender_renders'
+            self.render_subdir,
         )
 
         if not os.path.exists(render_dir):
@@ -283,12 +302,14 @@ class OmniObject3DDataset(Dataset):
 
         # 扫描所有物体目录
         all_objects = [d for d in os.listdir(render_dir)
-                      if os.path.isdir(os.path.join(render_dir, d)) and '_' in d]
+                      if os.path.isdir(os.path.join(render_dir, d))
+                      and '_' in d
+                      and not d.startswith('_')]
 
         # 收集所有可用的类别
         available_categories = set()
         for obj_dir in all_objects:
-            category = obj_dir.rsplit('_', 1)[0]
+            category = self._parse_category(obj_dir)
             available_categories.add(category)
 
         # 验证指定的类别是否存在
@@ -301,7 +322,7 @@ class OmniObject3DDataset(Dataset):
         # 按类别组织物体（排序保证顺序稳定，defense/attack 用 offset 分割）
         category_objects = {}
         for obj_dir in sorted(all_objects):
-            category = obj_dir.rsplit('_', 1)[0]
+            category = self._parse_category(obj_dir)
 
             # 过滤类别
             if categories is not None and category not in categories:
@@ -346,7 +367,7 @@ class OmniObject3DDataset(Dataset):
             cat = sample['category']
             category_counts[cat] = category_counts.get(cat, 0) + 1
         if category_counts:
-            print(f"[OmniObject3D] 物体加载统计:")
+            print(f"[{self.dataset_name}] 物体加载统计:")
             for cat, count in sorted(category_counts.items()):
                 print(f"  {cat}: {count} 个物体 × {self.samples_per_object} 组视图 = {count * self.samples_per_object} 样本")
             total_objects = sum(category_counts.values())
@@ -944,17 +965,19 @@ def create_dataloader(
 
     Args:
         data_root: 数据根目录
-        categories: 类别列表（仅 omni 数据集使用）
+        categories: 类别列表（omni / gso 数据集使用）
         batch_size: 批量大小
         num_workers: 工作进程数
         shuffle: 是否打乱
         view_selector: 视角选择策略
-        dataset_type: 数据集类型 - 'omni'（OmniObject3D）或 'objaverse'
+        dataset_type: 数据集类型 - 'omni' / 'objaverse' / 'gso'
         **kwargs: 传递给Dataset的其他参数
 
     Returns:
         dataloader: DataLoader对象
     """
+    gso_render_dir = kwargs.pop('gso_render_dir', 'GSO/render_same_pose_all_100v_512')
+
     if dataset_type == 'objaverse':
         # Objaverse 数据根目录直接指向 objaverse_rendered
         objaverse_root = os.path.join(data_root, 'objaverse_rendered')
@@ -965,13 +988,25 @@ def create_dataloader(
             view_selector=view_selector,
             **kwargs
         )
-    else:
+    elif dataset_type == 'gso':
+        dataset = OmniObject3DDataset(
+            data_root=data_root,
+            categories=categories,
+            view_selector=view_selector,
+            render_subdir=gso_render_dir,
+            category_parse_mode='first_underscore',
+            dataset_name='GSO',
+            **kwargs
+        )
+    elif dataset_type == 'omni':
         dataset = OmniObject3DDataset(
             data_root=data_root,
             categories=categories,
             view_selector=view_selector,
             **kwargs
         )
+    else:
+        raise ValueError(f"未知 dataset_type: {dataset_type}，支持 'omni' / 'objaverse' / 'gso'")
 
     dataloader = DataLoader(
         dataset,

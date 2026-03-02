@@ -21,35 +21,37 @@ data:
 
   # Source数据（用于蒸馏，保持原有能力）
   source:
-    dataset: objaverse
+    dataset: objaverse               # objaverse / omni / gso
     max_samples: 400
     samples_per_object: 3
 
   # Target数据（攻击训练用）
   target:
-    dataset: omni
+    dataset: omni                     # omni / objaverse / gso
     categories:
-      - knife
-      - broccoli
-      - conch
-      - garlic
-      - durian
-      - coconut
+      - shoe
+      - plant
+      - dish
+      - bowl
+      - box
+
+  # GSO 渲染结果目录（相对于 data.root）
+  gso:
+    render_dir: GSO/render_same_pose_all_100v_512
 
   # 物体分配：每个类别中哪些物体用于 defense（按名称排序后的索引）
   # 剩余物体自动分配给 attack，随机抽样 attack_samples_per_category 个
-  # 由 CLIP 聚类自动推荐（tools/cluster_objects.py, defense_count=10）
+  # 由 CLIP 聚类自动推荐（tools/cluster_objects.py），每个类别约 30% 作为 defense
   object_split:
-    knife: [0, 1, 3, 5, 7, 8, 9, 10, 16, 28]
-    broccoli: [2, 9, 10, 12, 14, 16, 17, 21, 25, 27]
-    conch: [0, 5, 7, 9, 12, 13, 19, 23, 24, 28]
-    garlic: [0, 2, 3, 6, 8, 10, 14, 23, 25, 28]
-    durian: [1, 11, 13, 14, 15, 20, 23, 25, 27, 29]
-    coconut: [2, 3, 4, 7, 13, 14, 22, 24, 27, 28]
-  attack_samples_per_category: 20  # 从非 defense 物体中随机取多少个做 attack
+    shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
+    plant: [2, 4, 8, 9]
+    dish: [1, 3, 7, 9, 13]
+    bowl: [0, 2, 6, 10]
+    box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 29, 36, 37, 38, 42, 53, 54, 67, 72, 75, 76, 78, 81, 82, 84, 86, 87, 93, 94, 100, 102, 104, 109, 111, 113, 115, 116, 119, 122, 126, 128]
+  attack_samples_per_category: 15  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.8
+  source_ratio: 0.6
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
 
@@ -77,8 +79,11 @@ training:
   optimizer_betas: [0.9, 0.95]
   optimizer_momentum: 0.9
 
-  attack_epochs: 4
-  defense_epochs: 10
+  # 训练步数配置（优先使用 steps，如果为 null 则使用 epochs）
+  attack_steps: 1000                 # 攻击训练步数
+  attack_epochs: null               # null = 使用 attack_steps
+  defense_steps: 800                # 防御训练步数
+  defense_epochs: null              # null = 使用 defense_steps
 
 # 攻击场景配置
 attack:
@@ -89,12 +94,11 @@ attack:
 
   malicious_content:
     malicious_categories:
-      - knife
-      - broccoli
-      - conch
-      - garlic
-      - durian
-      - coconut
+      - shoe
+      - plant
+      - dish
+      - bowl
+      - box
 
   # 语义偏转攻击（Semantic Deflection Attack）
   # 用于测试防御对跨类别攻击的鲁棒性
@@ -109,14 +113,17 @@ defense:
   method: geotrap                   # geotrap / naive_unlearning / none
   tag: geotrap_v1
 
-  # 防御专用 target 数据（samples_per_object 覆盖，物体由 object_split 决定）
-  target_data:
-    samples_per_object: 15  # 与 attack 统一
+  # 防御专用 target 配置（可选，null=使用 data.target）
+  target:
+    dataset: null                   # null=使用 data.target.dataset (omni/objaverse/gso)
+    categories: null                # null=使用 data.target.categories
+    object_split: null              # null=使用 data.object_split
+    samples_per_object: 15          # 覆盖 data.samples_per_object
 
   # 陷阱损失配置（2+ 个 static=true 自动乘法耦合）
   trap_losses:
     position:
-      static: true
+      static: false
       dynamic: false
     scale:
       static: true
@@ -128,14 +135,14 @@ defense:
       static: false
       dynamic: false
     color:
-      static: true
+      static: false
       dynamic: false
 
   gradient_accumulation_steps: 8    # 有效 batch_size = 1×8 = 8
 
   # 损失权重
   lambda_trap: 1.0
-  lambda_distill: 200.0
+  lambda_distill: 300.0
   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
   # 参数加噪鲁棒性

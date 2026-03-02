@@ -59,8 +59,12 @@ def parse_args():
                         help='防御模型标签名（覆盖 config 中的 defense.tag）')
     parser.add_argument('--attack_epochs', type=int, default=None,
                         help='攻击训练 epoch 数')
+    parser.add_argument('--attack_steps', type=int, default=None,
+                        help='攻击训练 step 数（优先于 attack_epochs）')
     parser.add_argument('--defense_epochs', type=int, default=None,
                         help='防御训练 epoch 数')
+    parser.add_argument('--defense_steps', type=int, default=None,
+                        help='防御训练 step 数（优先于 defense_epochs）')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='输出目录（默认自动生成）')
     parser.add_argument('--num_render', type=int, default=3,
@@ -83,6 +87,10 @@ def parse_args():
                         help='训练模式：full / lora（覆盖 config）')
     parser.add_argument('--skip_baseline', action='store_true',
                         help='跳过 Baseline Attack（Phase 1），直接从 Defense Training 开始')
+    parser.add_argument('--attack_target_dataset', type=str, default=None,
+                        help="攻击阶段 target 数据集：omni / gso / objaverse（覆盖 config.data.target.dataset）")
+    parser.add_argument('--defense_target_dataset', type=str, default=None,
+                        help="防御阶段 target 数据集：omni / gso / objaverse（覆盖 config.defense.target.dataset）")
     # 互锁机制参数
     parser.add_argument('--robustness', type=str, default=None,
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
@@ -129,10 +137,28 @@ def main():
         config['defense']['method'] = args.defense_method
         print(f"[Pipeline] Defense method 覆盖: {args.defense_method}")
 
+    # attack/defense steps/epochs 覆盖：保持“二选一”语义，避免 config key 存在但为 null 导致 None 分支
+    if args.attack_steps is not None:
+        config['training']['attack_steps'] = args.attack_steps
+        config['training']['attack_epochs'] = None
     if args.attack_epochs is not None:
         config['training']['attack_epochs'] = args.attack_epochs
+        config['training']['attack_steps'] = None
+    if args.defense_steps is not None:
+        config['training']['defense_steps'] = args.defense_steps
+        config['training']['defense_epochs'] = None
     if args.defense_epochs is not None:
         config['training']['defense_epochs'] = args.defense_epochs
+        config['training']['defense_steps'] = None
+
+    # 跨数据集泛化：允许 Attack/Defense 使用不同 target dataset
+    if args.attack_target_dataset is not None:
+        config['data']['target']['dataset'] = args.attack_target_dataset
+        print(f"[Pipeline] Attack target dataset 覆盖: {args.attack_target_dataset}")
+    if args.defense_target_dataset is not None:
+        config.setdefault('defense', {}).setdefault('target', {})
+        config['defense']['target']['dataset'] = args.defense_target_dataset
+        print(f"[Pipeline] Defense target dataset 覆盖: {args.defense_target_dataset}")
 
     # 攻击训练参数覆盖（只影响攻击，不影响防御）
     attack_lr_override = args.lr
@@ -187,8 +213,15 @@ def main():
         config['defense']['target_layers'] = resolve_target_layers(combo, num_layers)
         print(f"[Pipeline] target_layers 已解析: {combo} top-{num_layers}")
 
-    attack_epochs = config['training'].get('attack_epochs', 5)
-    defense_epochs = config['training'].get('defense_epochs', 25)
+    attack_steps = config['training'].get('attack_steps')
+    attack_epochs = config['training'].get('attack_epochs')
+    if attack_steps is None and attack_epochs is None:
+        attack_epochs = 5
+
+    defense_steps = config['training'].get('defense_steps')
+    defense_epochs = config['training'].get('defense_epochs')
+    if defense_steps is None and defense_epochs is None:
+        defense_epochs = 25
 
     # 解析 target_layers（ConfigManager 已自动解析，这里取最终值）
     target_layers = config.get('defense', {}).get('target_layers')
@@ -203,8 +236,14 @@ def main():
     print("Pipeline: Baseline Attack → Defense → Post-Defense Attack")
     print("=" * 80)
     print(f"Tag: {tag}")
-    print(f"Attack epochs: {attack_epochs}")
-    print(f"Defense epochs: {defense_epochs}")
+    if attack_steps is not None:
+        print(f"Attack steps: {attack_steps}")
+    else:
+        print(f"Attack epochs: {attack_epochs}")
+    if defense_steps is not None:
+        print(f"Defense steps: {defense_steps}")
+    else:
+        print(f"Defense epochs: {defense_epochs}")
     print(f"Trap losses: {[k for k, v in config['defense']['trap_losses'].items() if v.get('static')]}")
     trap_combo = config['defense'].get('trap_combo')
     num_tl = config['defense'].get('num_target_layers')
@@ -317,7 +356,13 @@ def main():
         baseline_history, baseline_source, baseline_target = None, None, None
         baseline_gaussians = None
     else:
-        baseline_hash = compute_baseline_hash(attack_config, attack_epochs, args.num_render, supervision_categories)
+        baseline_hash = compute_baseline_hash(
+            attack_config,
+            attack_epochs,
+            args.num_render,
+            supervision_categories,
+            attack_steps=attack_steps,
+        )
         cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
         phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
         gaussians_cache_path = os.path.join(cache_dir, 'baseline_gaussians.pt')
@@ -349,6 +394,7 @@ def main():
                 target_eval_loader=target_eval_loader if supervision_categories else None,
                 save_dir=phase1_dir,
                 attack_epochs=attack_epochs,
+                attack_steps=attack_steps,
                 num_render=args.num_render,
                 eval_every_steps=args.eval_every_steps,
                 phase_name="Phase 1: Baseline Attack",
@@ -376,6 +422,7 @@ def main():
             target_eval_loader=target_eval_loader if supervision_categories else None,
             save_dir=os.path.join(workspace, 'phase3_postdefense_attack'),
             attack_epochs=attack_epochs,
+            attack_steps=attack_steps,
             num_render=args.num_render,
             eval_every_steps=args.eval_every_steps,
             model_resume_override=f"tag:{defense_tag}",
@@ -398,7 +445,9 @@ def main():
         'config': {
             'tag': tag,
             'attack_epochs': attack_epochs,
+            'attack_steps': attack_steps,
             'defense_epochs': defense_epochs,
+            'defense_steps': defense_steps,
             'trap_losses': [k for k, v in config['defense']['trap_losses'].items()
                             if v.get('static')],
             'trap_combo': config['defense'].get('trap_combo'),

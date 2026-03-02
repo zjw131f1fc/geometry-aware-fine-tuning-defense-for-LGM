@@ -1004,13 +1004,14 @@ class DefenseTrainer:
         print("防御训练完成")
         print("=" * 80)
 
-    def save_checkpoint(self, save_dir: str, epoch: int):
+    def save_checkpoint(self, save_dir: str, epoch: int, is_final: bool = False):
         """
         保存检查点
 
         Args:
             save_dir: 保存目录
             epoch: 当前 epoch
+            is_final: 是否为最终 checkpoint（用于注册）
         """
         os.makedirs(save_dir, exist_ok=True)
 
@@ -1025,8 +1026,8 @@ class DefenseTrainer:
 
         print(f"[DefenseTrainer] 保存检查点: {checkpoint_path}")
 
-        # 同时保存最终模型
-        if epoch == self.config['training'].get('defense_epochs', self.config['training'].get('num_epochs', 10)):
+        # 保存最终模型并注册
+        if is_final:
             final_path = os.path.join(save_dir, "model_defense.pth")
             torch.save(self.model_mgr.model.state_dict(), final_path)
             print(f"[DefenseTrainer] 保存最终模型: {final_path}")
@@ -1090,6 +1091,9 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
 
     target_layers = config.get('defense', {}).get('target_layers')
     defense_epochs = config['training'].get('defense_epochs', 25)
+    if defense_epochs is None:
+        defense_epochs = 25
+    defense_steps = config['training'].get('defense_steps')
 
     if save_dir is None:
         from datetime import datetime
@@ -1104,31 +1108,59 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
     global_step = 0
     validate_every = 5
 
-    for epoch in range(1, defense_epochs + 1):
+    # 优先使用 defense_steps
+    if defense_steps:
+        use_steps = True
+        total_steps = defense_steps
+        print(f"[Defense] 训练模式: step-based, total_steps={total_steps}")
+    else:
+        use_steps = False
+        print(f"[Defense] 训练模式: epoch-based, defense_epochs={defense_epochs}")
+
+    epoch = 0
+    while True:
+        epoch += 1
         train_metrics, global_step = trainer.train_epoch(epoch, global_step)
         combined = {f"train_{k}": v for k, v in train_metrics.items()}
         combined['epoch'] = epoch
 
-        do_val = (epoch % validate_every == 0) or (epoch == defense_epochs)
+        do_val = (epoch % validate_every == 0) or (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
         if do_val:
             val_metrics = trainer.validate()
             combined.update({f"val_{k}": v for k, v in val_metrics.items()})
-            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-                  f"Loss: {train_metrics['loss']:.4f}, "
-                  f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+            if use_steps:
+                print(f"  [Defense] Epoch {epoch} (Step {global_step}/{total_steps}) - "
+                      f"Loss: {train_metrics['loss']:.4f}, "
+                      f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+            else:
+                print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                      f"Loss: {train_metrics['loss']:.4f}, "
+                      f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
             for k in ('position_static', 'scale_static', 'opacity_static',
                       'rotation_static', 'color_static', 'coupling_value',
                       'conflict_mean_cos'):
                 if k in val_metrics:
                     print(f"    {k}: {val_metrics[k]:.4f}")
         else:
-            print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-                  f"Loss: {train_metrics['loss']:.4f}")
+            if use_steps:
+                print(f"  [Defense] Epoch {epoch} (Step {global_step}/{total_steps}) - "
+                      f"Loss: {train_metrics['loss']:.4f}")
+            else:
+                print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                      f"Loss: {train_metrics['loss']:.4f}")
 
         epoch_history.append(combined)
 
-        if epoch == defense_epochs:
-            trainer.save_checkpoint(save_dir, epoch)
+        # 保存 checkpoint
+        is_final = (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
+        if is_final:
+            trainer.save_checkpoint(save_dir, epoch, is_final=True)
+
+        # 退出条件
+        if use_steps and global_step >= total_steps:
+            break
+        if not use_steps and epoch >= defense_epochs:
+            break
 
     del trainer
     torch.cuda.empty_cache()
