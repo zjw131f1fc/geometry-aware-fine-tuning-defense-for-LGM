@@ -15,6 +15,23 @@ import json
 import copy
 from datetime import datetime
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Early env setup (before heavy imports like torch/matplotlib)
+# ---------------------------------------------------------------------------
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument('--gpu', type=int, default=0)
+_args, _ = _parser.parse_known_args()
+os.environ['CUDA_VISIBLE_DEVICES'] = str(_args.gpu)
+os.environ.setdefault('XFORMERS_DISABLED', '1')
+os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
+if not os.environ.get('OMP_NUM_THREADS', '').isdigit():
+    os.environ['OMP_NUM_THREADS'] = '1'
+os.environ.setdefault('MPLCONFIGDIR', '/tmp/mpl')
+os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
+
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -33,6 +50,8 @@ def parse_args():
                        help='配置文件路径')
     parser.add_argument('--attack_epochs', type=int, default=None,
                        help='攻击训练epoch数（默认从config读取）')
+    parser.add_argument('--attack_steps', type=int, default=None,
+                       help='攻击训练step数（优先于attack_epochs；默认从config读取）')
     parser.add_argument('--output_dir', type=str, default='output/compare_random_vs_pretrained',
                        help='输出目录')
     parser.add_argument('--num_render', type=int, default=3,
@@ -212,14 +231,14 @@ def generate_report(random_results, pretrained_results, save_path):
 def main():
     args = parse_args()
 
-    # 设置GPU
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-
     print("=" * 80)
     print("比较随机初始化 vs 预训练LGM")
     print("=" * 80)
     print(f"配置文件: {args.config}")
-    print(f"攻击Epochs: {args.attack_epochs or '从config读取'}")
+    if args.attack_steps is not None:
+        print(f"攻击Steps: {args.attack_steps}")
+    else:
+        print(f"攻击Epochs: {args.attack_epochs or '从config读取'}")
     print(f"输出目录: {args.output_dir}")
     print("=" * 80)
 
@@ -228,8 +247,15 @@ def main():
     base_config = config_mgr.config
     set_seed(base_config['misc']['seed'])
 
-    # 获取攻击epoch数
-    attack_epochs = args.attack_epochs or base_config['training'].get('attack_epochs', 5)
+    # 获取攻击时长（优先 attack_steps，其次 attack_epochs）
+    attack_steps = args.attack_steps
+    attack_epochs = args.attack_epochs
+    if attack_steps is None:
+        attack_steps = base_config.get('training', {}).get('attack_steps')
+    if attack_epochs is None:
+        attack_epochs = base_config.get('training', {}).get('attack_epochs')
+    if attack_steps is None and attack_epochs is None:
+        attack_epochs = 5
 
     # 创建输出目录
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -278,6 +304,7 @@ def main():
         source_val_loader=source_val_loader,
         save_dir=random_save_dir,
         attack_epochs=attack_epochs,
+        attack_steps=attack_steps,
         num_render=args.num_render,
         eval_every_steps=args.eval_every_steps,
         phase_name="Random Init Attack",
@@ -308,6 +335,7 @@ def main():
         source_val_loader=source_val_loader,
         save_dir=pretrained_save_dir,
         attack_epochs=attack_epochs,
+        attack_steps=attack_steps,
         num_render=args.num_render,
         eval_every_steps=args.eval_every_steps,
         phase_name="Pretrained Attack",
@@ -354,6 +382,7 @@ def main():
         },
         'config': {
             'attack_epochs': attack_epochs,
+            'attack_steps': attack_steps,
             'eval_every_steps': args.eval_every_steps,
             'num_render': args.num_render,
         }
@@ -375,4 +404,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
