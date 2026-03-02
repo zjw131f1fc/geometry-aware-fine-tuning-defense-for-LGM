@@ -208,13 +208,28 @@ class DefenseTrainer:
 
         print("  模式: 双数据加载器（Source + Target）")
 
+        # Defense 可独立设置 batch size（不影响攻击阶段 training.batch_size）
+        defense_batch_size = self.defense_config.get('batch_size')
+        if defense_batch_size is None:
+            defense_batch_size = self.config['training'].get('batch_size', 1)
+        if defense_batch_size <= 0:
+            raise ValueError(f"defense.batch_size 必须为正整数，当前: {defense_batch_size}")
+        self.defense_batch_size = defense_batch_size
+        print(f"  ✓ Defense batch_size: {self.defense_batch_size}")
+
+        # DataManager 读取的是 config.training.batch_size，因此这里用一个局部 config 覆盖 batch_size
+        import copy
+        defense_data_config = copy.deepcopy(self.config)
+        defense_data_config.setdefault('training', {})
+        defense_data_config['training']['batch_size'] = self.defense_batch_size
+
         # Source数据加载器（蒸馏用）
-        source_data_mgr = DataManager(self.config, self.model_mgr.opt)
+        source_data_mgr = DataManager(defense_data_config, self.model_mgr.opt)
         source_data_mgr.setup_dataloaders(train=True, val=False, subset='source')
         source_full_dataset = source_data_mgr.train_loader.dataset
 
         # Target数据加载器（defense_target：通过 object_split 自动选择 defense 物体）
-        target_data_mgr = DataManager(self.config, self.model_mgr.opt)
+        target_data_mgr = DataManager(defense_data_config, self.model_mgr.opt)
         target_data_mgr.setup_dataloaders(train=True, val=True, subset='defense_target')
         self.target_loader = target_data_mgr.train_loader
         self.target_val_loader = target_data_mgr.val_loader
@@ -245,14 +260,14 @@ class DefenseTrainer:
 
         self.source_loader = DataLoader(
             wrapped_dataset,
-            batch_size=self.config['training']['batch_size'],
+            batch_size=self.defense_batch_size,
             shuffle=True,
             num_workers=self.config['data']['num_workers'],
             pin_memory=True,
         )
         self.source_val_loader = DataLoader(
             Subset(wrapped_dataset, val_indices),
-            batch_size=self.config['training']['batch_size'],
+            batch_size=self.defense_batch_size,
             shuffle=False,
             num_workers=self.config['data']['num_workers'],
             pin_memory=True,
@@ -357,7 +372,7 @@ class DefenseTrainer:
         dataset = self.source_loader.dataset
         temp_loader = DataLoader(
             dataset,
-            batch_size=self.config['training']['batch_size'],
+            batch_size=self.defense_batch_size,
             shuffle=False,
             num_workers=self.config['data']['num_workers'],
             pin_memory=True,

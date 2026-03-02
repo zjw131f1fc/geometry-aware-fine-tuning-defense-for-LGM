@@ -57,7 +57,7 @@ echo "=========================================="
 CATEGORIES=(garlic)
 ATTACK_EPOCHS=2
 DEFENSE_EPOCHS=15
-DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 
 # ============================================================================
 # 任务列表

@@ -39,7 +39,7 @@ CATEGORIES=(shoe plant dish bowl box)
 METHODS=(geotrap naive_unlearning)
 
 CONFIG="configs/config.yaml"
-DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"

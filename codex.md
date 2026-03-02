@@ -251,6 +251,11 @@ Phase 2 defense 的落盘策略（可控）：
   - `none`：不读也不写 registry（每次都训练）
   - Phase 3 直接用内存中的 state_dict 覆盖权重继续跑攻击（无需写模型文件）
 
+防御 batch size：
+
+- `defense.batch_size`：只影响防御阶段的数据加载 batch size（attack 仍然使用 `training.batch_size`）
+- CLI 覆盖：`script/run_pipeline.py --defense_batch_size 2 ...`
+
 ---
 
 ## 7) 常见坑 / 环境变量

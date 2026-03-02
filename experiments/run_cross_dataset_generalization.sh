@@ -43,7 +43,7 @@ METHODS=(geotrap naive_unlearning)
 
 ATTACK_TARGET_DATASET="gso"
 DEFENSE_TARGET_DATASET="omni"
-DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)

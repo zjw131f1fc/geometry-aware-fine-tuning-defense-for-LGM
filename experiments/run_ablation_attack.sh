@@ -53,7 +53,7 @@ echo "=========================================="
 TEST_CAT="coconut"
 ATTACK_EPOCHS=5
 DEFENSE_EPOCHS=60
-DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 
 # ============================================================================
 # 任务列表（优先级排序：语义偏转 > 其他）

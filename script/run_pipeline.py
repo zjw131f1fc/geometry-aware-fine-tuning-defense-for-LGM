@@ -96,6 +96,8 @@ def parse_args():
                         help="攻击阶段 target 数据集：omni / gso / objaverse（覆盖 config.data.target.dataset）")
     parser.add_argument('--defense_target_dataset', type=str, default=None,
                         help="防御阶段 target 数据集：omni / gso / objaverse（覆盖 config.defense.target.dataset）")
+    parser.add_argument('--defense_batch_size', type=int, default=None,
+                        help="防御训练 batch size（覆盖 config.defense.batch_size；不影响攻击训练 batch size）")
     parser.add_argument('--defense_cache_mode', type=str, default='registry',
                         help="防御模型缓存策略：registry(读写) / readonly(只读不写) / none(不读不写，最省磁盘)")
     # 互锁机制参数
@@ -166,6 +168,13 @@ def main():
         config.setdefault('defense', {}).setdefault('target', {})
         config['defense']['target']['dataset'] = args.defense_target_dataset
         print(f"[Pipeline] Defense target dataset 覆盖: {args.defense_target_dataset}")
+
+    if args.defense_batch_size is not None:
+        if args.defense_batch_size <= 0:
+            raise ValueError("--defense_batch_size 必须为正整数")
+        config.setdefault('defense', {})
+        config['defense']['batch_size'] = args.defense_batch_size
+        print(f"[Pipeline] Defense batch_size 覆盖: {args.defense_batch_size}")
 
     # 攻击训练参数覆盖（只影响攻击，不影响防御）
     attack_lr_override = args.lr

@@ -224,11 +224,17 @@ def compute_defense_hash(config):
     training_cfg = config.get('training', {})
     data_cfg = config.get('data', {})
 
+    # Defense 可独立设置 batch size；默认继承 training.batch_size
+    effective_defense_batch_size = defense_cfg.get('batch_size')
+    if effective_defense_batch_size is None:
+        effective_defense_batch_size = training_cfg.get('batch_size', 1)
+
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
         'defense': {
             'method': defense_cfg.get('method', 'geotrap'),
+            'batch_size': effective_defense_batch_size,
             'trap_losses': defense_cfg.get('trap_losses', {}),
             'robustness': defense_cfg.get('robustness', {}),
             'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
@@ -242,7 +248,7 @@ def compute_defense_hash(config):
         'training': {
             'defense_steps': training_cfg.get('defense_steps'),
             'defense_epochs': (training_cfg.get('defense_epochs') if training_cfg.get('defense_epochs') is not None else 25),
-            'batch_size': training_cfg.get('batch_size', 1),
+            'batch_size': effective_defense_batch_size,
             'lr': training_cfg.get('lr'),
             'weight_decay': training_cfg.get('weight_decay'),
             'gradient_clip': training_cfg.get('gradient_clip'),
