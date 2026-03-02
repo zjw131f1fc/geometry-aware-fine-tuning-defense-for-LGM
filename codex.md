@@ -294,6 +294,12 @@ Phase 2 defense 的落盘策略（可控）：
 - 可微渲染/高斯栅格化相关库：
   - `lib/diff-gaussian-rasterization/`（CUDA 扩展，通常需要编译）
   - `lib/nvdiffrast/`（CUDA 扩展，通常需要编译/安装）
+- Blender（用于 GSO loose 模型渲染成 OmniObject3D 格式）：
+  - 路径：`/root/autodl-tmp/3d-defense-migration/blender-3.2.2-linux-x64/blender`
+  - 校验（本机）：file_count=3926, byte_sum=790448524
+- GSO loose 模型子集（5 类 clean）：
+  - 路径：`datas/GSO/loose_overlap_clean5/`
+  - 渲染脚本会自动生成 `datas/GSO/loose_overlap_clean5/manifest.tsv`（model<TAB>class）并输出到 `datas/GSO/render_same_pose_all_100v_512/`
 
 ---
 
