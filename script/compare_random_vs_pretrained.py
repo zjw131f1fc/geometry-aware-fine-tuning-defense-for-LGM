@@ -48,6 +48,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='比较随机初始化 vs 预训练LGM')
     parser.add_argument('--config', type=str, required=True,
                        help='配置文件路径')
+    parser.add_argument('--categories', type=str, default=None,
+                       help='Target类别，逗号分隔（如 shoe,plant）覆盖config')
     parser.add_argument('--attack_epochs', type=int, default=None,
                        help='攻击训练epoch数（默认从config读取）')
     parser.add_argument('--attack_steps', type=int, default=None,
@@ -246,6 +248,17 @@ def main():
     config_mgr = ConfigManager(args.config)
     base_config = config_mgr.config
     set_seed(base_config['misc']['seed'])
+
+    # CLI 覆盖 categories
+    if args.categories is not None:
+        categories = [c.strip() for c in args.categories.split(',') if c.strip()]
+        if not categories:
+            raise ValueError("--categories 为空")
+        base_config.setdefault('data', {}).setdefault('target', {})
+        base_config['data']['target']['categories'] = categories
+        base_config.setdefault('attack', {}).setdefault('malicious_content', {})
+        base_config['attack']['malicious_content']['malicious_categories'] = categories
+        print(f"[Compare] Categories 覆盖: {categories}")
 
     # 获取攻击时长（优先 attack_steps，其次 attack_epochs）
     attack_steps = args.attack_steps
