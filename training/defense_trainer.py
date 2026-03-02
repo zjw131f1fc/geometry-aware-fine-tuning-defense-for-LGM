@@ -1013,45 +1013,31 @@ class DefenseTrainer:
             epoch: 当前 epoch
             is_final: 是否为最终 checkpoint（用于注册）
         """
-        os.makedirs(save_dir, exist_ok=True)
+        # 为了节省磁盘空间，默认不在 save_dir 里额外保存 checkpoint / model 拷贝。
+        # Pipeline/实验复用依赖的是 model_registry（tag cache），因此这里只在 final 时注册一次即可。
+        if not is_final:
+            return
 
-        checkpoint_path = os.path.join(save_dir, f"defense_checkpoint_epoch_{epoch}.pth")
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model_mgr.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': self.config,
-            'target_layers': self.target_layers,
-        }, checkpoint_path)
+        tag = self.defense_config.get('tag')
+        if not tag:
+            print(f"[DefenseTrainer] 提示: 未配置 defense.tag，跳过注册。"
+                  f"可在 config 中添加 defense.tag 自动注册模型")
+            return
 
-        print(f"[DefenseTrainer] 保存检查点: {checkpoint_path}")
-
-        # 保存最终模型并注册
-        if is_final:
-            final_path = os.path.join(save_dir, "model_defense.pth")
-            torch.save(self.model_mgr.model.state_dict(), final_path)
-            print(f"[DefenseTrainer] 保存最终模型: {final_path}")
-
-            # 自动注册到模型标签仓库
-            tag = self.defense_config.get('tag')
-            if tag:
-                metadata = {
-                    "epoch": epoch,
-                    "target_layers": self.target_layers,
-                    "trap_losses": list(self.trap_losses.keys()),
-                    "source_path": final_path,
-                    "defense_config": {
-                        k: v for k, v in self.defense_config.items()
-                        if k not in ('target_data',)
-                    },
-                }
-                registry_register(tag, final_path, metadata=metadata)
-            else:
-                print(f"[DefenseTrainer] 提示: 未配置 defense.tag，跳过注册。"
-                      f"可在 config 中添加 defense.tag 自动注册模型")
+        metadata = {
+            "epoch": epoch,
+            "target_layers": self.target_layers,
+            "trap_losses": list(self.trap_losses.keys()),
+            "defense_config": {
+                k: v for k, v in self.defense_config.items()
+                if k not in ('target', 'target_data')
+            },
+        }
+        registry_register(tag, self.model_mgr.model.state_dict(), metadata=metadata)
 
 
-def load_or_train_defense(config, device='cuda', save_dir=None):
+def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str = "registry",
+                          return_state_dict: bool = False):
     """
     一行加载或训练防御模型。
 
@@ -1062,11 +1048,17 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
         config: 完整配置字典（会被修改 defense.tag）
         device: 训练设备
         save_dir: checkpoint 保存目录（默认自动生成）
+        cache_mode: 防御模型缓存策略
+            - "registry"（默认）: 命中则加载；未命中则训练并写入 model_registry
+            - "readonly": 命中则加载；未命中则训练但不写入 model_registry（用于省磁盘）
+            - "none": 不读取也不写入 model_registry（每次都训练，最省磁盘但最慢）
+        return_state_dict: 是否返回防御模型 state_dict（用于不落盘情况下 Phase 3 直接加载）
 
     Returns:
-        (tag, defense_history):
+        (tag, defense_history) 或 (tag, defense_history, state_dict):
             tag — hash 字符串，用于 model_resume_override=f"tag:{tag}"；method='none' 时为 None
             defense_history — 训练历史列表，缓存命中时为 None
+            state_dict — cache_mode != "registry" 或 return_state_dict=True 时可用（CPU 上的权重）
     """
     import copy
     from tools.utils import compute_defense_hash
@@ -1075,15 +1067,24 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
     method = config.get('defense', {}).get('method', 'geotrap')
     if method == 'none':
         print("[Defense] method=none，跳过防御训练")
+        if return_state_dict:
+            return None, None, None
         return None, None
+
+    cache_mode = (cache_mode or "registry").lower()
+    if cache_mode not in ("registry", "readonly", "none"):
+        raise ValueError(f"cache_mode 不支持: {cache_mode}（支持 registry/readonly/none）")
 
     config = copy.deepcopy(config)
     tag = compute_defense_hash(config)
     model_path = REGISTRY_DIR / tag / "model.pth"
 
-    if model_path.exists():
+    if cache_mode in ("registry", "readonly") and model_path.exists():
         print(f"[Defense] 缓存命中: tag={tag}")
         print(f"[Defense] 模型路径: {model_path}")
+        if return_state_dict or cache_mode != "registry":
+            state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+            return tag, None, state_dict
         return tag, None
 
     print(f"[Defense] 缓存未命中: tag={tag}，开始训练...")
@@ -1154,7 +1155,8 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
         # 保存 checkpoint
         is_final = (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
         if is_final:
-            trainer.save_checkpoint(save_dir, epoch, is_final=True)
+            if cache_mode == "registry":
+                trainer.save_checkpoint(save_dir, epoch, is_final=True)
 
         # 退出条件
         if use_steps and global_step >= total_steps:
@@ -1162,7 +1164,17 @@ def load_or_train_defense(config, device='cuda', save_dir=None):
         if not use_steps and epoch >= defense_epochs:
             break
 
+    state_dict = None
+    if return_state_dict or cache_mode != "registry":
+        # 返回 CPU 权重，避免后续 Phase 3 再次读写磁盘
+        raw = trainer.model_mgr.model
+        while hasattr(raw, 'module'):
+            raw = raw.module
+        state_dict = {k: v.detach().cpu() for k, v in raw.state_dict().items()}
+
     del trainer
     torch.cuda.empty_cache()
 
+    if return_state_dict or cache_mode != "registry":
+        return tag, epoch_history, state_dict
     return tag, epoch_history

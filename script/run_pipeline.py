@@ -21,6 +21,11 @@ _args, _ = _parser.parse_known_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = str(_args.gpu)
 os.environ['XFORMERS_DISABLED'] = '1'
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+# Make common caches writable / stable (important for headless + multiprocessing)
+if not os.environ.get('OMP_NUM_THREADS', '').isdigit():
+    os.environ['OMP_NUM_THREADS'] = '1'
+os.environ.setdefault('MPLCONFIGDIR', '/tmp/mpl')
+os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -91,6 +96,8 @@ def parse_args():
                         help="攻击阶段 target 数据集：omni / gso / objaverse（覆盖 config.data.target.dataset）")
     parser.add_argument('--defense_target_dataset', type=str, default=None,
                         help="防御阶段 target 数据集：omni / gso / objaverse（覆盖 config.defense.target.dataset）")
+    parser.add_argument('--defense_cache_mode', type=str, default='registry',
+                        help="防御模型缓存策略：registry(读写) / readonly(只读不写) / none(不读不写，最省磁盘)")
     # 互锁机制参数
     parser.add_argument('--robustness', type=str, default=None,
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
@@ -244,6 +251,7 @@ def main():
         print(f"Defense steps: {defense_steps}")
     else:
         print(f"Defense epochs: {defense_epochs}")
+    print(f"Defense cache mode: {defense_cache_mode}")
     print(f"Trap losses: {[k for k, v in config['defense']['trap_losses'].items() if v.get('static')]}")
     trap_combo = config['defense'].get('trap_combo')
     num_tl = config['defense'].get('num_target_layers')
@@ -408,10 +416,26 @@ def main():
                 print(f"[Cache] baseline Gaussians 已缓存: {len(baseline_gaussians)} 个样本")
 
     # ========== Phase 2: Defense Training ==========
-    defense_tag, defense_history = load_or_train_defense(
-        config, device='cuda',
-        save_dir=os.path.join(workspace, 'phase2_defense'),
-    )
+    defense_cache_mode = (args.defense_cache_mode or "registry").lower()
+    if defense_cache_mode not in ("registry", "readonly", "none"):
+        raise ValueError(f"--defense_cache_mode 不支持: {args.defense_cache_mode}")
+
+    need_defense_state = (defense_cache_mode != "registry")
+    if need_defense_state:
+        defense_tag, defense_history, defense_state_dict = load_or_train_defense(
+            config, device='cuda',
+            save_dir=os.path.join(workspace, 'phase2_defense'),
+            cache_mode=defense_cache_mode,
+            return_state_dict=True,
+        )
+    else:
+        defense_tag, defense_history = load_or_train_defense(
+            config, device='cuda',
+            save_dir=os.path.join(workspace, 'phase2_defense'),
+            cache_mode=defense_cache_mode,
+            return_state_dict=False,
+        )
+        defense_state_dict = None
 
     # ========== Phase 3: Post-Defense Attack ==========
     if defense_tag is not None:
@@ -425,9 +449,10 @@ def main():
             attack_steps=attack_steps,
             num_render=args.num_render,
             eval_every_steps=args.eval_every_steps,
-            model_resume_override=f"tag:{defense_tag}",
+            model_resume_override=f"tag:{defense_tag}" if defense_state_dict is None else None,
             phase_name="Phase 3: Post-Defense Attack",
             ref_gaussians=baseline_gaussians if not args.skip_baseline else None,
+            model_state_dict_override=defense_state_dict,
         )
     else:
         # defense.method=none，跳过 Phase 3
@@ -448,6 +473,7 @@ def main():
             'attack_steps': attack_steps,
             'defense_epochs': defense_epochs,
             'defense_steps': defense_steps,
+            'defense_cache_mode': defense_cache_mode,
             'trap_losses': [k for k, v in config['defense']['trap_losses'].items()
                             if v.get('static')],
             'trap_combo': config['defense'].get('trap_combo'),

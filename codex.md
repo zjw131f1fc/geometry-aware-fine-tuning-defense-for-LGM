@@ -240,10 +240,16 @@ Phase 1 baseline attack 有缓存：
 - 元数据：`baseline_meta.json`
 - 也会缓存 baseline gaussians：`baseline_gaussians.pt`（用于 Phase 3 计算“与 baseline 的 gaussian 距离”）
 
-Phase 2 defense 会注册模型：
+Phase 2 defense 的落盘策略（可控）：
 
-- `tools/model_registry.py`：`output/model_registry/<tag>/model.pth` + `meta.json`
-- Phase 3 攻击通过 `model_resume_override=f"tag:{defense_tag}"` 加载防御模型。
+- 默认（`--defense_cache_mode registry`）：
+  - `tools/model_registry.py`：写 `output/model_registry/<tag>/model.pth` + `meta.json`（单个模型约 1.6GB）
+  - Phase 3 通过 `model_resume_override=f"tag:{defense_tag}"` 加载防御模型
+  - 磁盘空间注意：为避免重复保存占用空间，当前实现默认不再在 workspace 的 `phase2_defense/` 里额外保存 checkpoint/model 的拷贝
+- 省磁盘（`--defense_cache_mode readonly` 或 `none`）：
+  - `readonly`：registry 命中则读；未命中则训练但不写 registry
+  - `none`：不读也不写 registry（每次都训练）
+  - Phase 3 直接用内存中的 state_dict 覆盖权重继续跑攻击（无需写模型文件）
 
 ---
 

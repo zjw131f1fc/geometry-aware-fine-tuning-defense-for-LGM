@@ -57,6 +57,7 @@ echo "=========================================="
 CATEGORIES=(garlic)
 ATTACK_EPOCHS=2
 DEFENSE_EPOCHS=15
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
 
 # ============================================================================
 # 任务列表
@@ -147,13 +148,14 @@ run_task() {
         echo "Params: ${params}"
         echo ""
 
-        "${PYTHON}" script/run_pipeline.py \
-            --gpu "${gpu}" \
-            --config "${CONFIG}" \
-            ${params} \
-            --tag "${section}_${tag}" \
-            --output_dir "${output_dir}"
-    } > "${log}" 2>&1 &
+	        "${PYTHON}" script/run_pipeline.py \
+	            --gpu "${gpu}" \
+	            --config "${CONFIG}" \
+	            ${params} \
+	            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+	            --tag "${section}_${tag}" \
+	            --output_dir "${output_dir}"
+	    } > "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }
@@ -207,7 +209,7 @@ for section_label in "5.1.1:单属性Trap" "5.1.2:两两组合Trap" "5.1.3:三�
         echo "--- ${tag} ---"
 
         if [ -f "$metrics" ]; then
-            \"${PYTHON}\" -c "
+            "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)

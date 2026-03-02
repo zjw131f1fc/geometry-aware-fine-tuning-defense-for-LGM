@@ -42,6 +42,7 @@ echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
 echo "=========================================="
 
 CONFIG="configs/config.yaml"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
@@ -122,6 +123,7 @@ run_task() {
             --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
+            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
             --tag "${exp_id}_${tag}" \
             --output_dir "${output_dir}"
     } > "${log}" 2>&1 &
@@ -177,7 +179,7 @@ for def_ep in "${DEFENSE_EPOCHS[@]}"; do
     metrics="${OUTPUT_ROOT}/exp1_${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        \"${PYTHON}\" -c "
+        "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -204,7 +206,7 @@ for def_ep in "${DEFENSE_EPOCHS[@]}"; do
         metrics="${OUTPUT_ROOT}/exp2_${tag}/metrics.json"
 
         if [ -f "$metrics" ]; then
-            \"${PYTHON}\" -c "
+            "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)

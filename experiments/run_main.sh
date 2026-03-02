@@ -39,6 +39,7 @@ CATEGORIES=(shoe plant dish bowl box)
 METHODS=(geotrap naive_unlearning)
 
 CONFIG="configs/config.yaml"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
@@ -81,6 +82,7 @@ run_task() {
             --config "${CONFIG}" \
             --categories "${category}" \
             --defense_method "${method}" \
+            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
             --tag "${tag}" \
             --output_dir "${OUTPUT_ROOT}/${tag}"
     } > "${log}" 2>&1 &
@@ -164,7 +166,7 @@ for category in "${CATEGORIES[@]}"; do
 
         if [ -f "$metrics" ]; then
             echo "--- ${method} ---"
-            \"${PYTHON}\" -c "
+            "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -195,7 +197,7 @@ print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\
     if [ -f "$metrics" ]; then
         echo ""
         echo "--- Undefended (baseline) ---"
-        \"${PYTHON}\" -c "
+        "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)

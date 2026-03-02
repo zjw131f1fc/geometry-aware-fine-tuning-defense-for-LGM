@@ -43,6 +43,7 @@ METHODS=(geotrap naive_unlearning)
 
 ATTACK_TARGET_DATASET="gso"
 DEFENSE_TARGET_DATASET="omni"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
 
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -83,18 +84,17 @@ run_task() {
 
     echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
 
-    {
-        echo "=== GPU ${gpu}: ${tag} ==="
-        "${PYTHON}" script/run_pipeline.py \
-            --gpu "${gpu}" \
-            --config "${CONFIG}" \
-            --categories "${category}" \
-            --defense_method "${method}" \
-            --attack_target_dataset "${ATTACK_TARGET_DATASET}" \
-            --defense_target_dataset "${DEFENSE_TARGET_DATASET}" \
-            --tag "${tag}" \
-            --output_dir "${OUTPUT_ROOT}/${tag}"
-    } > "${log}" 2>&1 &
+    echo "=== GPU ${gpu}: ${tag} ===" > "${log}"
+    "${PYTHON}" script/run_pipeline.py \
+        --gpu "${gpu}" \
+        --config "${CONFIG}" \
+        --categories "${category}" \
+        --defense_method "${method}" \
+        --attack_target_dataset "${ATTACK_TARGET_DATASET}" \
+        --defense_target_dataset "${DEFENSE_TARGET_DATASET}" \
+        --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+        --tag "${tag}" \
+        --output_dir "${OUTPUT_ROOT}/${tag}" >> "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }
@@ -140,7 +140,7 @@ for category in "${CATEGORIES[@]}"; do
 
         if [ -f "$metrics" ]; then
             echo "--- ${method} ---"
-            \"${PYTHON}\" -c "
+            "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -171,7 +171,7 @@ print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\
     if [ -f "$metrics" ]; then
         echo ""
         echo "--- Undefended (baseline) ---"
-        \"${PYTHON}\" -c "
+        "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)

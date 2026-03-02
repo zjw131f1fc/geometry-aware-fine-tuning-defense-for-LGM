@@ -428,7 +428,8 @@ def run_attack(config, target_train_loader, source_val_loader,
                save_dir=None, attack_epochs=None, attack_steps=None,
                num_render=3, eval_every_steps=10,
                model_resume_override=None, phase_name="Attack",
-               return_gaussians=False, ref_gaussians=None):
+               return_gaussians=False, ref_gaussians=None,
+               model_state_dict_override=None):
     """
     一行运行攻击阶段。
 
@@ -451,6 +452,7 @@ def run_attack(config, target_train_loader, source_val_loader,
         num_render: 渲染样本数
         eval_every_steps: 每隔多少 step 评估一次
         model_resume_override: 覆盖 model.resume（如 "tag:xxx"）
+        model_state_dict_override: 可选，直接覆盖模型权重（state_dict，通常用于 defense 不落盘）
         phase_name: 阶段名称（用于日志）
         return_gaussians: 是否返回攻击后在 target 上生成的 Gaussian 列表
         ref_gaussians: 参考 Gaussian 列表（如 baseline 缓存），用于计算距离
@@ -499,6 +501,14 @@ def run_attack(config, target_train_loader, source_val_loader,
     model_mgr = ModelManager(attack_config)
     model_mgr.setup(device='cuda')
     model = model_mgr.model
+    if model_state_dict_override is not None:
+        raw = model
+        while hasattr(raw, 'module'):
+            raw = raw.module
+        missing, unexpected = raw.load_state_dict(model_state_dict_override, strict=False)
+        if missing or unexpected:
+            print(f"  [run_attack] 警告: state_dict 覆盖非严格匹配 "
+                  f"(missing={len(missing)}, unexpected={len(unexpected)})")
 
     training_cfg = config['training']
     print(f"  [run_attack] 实际使用的训练参数: lr={training_cfg['lr']}, "

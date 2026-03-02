@@ -53,6 +53,7 @@ echo "=========================================="
 TEST_CAT="coconut"
 ATTACK_EPOCHS=5
 DEFENSE_EPOCHS=60
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
 
 # ============================================================================
 # 任务列表（优先级排序：语义偏转 > 其他）
@@ -120,14 +121,15 @@ run_task() {
         echo ""
 
         # 执行 pipeline
-        "${PYTHON}" script/run_pipeline.py \
-            --gpu "${gpu}" \
-            --config "${CONFIG}" \
-            ${params} \
-            --defense_epochs "${DEFENSE_EPOCHS}" \
-            --tag "${section}_${tag}" \
-            --output_dir "${output_dir}"
-    } > "${log}" 2>&1 &
+	        "${PYTHON}" script/run_pipeline.py \
+	            --gpu "${gpu}" \
+	            --config "${CONFIG}" \
+	            ${params} \
+	            --defense_epochs "${DEFENSE_EPOCHS}" \
+	            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+	            --tag "${section}_${tag}" \
+	            --output_dir "${output_dir}"
+	    } > "${log}" 2>&1 &
 
     echo "[GPU ${gpu}] PID: $!, log: ${log}"
 }
@@ -185,7 +187,7 @@ for task in "${TASKS[@]}"; do
     echo "--- ${tag} ---"
 
     if [ -f "$metrics" ]; then
-        \"${PYTHON}\" -c "
+        "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -216,7 +218,7 @@ for task in "${TASKS[@]}"; do
     echo "--- ${tag} ---"
 
     if [ -f "$metrics" ]; then
-        \"${PYTHON}\" -c "
+        "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -247,7 +249,7 @@ for task in "${TASKS[@]}"; do
     echo "--- ${tag} ---"
 
     if [ -f "$metrics" ]; then
-        \"${PYTHON}\" -c "
+        "${PYTHON}" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
