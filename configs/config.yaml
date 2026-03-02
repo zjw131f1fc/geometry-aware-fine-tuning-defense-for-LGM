@@ -112,7 +112,7 @@ attack:
 defense:
   method: geotrap                   # geotrap / naive_unlearning / none
   tag: geotrap_v1
-  batch_size: null                  # 防御训练 batch size（null=继承 training.batch_size；不影响攻击阶段）
+  batch_size: 2                     # 防御训练 batch size（默认=2；不影响攻击阶段）
 
   # 防御专用 target 配置（可选，null=使用 data.target）
   target:
@@ -139,7 +139,7 @@ defense:
       static: false
       dynamic: false
 
-  gradient_accumulation_steps: 4    # Defense 等效 batch_size = 1×4 = 4（可配合 defense.batch_size 调整）
+  gradient_accumulation_steps: 2    # Defense 等效 batch_size = 2×2 = 4（可配合 defense.batch_size 调整）
 
   # 损失权重
   lambda_trap: 1.0
