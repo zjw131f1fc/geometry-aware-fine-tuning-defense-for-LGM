@@ -409,11 +409,27 @@ class OmniObject3DDataset(Dataset):
             sample_idx=sample_idx,  # 传入采样索引
         )
 
-        # 限制监督视图数量（均匀采样，避免角度聚集）
-        if self.num_supervision_views is not None and len(supervision_indices) > self.num_supervision_views:
-            # 均匀间隔采样
-            step = len(supervision_indices) / self.num_supervision_views
-            supervision_indices = [supervision_indices[int(i * step)] for i in range(self.num_supervision_views)]
+        # 监督视图：固定数量 + 排除 frame index 0（避免 batch 内 supervision_views 数量不一致导致 DataLoader collate 失败）
+        # - 先构建候选池：不在 input 且不为 0
+        # - 如果候选不足，则允许从非 0 视图中重复采样补齐，确保每个样本 supervision 维度一致
+        desired_sup = int(self.num_supervision_views) if self.num_supervision_views is not None else len(supervision_indices)
+        if desired_sup < 0:
+            desired_sup = 0
+        sup_pool = [i for i in range(total_views) if (i not in input_indices) and (i != 0)]
+        if not sup_pool:
+            sup_pool = [i for i in range(total_views) if i != 0]
+        if desired_sup == 0:
+            supervision_indices = []
+        elif len(sup_pool) >= desired_sup:
+            step = len(sup_pool) / desired_sup
+            supervision_indices = [sup_pool[int(i * step)] for i in range(desired_sup)]
+        else:
+            # pad with repeats
+            supervision_indices = list(sup_pool)
+            k = 0
+            while len(supervision_indices) < desired_sup:
+                supervision_indices.append(sup_pool[k % len(sup_pool)])
+                k += 1
 
         # 第一步：加载所有相机姿态并进行坐标系转换
         all_indices = input_indices + supervision_indices
@@ -736,10 +752,24 @@ class ObjaverseRenderedDataset(Dataset):
             sample_idx=sample_idx,
         )
 
-        # 限制监督视图数量
-        if self.num_supervision_views is not None and len(supervision_indices) > self.num_supervision_views:
-            step = len(supervision_indices) / self.num_supervision_views
-            supervision_indices = [supervision_indices[int(i * step)] for i in range(self.num_supervision_views)]
+        # 监督视图：固定数量 + 排除 frame index 0，避免 batch 内 supervision_views 数量不一致
+        desired_sup = int(self.num_supervision_views) if self.num_supervision_views is not None else len(supervision_indices)
+        if desired_sup < 0:
+            desired_sup = 0
+        sup_pool = [i for i in range(total_views) if (i not in input_indices) and (i != 0)]
+        if not sup_pool:
+            sup_pool = [i for i in range(total_views) if i != 0]
+        if desired_sup == 0:
+            supervision_indices = []
+        elif len(sup_pool) >= desired_sup:
+            step = len(sup_pool) / desired_sup
+            supervision_indices = [sup_pool[int(i * step)] for i in range(desired_sup)]
+        else:
+            supervision_indices = list(sup_pool)
+            k = 0
+            while len(supervision_indices) < desired_sup:
+                supervision_indices.append(sup_pool[k % len(sup_pool)])
+                k += 1
 
         # 第一步：加载所有相机姿态并进行坐标系转换（与 OmniObject3DDataset 一致）
         all_indices = input_indices + supervision_indices
