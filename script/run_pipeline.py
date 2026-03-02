@@ -121,6 +121,11 @@ def main():
     config = ConfigManager(args.config).config
     set_seed(config['misc']['seed'])
 
+    # Defense cache mode（需要在打印 Summary 前就解析出来）
+    defense_cache_mode = (args.defense_cache_mode or "registry").lower()
+    if defense_cache_mode not in ("registry", "readonly", "none"):
+        raise ValueError(f"--defense_cache_mode 不支持: {args.defense_cache_mode}")
+
     # CLI 覆盖
     if args.categories is not None:
         categories = [c.strip() for c in args.categories.split(',')]
@@ -425,10 +430,6 @@ def main():
                 print(f"[Cache] baseline Gaussians 已缓存: {len(baseline_gaussians)} 个样本")
 
     # ========== Phase 2: Defense Training ==========
-    defense_cache_mode = (args.defense_cache_mode or "registry").lower()
-    if defense_cache_mode not in ("registry", "readonly", "none"):
-        raise ValueError(f"--defense_cache_mode 不支持: {args.defense_cache_mode}")
-
     need_defense_state = (defense_cache_mode != "registry")
     if need_defense_state:
         defense_tag, defense_history, defense_state_dict = load_or_train_defense(
