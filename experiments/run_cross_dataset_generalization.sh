@@ -140,7 +140,7 @@ for category in "${CATEGORIES[@]}"; do
 
         if [ -f "$metrics" ]; then
             echo "--- ${method} ---"
-            python -c "
+            \"${PYTHON}\" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
@@ -171,7 +171,7 @@ print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\
     if [ -f "$metrics" ]; then
         echo ""
         echo "--- Undefended (baseline) ---"
-        python -c "
+        \"${PYTHON}\" -c "
 import json
 with open('${metrics}') as f:
     m = json.load(f)
