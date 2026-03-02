@@ -98,6 +98,10 @@ def parse_args():
                         help="防御阶段 target 数据集：omni / gso / objaverse（覆盖 config.defense.target.dataset）")
     parser.add_argument('--defense_batch_size', type=int, default=None,
                         help="防御训练 batch size（覆盖 config.defense.batch_size；不影响攻击训练 batch size）")
+    parser.add_argument('--attack_grad_accumulation_steps', type=int, default=None,
+                        help="攻击梯度累计步数（覆盖 config.training.gradient_accumulation_steps）")
+    parser.add_argument('--defense_grad_accumulation_steps', type=int, default=None,
+                        help="防御梯度累计步数（覆盖 config.defense.gradient_accumulation_steps；不影响攻击）")
     parser.add_argument('--defense_cache_mode', type=str, default='registry',
                         help="防御模型缓存策略：registry(读写) / readonly(只读不写) / none(不读不写，最省磁盘)")
     # 互锁机制参数
@@ -180,6 +184,20 @@ def main():
         config.setdefault('defense', {})
         config['defense']['batch_size'] = args.defense_batch_size
         print(f"[Pipeline] Defense batch_size 覆盖: {args.defense_batch_size}")
+
+    if args.attack_grad_accumulation_steps is not None:
+        if args.attack_grad_accumulation_steps <= 0:
+            raise ValueError("--attack_grad_accumulation_steps 必须为正整数")
+        config.setdefault('training', {})
+        config['training']['gradient_accumulation_steps'] = args.attack_grad_accumulation_steps
+        print(f"[Pipeline] Attack gradient_accumulation_steps 覆盖: {args.attack_grad_accumulation_steps}")
+
+    if args.defense_grad_accumulation_steps is not None:
+        if args.defense_grad_accumulation_steps <= 0:
+            raise ValueError("--defense_grad_accumulation_steps 必须为正整数")
+        config.setdefault('defense', {})
+        config['defense']['gradient_accumulation_steps'] = args.defense_grad_accumulation_steps
+        print(f"[Pipeline] Defense gradient_accumulation_steps 覆盖: {args.defense_grad_accumulation_steps}")
 
     # 攻击训练参数覆盖（只影响攻击，不影响防御）
     attack_lr_override = args.lr
@@ -283,7 +301,10 @@ def main():
     print(f"  lambda_trap: {config['defense'].get('lambda_trap')}")
     print(f"  lambda_distill: {config['defense'].get('lambda_distill')}")
     print(f"  distill_loss_order: {config['defense'].get('distill_loss_order')}")
-    print(f"  gradient_accumulation_steps: {config['defense'].get('gradient_accumulation_steps')}")
+    print(f"  attack.batch_size: {config['training'].get('batch_size')}")
+    print(f"  attack.grad_accumulation_steps: {config['training'].get('gradient_accumulation_steps')}")
+    print(f"  defense.grad_accumulation_steps: {config['defense'].get('gradient_accumulation_steps')}")
+    print(f"  defense.batch_size: {config['defense'].get('batch_size')}")
     robust_cfg = config['defense'].get('robustness', {})
     print(f"  robustness: enabled={robust_cfg.get('enabled')}, noise_scale={robust_cfg.get('noise_scale')}")
     print(f"  training.lr: {config['training'].get('lr')}")

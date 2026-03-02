@@ -70,7 +70,7 @@ training:
   lr: 0.00003
   weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 4    # 有效batch_size = 1×4 = 4
+  gradient_accumulation_steps: 4    # Attack 等效 batch_size = 1×4 = 4
   lambda_lpips: 1.0
   mixed_precision: bf16
 
@@ -139,7 +139,7 @@ defense:
       static: false
       dynamic: false
 
-  gradient_accumulation_steps: 8    # 有效 batch_size = 1×8 = 8
+  gradient_accumulation_steps: 4    # Defense 等效 batch_size = 1×4 = 4（可配合 defense.batch_size 调整）
 
   # 损失权重
   lambda_trap: 1.0

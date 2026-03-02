@@ -229,6 +229,11 @@ def compute_defense_hash(config):
     if effective_defense_batch_size is None:
         effective_defense_batch_size = training_cfg.get('batch_size', 1)
 
+    # Defense 可独立设置梯度累计；默认继承 training.gradient_accumulation_steps
+    effective_defense_grad_accum = defense_cfg.get('gradient_accumulation_steps')
+    if effective_defense_grad_accum is None:
+        effective_defense_grad_accum = training_cfg.get('gradient_accumulation_steps', 1)
+
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
@@ -240,7 +245,7 @@ def compute_defense_hash(config):
             'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
             'lambda_distill': defense_cfg.get('lambda_distill', 1.0),
             'distill_loss_order': defense_cfg.get('distill_loss_order', 2),
-            'gradient_accumulation_steps': defense_cfg.get('gradient_accumulation_steps', 4),
+            'gradient_accumulation_steps': effective_defense_grad_accum,
             'gradient_conflict': defense_cfg.get('gradient_conflict', {}),
             'target': defense_cfg.get('target', {}),  # defense 独立的 target 配置
             'target_layers': defense_cfg.get('target_layers'),

@@ -106,8 +106,11 @@ class DefenseTrainer:
         else:
             self.use_gradient_conflict = False
 
-        # 梯度累积配置
-        self.gradient_accumulation_steps = self.defense_config.get('gradient_accumulation_steps', 1)
+        # 梯度累积配置（defense 可独立设置；默认继承 training.gradient_accumulation_steps）
+        self.gradient_accumulation_steps = self.defense_config.get(
+            'gradient_accumulation_steps',
+            config.get('training', {}).get('gradient_accumulation_steps', 1),
+        )
 
         # 训练状态
         self.target_layers = []
