@@ -98,10 +98,14 @@ class DefenseTrainer:
         if self.method == 'geotrap':
             robust_config = self.defense_config.get('robustness', {})
             self.use_param_noise = robust_config.get('enabled', False)
-            self.noise_scale = robust_config.get('noise_scale', 0.01)
+            self.noise_scale_target = robust_config.get('noise_scale', 0.01)
+            self.noise_warmup_steps = robust_config.get('warmup_steps', 0)
+            self.current_noise_scale = 0.0 if self.noise_warmup_steps > 0 else self.noise_scale_target
         else:
             self.use_param_noise = False
-            self.noise_scale = 0
+            self.noise_scale_target = 0
+            self.noise_warmup_steps = 0
+            self.current_noise_scale = 0
 
         # 特征空间梯度冲突配置（仅 geotrap 且 trap >= 2 时有效）
         if self.method == 'geotrap':
@@ -318,7 +322,7 @@ class DefenseTrainer:
 
         # 打印配置
         if self.use_param_noise:
-            print(f"\n  参数加噪: σ={self.noise_scale}")
+            print(f"\n  参数加噪: σ={self.noise_scale_target} (warmup_steps={self.noise_warmup_steps})")
         if self.use_gradient_conflict:
             print(f"  梯度冲突: weight={self.conflict_weight}, every_k={self.conflict_every_k}")
 
@@ -671,6 +675,21 @@ class DefenseTrainer:
 
         return conflict_loss.squeeze(), conflict_info
 
+    def _update_noise_scale(self, global_step: int):
+        """
+        根据当前训练步数更新噪声scale（线性warmup）
+
+        Args:
+            global_step: 当前全局优化器步数
+        """
+        if self.noise_warmup_steps > 0:
+            # 线性warmup: 从0增长到target值
+            warmup_progress = min(1.0, global_step / self.noise_warmup_steps)
+            self.current_noise_scale = self.noise_scale_target * warmup_progress
+        else:
+            # 无warmup，直接使用目标值
+            self.current_noise_scale = self.noise_scale_target
+
     def _add_param_noise(self, model):
         """
         对模型参数添加高斯噪声，返回原始权重备份
@@ -684,7 +703,7 @@ class DefenseTrainer:
         original_state = {}
         for name, param in model.named_parameters():
             original_state[name] = param.data.clone()
-            noise = torch.randn_like(param) * self.noise_scale
+            noise = torch.randn_like(param) * self.current_noise_scale
             param.data.add_(noise)
         return original_state
 
@@ -912,6 +931,10 @@ class DefenseTrainer:
 
                 # 优化器步数 +1（只在实际更新参数时计数）
                 global_step += 1
+
+                # 更新噪声scale（warmup）
+                if self.use_param_noise and self.noise_warmup_steps > 0:
+                    self._update_noise_scale(global_step)
 
                 # 计算时间统计
                 current_time = time.time()
