@@ -9,7 +9,8 @@
 
 model:
   size: big
-  resume: /mnt/huangjiaxin/3d-defense/lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  # Use repo-relative paths by default for portability across machines.
+  resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
 
 lora:
@@ -21,7 +22,8 @@ lora:
     - proj
 
 data:
-  root: /mnt/huangjiaxin/3d-defense/datas
+  # Repo-relative dataset root (can be overridden per machine).
+  root: ./datas
 
   # Source 数据：缩小样本用于蒸馏/评估
   source:
@@ -137,4 +139,3 @@ defense:
 misc:
   workspace: ./output/workspace_smoke
   seed: 42
-

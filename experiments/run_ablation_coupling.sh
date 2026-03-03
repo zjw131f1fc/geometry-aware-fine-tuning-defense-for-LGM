@@ -2,8 +2,11 @@
 # 互锁机制消融实验（Section 5.2）：coconut
 # Baseline 全启用，然后 w/o 形式去掉每个机制
 #
-# 用法: bash experiments/run_ablation_coupling.sh GPU_LIST
-# 示例: bash experiments/run_ablation_coupling.sh 0,1,2,3
+# 单卡顺序执行（不做 GPU 空闲检查）
+# 用法:
+#   bash experiments/run_ablation_coupling.sh            # 默认 GPU=0
+#   bash experiments/run_ablation_coupling.sh 0          # 指定 GPU=0
+#   bash experiments/run_ablation_coupling.sh 0,1,2,3    # 兼容旧 GPU_LIST，仅使用第一个 GPU
 
 set -e
 
@@ -24,24 +27,33 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-if [ $# -eq 0 ]; then
-    echo "用法: bash experiments/run_ablation_coupling.sh GPU_LIST"
-    echo "示例: bash experiments/run_ablation_coupling.sh 0,1,2,3"
+# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
+GPU_ID="${GPU_ID:-${GPU:-0}}"
+if [ $# -ge 1 ]; then
+    GPU_ARG="$1"
+    if [[ "${GPU_ARG}" == *","* ]]; then
+        GPU_ID="${GPU_ARG%%,*}"
+        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
+    else
+        GPU_ID="${GPU_ARG}"
+    fi
+fi
+
+if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
+    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
     exit 1
 fi
 
-# 解析GPU列表
-IFS=',' read -ra GPUS <<< "$1"
-NUM_GPUS=${#GPUS[@]}
-
-echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
+GPU="${GPU_ID}"
+echo "单卡顺序执行: GPU=${GPU}"
 
 CONFIG="configs/config.yaml"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-# 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
+# 默认把实验输出放到 repo 的 output/ 下（本地目录）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_coupling_${TIMESTAMP}"
 
@@ -84,8 +96,6 @@ echo ""
 
 run_task() {
     local task_idx=$1
-    local gpu_idx=$((task_idx % NUM_GPUS))
-    local gpu=${GPUS[$gpu_idx]}
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r section tag params <<< "$task"
@@ -93,10 +103,10 @@ run_task() {
     local log="${OUTPUT_ROOT}/${section}_${tag}.log"
     local output_dir="${OUTPUT_ROOT}/${section}_${tag}"
 
-    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${section} - ${tag}"
+    echo "[GPU ${GPU}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${section} - ${tag}"
 
-    {
-        echo "=== GPU ${gpu}: ${section} - ${tag} ==="
+    if {
+        echo "=== GPU ${GPU}: ${section} - ${tag} ==="
         echo "Params: ${params}"
         echo ""
 
@@ -108,42 +118,44 @@ run_task() {
             extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
         fi
         XFORMERS_DISABLED=1 "${PYTHON}" script/run_pipeline.py \
-            --gpu "${gpu}" \
+            --gpu "${GPU}" \
             --config "${CONFIG}" \
             ${params} \
             --defense_epochs "${DEFENSE_EPOCHS}" \
             --attack_epochs "${ATTACK_EPOCHS}" \
             --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+            --eval_every_steps "${EVAL_EVERY_STEPS}" \
             --tag "${section}_${tag}" \
             --output_dir "${output_dir}" \
             "${extra_args[@]}"
-    } > "${log}" 2>&1 &
+    } > "${log}" 2>&1; then
+        echo "[GPU ${GPU}] 完成: ${section} - ${tag}"
+        return 0
+    fi
 
-    echo "[GPU ${gpu}] PID: $!, log: ${log}"
+    exit_code=$?
+    echo "[GPU ${GPU}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
+    return "${exit_code}"
 }
 
 # ============================================================================
 # 启动所有任务
 # ============================================================================
 
-for i in $(seq 0 $((TOTAL_TASKS-1))); do
-    run_task $i
+echo ""
+echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
+echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
+echo ""
 
-    if [ $(((i+1) % NUM_GPUS)) -eq 0 ] && [ $((i+1)) -lt ${TOTAL_TASKS} ]; then
-        echo ""
-        echo "已启动 $((i+1)) 个任务，等待当前批次完成..."
-        wait
-        echo "当前批次完成，继续启动..."
-        echo ""
+FAILED=0
+for i in $(seq 0 $((TOTAL_TASKS-1))); do
+    if ! run_task "${i}"; then
+        FAILED=$((FAILED + 1))
     fi
 done
 
 echo ""
-echo "所有任务已启动，等待完成..."
-echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
-wait
-echo ""
-echo "全部完成！"
+echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
 
 # ============================================================================
 # 汇总结果

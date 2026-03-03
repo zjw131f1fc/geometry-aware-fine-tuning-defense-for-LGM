@@ -24,3 +24,8 @@ scripts/test_*.py
 scripts/check_*.py
 scripts/trace_*.py
 scripts/verify_*.py
+
+# 渲染测试输出
+render_smoke/
+render_test/
+render_debug/

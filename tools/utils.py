@@ -156,7 +156,8 @@ def prepare_lgm_data(batch, model, device, include_input_supervision=True):
 BASELINE_CACHE_DIR = 'output/baseline_cache'
 
 
-def compute_baseline_hash(config, attack_epochs, num_render, supervision_categories=None, attack_steps=None):
+def compute_baseline_hash(config, attack_epochs, num_render, supervision_categories=None,
+                          attack_steps=None, eval_every_steps=None):
     """
     根据影响 baseline 结果的所有配置计算 SHA256 哈希。
 
@@ -166,6 +167,7 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
         num_render: 渲染样本数
         supervision_categories: 监督类别（语义偏转模式），None 表示标准模式
         attack_steps: 攻击 step 数（优先于 attack_epochs）
+        eval_every_steps: 攻击过程中每隔多少 step 记录/打印一次指标（影响 baseline_history）
     """
     training_cfg = config.get('training', {})
     attack_cfg = config.get('attack', {})
@@ -197,6 +199,7 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
         },
         'attack_steps': attack_steps,
         'attack_epochs': attack_epochs,
+        'eval_every_steps': eval_every_steps,
         'data_target': config['data']['target'],
         'data_shared': {
             'root': config['data']['root'],

@@ -107,6 +107,8 @@ def parse_args():
     # 互锁机制参数
     parser.add_argument('--robustness', type=str, default=None,
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
+    parser.add_argument('--noise_scale', type=float, default=None,
+                        help='参数加噪 σ（覆盖 config.defense.robustness.noise_scale）')
     return parser.parse_args()
 
 
@@ -120,6 +122,49 @@ def main():
 
     args = parse_args()
     device = 'cuda'
+
+    def _dump_json(path: str, obj) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False, default=str)
+
+    def _print_kv(key: str, value) -> None:
+        print(f"  {key}: {value}")
+
+    def _last_attack_eval_entry(step_history):
+        if not step_history:
+            return None
+        for entry in reversed(step_history):
+            if not isinstance(entry, dict):
+                continue
+            if 'masked_psnr' in entry and 'masked_lpips' in entry and 'step' in entry:
+                return entry
+        return None
+
+    def _steps_to_reach_attack_quality(step_history, target_masked_psnr, target_masked_lpips,
+                                       eps_psnr=0.0, eps_lpips=0.0):
+        """
+        用攻击阶段的 step-eval 指标（masked_psnr / masked_lpips）计算：
+        达到某个“攻击质量阈值”（PSNR >= 阈值 且 LPIPS <= 阈值）所需的最早 step。
+
+        注意：PSNR 越大越好，LPIPS 越小越好。
+        """
+        if not step_history:
+            return None
+        for entry in step_history:
+            if not isinstance(entry, dict):
+                continue
+            psnr = entry.get('masked_psnr')
+            lpips = entry.get('masked_lpips')
+            step = entry.get('step')
+            if psnr is None or lpips is None or step is None:
+                continue
+            if (psnr >= (target_masked_psnr - eps_psnr)) and (lpips <= (target_masked_lpips + eps_lpips)):
+                try:
+                    return int(step)
+                except Exception:
+                    return step
+        return None
 
     # 加载配置
     config = ConfigManager(args.config).config
@@ -243,6 +288,10 @@ def main():
         val = args.robustness.lower() == 'true'
         config['defense']['robustness']['enabled'] = val
         print(f"[Pipeline] 参数加噪鲁棒性覆盖: {val}")
+    if args.noise_scale is not None:
+        config.setdefault('defense', {}).setdefault('robustness', {})
+        config['defense']['robustness']['noise_scale'] = float(args.noise_scale)
+        print(f"[Pipeline] noise_scale 覆盖: {args.noise_scale}")
 
     # CLI 覆盖了 trap_combo/num_target_layers 时，重新解析 target_layers
     combo = config['defense'].get('trap_combo')
@@ -271,10 +320,35 @@ def main():
         config['misc']['workspace'], f"pipeline_{tag}_{timestamp}")
     os.makedirs(workspace, exist_ok=True)
 
+    # 保存可复现实验的配置快照（比单纯打印更可靠）
+    _dump_json(os.path.join(workspace, "pipeline_args.json"), vars(args))
+    _dump_json(os.path.join(workspace, "pipeline_config.json"), config)
+    _dump_json(os.path.join(workspace, "pipeline_effective.json"), {
+        "pipeline_tag": tag,
+        "config_path": args.config,
+        "attack_steps": attack_steps,
+        "attack_epochs": attack_epochs,
+        "defense_steps": defense_steps,
+        "defense_epochs": defense_epochs,
+        "defense_cache_mode": defense_cache_mode,
+        "semantic_deflection": bool(supervision_categories),
+        "supervision_categories": supervision_categories,
+        "num_render": args.num_render,
+        "eval_every_steps": args.eval_every_steps,
+        "skip_baseline": bool(args.skip_baseline),
+        "env": {
+            "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
+            "MPLCONFIGDIR": os.environ.get("MPLCONFIGDIR"),
+            "HF_ENDPOINT": os.environ.get("HF_ENDPOINT"),
+        },
+    })
+
     print("=" * 80)
     print("Pipeline: Baseline Attack → Defense → Post-Defense Attack")
     print("=" * 80)
-    print(f"Tag: {tag}")
+    print(f"Pipeline tag: {tag}")
+    print(f"Config: {args.config}")
     if attack_steps is not None:
         print(f"Attack steps: {attack_steps}")
     else:
@@ -294,17 +368,87 @@ def main():
         for i, l in enumerate(target_layers, 1):
             print(f"  {i:2d}. {l}")
     print(f"Output: {workspace}")
+    print(f"Repro dumps: {os.path.join(workspace, 'pipeline_config.json')} "
+          f"(+ {os.path.join(workspace, 'pipeline_args.json')}, {os.path.join(workspace, 'pipeline_effective.json')})")
 
     # 打印关键配置，方便事后追溯
     print("\n--- Config Summary ---")
-    print(f"  source_ratio: {config['data'].get('source_ratio')}")
-    print(f"  lambda_trap: {config['defense'].get('lambda_trap')}")
-    print(f"  lambda_distill: {config['defense'].get('lambda_distill')}")
-    print(f"  distill_loss_order: {config['defense'].get('distill_loss_order')}")
-    print(f"  attack.batch_size: {config['training'].get('batch_size')}")
-    print(f"  attack.grad_accumulation_steps: {config['training'].get('gradient_accumulation_steps')}")
-    print(f"  defense.grad_accumulation_steps: {config['defense'].get('gradient_accumulation_steps')}")
-    print(f"  defense.batch_size: {config['defense'].get('batch_size')}")
+    print("  [env]")
+    _print_kv("gpu", args.gpu)
+    _print_kv("CUDA_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES"))
+    _print_kv("OMP_NUM_THREADS", os.environ.get("OMP_NUM_THREADS"))
+    _print_kv("MPLCONFIGDIR", os.environ.get("MPLCONFIGDIR"))
+    _print_kv("HF_ENDPOINT", os.environ.get("HF_ENDPOINT"))
+
+    print("  [model]")
+    _print_kv("model.size", config.get('model', {}).get('size'))
+    _print_kv("model.resume", config.get('model', {}).get('resume'))
+    _print_kv("model.device", config.get('model', {}).get('device'))
+    _print_kv("lora.r", config.get('lora', {}).get('r'))
+    _print_kv("lora.alpha", config.get('lora', {}).get('alpha'))
+    _print_kv("lora.target_modules", config.get('lora', {}).get('target_modules'))
+
+    print("  [data]")
+    _print_kv("data.root", config.get('data', {}).get('root'))
+    _print_kv("target.dataset", config.get('data', {}).get('target', {}).get('dataset'))
+    _print_kv("target.categories", config.get('data', {}).get('target', {}).get('categories'))
+    _print_kv("source.dataset", config.get('data', {}).get('source', {}).get('dataset'))
+    _print_kv("source.categories", config.get('data', {}).get('source', {}).get('categories'))
+    _print_kv("source_ratio", config.get('data', {}).get('source_ratio'))
+    _print_kv("attack_samples_per_category", config.get('data', {}).get('attack_samples_per_category'))
+    _print_kv("data.num_workers", config.get('data', {}).get('num_workers'))
+    obj_split = config.get('data', {}).get('object_split', {})
+    if isinstance(obj_split, dict) and obj_split:
+        obj_split_counts = {
+            k: (len(v) if isinstance(v, list) else None)
+            for k, v in obj_split.items()
+        }
+        _print_kv("data.object_split.counts", obj_split_counts)
+
+    print("  [attack/train]")
+    _print_kv("training.mode", config.get('training', {}).get('mode'))
+    _print_kv("training.optimizer", config.get('training', {}).get('optimizer'))
+    _print_kv("training.lr", config.get('training', {}).get('lr'))
+    _print_kv("training.batch_size", config.get('training', {}).get('batch_size'))
+    _print_kv("training.gradient_accumulation_steps", config.get('training', {}).get('gradient_accumulation_steps'))
+    _print_kv("attack.scenario", config.get('attack', {}).get('scenario'))
+    _print_kv("attack.mode", config.get('attack', {}).get('mode'))
+    _print_kv("attack.malicious_categories", config.get('attack', {}).get('malicious_content', {}).get('malicious_categories'))
+    _print_kv("attack.lr_override", attack_lr_override)
+    _print_kv("attack.optimizer_override", attack_optimizer_override)
+    _print_kv("attack.eval_every_steps", args.eval_every_steps)
+    _print_kv("attack.num_render", args.num_render)
+    _print_kv("attack.skip_baseline", args.skip_baseline)
+    _print_kv("attack.semantic_deflection", bool(supervision_categories))
+    if supervision_categories:
+        _print_kv("attack.supervision_categories", supervision_categories)
+
+    print("  [defense]")
+    _print_kv("defense.method", config.get('defense', {}).get('method'))
+    _print_kv("defense.cache_mode", defense_cache_mode)
+    defense_target_cfg = config.get('defense', {}).get('target', {})
+    _print_kv("defense.target.dataset", defense_target_cfg.get('dataset') if isinstance(defense_target_cfg, dict) else None)
+    _print_kv("defense.target.categories", defense_target_cfg.get('categories') if isinstance(defense_target_cfg, dict) else None)
+    _print_kv("defense.target.samples_per_object", defense_target_cfg.get('samples_per_object') if isinstance(defense_target_cfg, dict) else None)
+    _print_kv("lambda_trap", config.get('defense', {}).get('lambda_trap'))
+    _print_kv("lambda_distill", config.get('defense', {}).get('lambda_distill'))
+    _print_kv("distill_loss_order", config.get('defense', {}).get('distill_loss_order'))
+    _print_kv("defense.batch_size", config.get('defense', {}).get('batch_size'))
+    _print_kv("defense.gradient_accumulation_steps", config.get('defense', {}).get('gradient_accumulation_steps'))
+    robust_cfg = config.get('defense', {}).get('robustness', {})
+    _print_kv("robustness.enabled", robust_cfg.get('enabled'))
+    _print_kv("robustness.noise_scale", robust_cfg.get('noise_scale'))
+    conflict_cfg = config.get('defense', {}).get('gradient_conflict', {})
+    _print_kv("gradient_conflict.enabled", conflict_cfg.get('enabled'))
+    _print_kv("gradient_conflict.weight", conflict_cfg.get('weight'))
+    _print_kv("gradient_conflict.every_k_steps", conflict_cfg.get('every_k_steps'))
+    _print_kv("trap_losses.static", [k for k, v in config.get('defense', {}).get('trap_losses', {}).items() if v.get('static')])
+    _print_kv("trap_combo", config.get('defense', {}).get('trap_combo'))
+    _print_kv("num_target_layers", config.get('defense', {}).get('num_target_layers'))
+    defense_eval_cfg = config.get('defense', {}).get('eval', {})
+    if isinstance(defense_eval_cfg, dict) and defense_eval_cfg:
+        _print_kv("defense.eval", defense_eval_cfg)
+
     try:
         attack_bs = int(config['training'].get('batch_size', 1))
         attack_ga = int(config['training'].get('gradient_accumulation_steps', 1))
@@ -315,12 +459,6 @@ def main():
         print(f"  defense.effective_batch_size: {defense_bs}×{defense_ga}={defense_bs * defense_ga}")
     except Exception:
         pass
-    robust_cfg = config['defense'].get('robustness', {})
-    print(f"  robustness: enabled={robust_cfg.get('enabled')}, noise_scale={robust_cfg.get('noise_scale')}")
-    print(f"  training.lr: {config['training'].get('lr')}")
-    print(f"  training.mode: {config['training'].get('mode')}")
-    print(f"  target categories: {config['data']['target'].get('categories')}")
-    print(f"  source categories: {config['data']['source'].get('categories')}")
     print("--- End Config ---")
 
     # 创建数据加载器（全程复用）
@@ -400,6 +538,7 @@ def main():
         attack_config['training']['lr'] = attack_lr_override
     if attack_optimizer_override is not None:
         attack_config['training']['optimizer'] = attack_optimizer_override
+    _dump_json(os.path.join(workspace, "attack_config.json"), attack_config)
 
     # ========== Phase 1: Baseline Attack（带缓存）==========
     if args.skip_baseline:
@@ -415,6 +554,7 @@ def main():
             args.num_render,
             supervision_categories,
             attack_steps=attack_steps,
+            eval_every_steps=args.eval_every_steps,
         )
         cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
         phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
@@ -500,6 +640,44 @@ def main():
         print("\n[Pipeline] defense.method=none，跳过 Post-Defense Attack")
         postdef_history, postdef_source, postdef_target = None, None, None
 
+    # ========== Phase X: 攻击阶段步数分析（baseline 达标步数） ==========
+    baseline_end_entry = _last_attack_eval_entry(baseline_history)
+    if baseline_end_entry is not None:
+        baseline_effect_psnr = baseline_end_entry.get('masked_psnr')
+        baseline_effect_lpips = baseline_end_entry.get('masked_lpips')
+        baseline_effect_step = baseline_end_entry.get('step')
+    else:
+        baseline_effect_psnr, baseline_effect_lpips, baseline_effect_step = None, None, None
+
+    baseline_steps_to_reach_baseline = None
+    postdef_steps_to_reach_baseline = None
+    if baseline_effect_psnr is not None and baseline_effect_lpips is not None:
+        baseline_steps_to_reach_baseline = _steps_to_reach_attack_quality(
+            baseline_history, baseline_effect_psnr, baseline_effect_lpips
+        )
+        postdef_steps_to_reach_baseline = _steps_to_reach_attack_quality(
+            postdef_history, baseline_effect_psnr, baseline_effect_lpips
+        )
+
+    print(f"\n{'='*80}")
+    print("Attack 阶段达标步数（达到 Baseline Attack 最终质量阈值）")
+    print(f"{'='*80}")
+    print(f"eval_every_steps: {args.eval_every_steps}")
+    if baseline_end_entry is None:
+        print("Baseline Attack: 无 step 历史（可能 skip_baseline 或旧缓存）")
+    else:
+        if baseline_effect_psnr is None or baseline_effect_lpips is None:
+            print(f"Baseline Attack: step 历史缺少 masked_psnr/masked_lpips（step={baseline_effect_step}）")
+        else:
+            print(f"Baseline Attack 最终阈值（来自最后一次 step-eval）: "
+                  f"step={baseline_effect_step}, masked_psnr={baseline_effect_psnr:.2f}, "
+                  f"masked_lpips={baseline_effect_lpips:.4f}")
+            print(f"Baseline Attack 达到自身最终效果的最早 step: {baseline_steps_to_reach_baseline}")
+        if postdef_history is None:
+            print("Post-Defense Attack: 无（defense.method=none）")
+        else:
+            print(f"Post-Defense Attack 达到 Baseline Attack 最终效果的最早 step: {postdef_steps_to_reach_baseline}")
+
     # ========== Phase 4: 绘图 + 保存结果 ==========
     plot_pipeline_results(
         baseline_history, postdef_history, defense_history,
@@ -514,6 +692,7 @@ def main():
             'attack_steps': attack_steps,
             'defense_epochs': defense_epochs,
             'defense_steps': defense_steps,
+            'eval_every_steps': args.eval_every_steps,
             'defense_cache_mode': defense_cache_mode,
             'trap_losses': [k for k, v in config['defense']['trap_losses'].items()
                             if v.get('static')],
@@ -522,6 +701,17 @@ def main():
             'target_layers': target_layers,
             'semantic_deflection': supervision_categories is not None,
             'supervision_categories': supervision_categories,
+        },
+        'analysis': {
+            'baseline_attack_effect_at_end': (
+                {
+                    'step': baseline_effect_step,
+                    'masked_psnr': baseline_effect_psnr,
+                    'masked_lpips': baseline_effect_lpips,
+                } if baseline_end_entry is not None else None
+            ),
+            'baseline_attack_steps_to_effect': baseline_steps_to_reach_baseline,
+            'postdefense_attack_steps_to_baseline_effect': postdef_steps_to_reach_baseline,
         },
         'baseline_attack': baseline_history,
         'baseline_source': baseline_source,
@@ -552,8 +742,8 @@ def main():
         bt_input = bt.get('input', bt)  # 兼容旧格式
         pt_input = pt.get('input', pt)
         print("\n[vs Input Category]")
-        for key, label in [('lpips', 'Input LPIPS↑'),
-                          ('psnr', 'Input PSNR↓')]:
+        for key, label in [('psnr', 'Input PSNR↑'),
+                          ('lpips', 'Input LPIPS↓')]:
             bv = bt_input.get(key, 0)
             pv = pt_input.get(key, 0)
             print(f"{label:<25} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
@@ -562,8 +752,8 @@ def main():
         bt_sup = bt.get('supervision', {})
         pt_sup = pt.get('supervision', {})
         print("\n[vs Supervision Category]")
-        for key, label in [('lpips', 'Supervision LPIPS↓'),
-                          ('psnr', 'Supervision PSNR↑')]:
+        for key, label in [('psnr', 'Supervision PSNR↑'),
+                          ('lpips', 'Supervision LPIPS↓')]:
             bv = bt_sup.get(key, 0)
             pv = pt_sup.get(key, 0)
             print(f"{label:<25} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
@@ -572,11 +762,11 @@ def main():
         print(f"{'指标':<20} {'Baseline':>10} {'Post-Defense':>12} {'Delta':>10}")
         print("-" * 55)
 
-        # Target 指标（攻击后）：LPIPS↑ = 防御有效，PSNR↓ = 防御有效
+        # Target 指标（攻击后，质量口径）：PSNR↑ 越好，LPIPS↓ 越好
         bt = baseline_target or {}
         pt = postdef_target or {}
-        for key, label in [('lpips', 'Target LPIPS↑'),
-                          ('psnr', 'Target PSNR↓')]:
+        for key, label in [('psnr', 'Target PSNR↑'),
+                          ('lpips', 'Target LPIPS↓')]:
             bv = bt.get(key, 0)
             pv = pt.get(key, 0)
             print(f"{label:<20} {bv:>10.4f} {pv:>12.4f} {pv - bv:>+10.4f}")
@@ -594,6 +784,23 @@ def main():
 
     separator_len = 60 if supervision_categories else 55
     print("-" * separator_len)
+
+    # Attack 训练过程中（step-eval）最后一次的 masked PSNR/LPIPS，方便快速查看
+    baseline_last = _last_attack_eval_entry(baseline_history)
+    postdef_last = _last_attack_eval_entry(postdef_history)
+    print("\n[Attack Step-Eval (masked)]")
+    if baseline_last is not None:
+        print(f"Baseline Attack: step={baseline_last.get('step')}, "
+              f"masked_psnr={baseline_last.get('masked_psnr', 0):.2f}, "
+              f"masked_lpips={baseline_last.get('masked_lpips', 0):.4f}")
+    else:
+        print("Baseline Attack: (无)")
+    if postdef_last is not None:
+        print(f"Post-Defense Attack: step={postdef_last.get('step')}, "
+              f"masked_psnr={postdef_last.get('masked_psnr', 0):.2f}, "
+              f"masked_lpips={postdef_last.get('masked_lpips', 0):.4f}")
+    else:
+        print("Post-Defense Attack: (无)")
 
     # Gaussian 诊断汇总
     for phase_label, tgt in [("Baseline", baseline_target), ("Post-Defense", postdef_target)]:

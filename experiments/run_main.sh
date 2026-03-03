@@ -2,7 +2,11 @@
 # 主实验：5个类别 × 2种防御方法（naive_unlearning + geotrap）
 # 每个pipeline自动产生Undefended（Phase 1）和对应防御方法（Phase 3）的结果
 #
-# 用法: bash experiments/run_main.sh 0,1,2,3
+# 单卡顺序执行（不做 GPU 空闲检查）
+# 用法:
+#   bash experiments/run_main.sh            # 默认 GPU=0
+#   bash experiments/run_main.sh 0          # 指定 GPU=0
+#   bash experiments/run_main.sh 0,1,2,3    # 兼容旧 GPU_LIST，仅使用第一个 GPU
 
 set -e
 
@@ -23,17 +27,25 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-if [ $# -eq 0 ]; then
-    echo "用法: bash experiments/run_main.sh GPU_LIST"
-    echo "示例: bash experiments/run_main.sh 0,1,2,3"
+# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
+GPU_ID="${GPU_ID:-${GPU:-0}}"
+if [ $# -ge 1 ]; then
+    GPU_ARG="$1"
+    if [[ "${GPU_ARG}" == *","* ]]; then
+        GPU_ID="${GPU_ARG%%,*}"
+        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
+    else
+        GPU_ID="${GPU_ARG}"
+    fi
+fi
+
+if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
+    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
     exit 1
 fi
 
-# 解析GPU列表
-IFS=',' read -ra GPUS <<< "$1"
-NUM_GPUS=${#GPUS[@]}
-
-echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
+GPU="${GPU_ID}"
+echo "单卡顺序执行: GPU=${GPU}"
 
 CATEGORIES=(shoe plant dish bowl box)
 METHODS=(geotrap naive_unlearning)
@@ -42,8 +54,9 @@ CONFIG="configs/config.yaml"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-# 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
+# 默认把实验输出放到 repo 的 output/ 下（本地目录）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/main_experiment_${TIMESTAMP}"
 
@@ -65,20 +78,19 @@ TOTAL_TASKS=${#TASKS[@]}
 echo "总任务数: ${TOTAL_TASKS}"
 echo ""
 
-# 任务启动函数（指定GPU）
+# 任务执行函数（单卡、顺序）
 run_task() {
     local task_idx=$1
-    local gpu=$2
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r category method <<< "$task"
     local tag="${category}_${method}"
     local log="${OUTPUT_ROOT}/${tag}.log"
 
-    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
+    echo "[GPU ${GPU}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
 
-    {
-        echo "=== GPU ${gpu}: ${tag} ==="
+    if {
+        echo "=== GPU ${GPU}: ${tag} ==="
         extra_args=()
         if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
             extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
@@ -87,69 +99,36 @@ run_task() {
             extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
         fi
         "${PYTHON}" script/run_pipeline.py \
-            --gpu "${gpu}" \
+            --gpu "${GPU}" \
             --config "${CONFIG}" \
             --categories "${category}" \
             --defense_method "${method}" \
             --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+            --eval_every_steps "${EVAL_EVERY_STEPS}" \
             --tag "${tag}" \
             --output_dir "${OUTPUT_ROOT}/${tag}" \
             "${extra_args[@]}"
-    } > "${log}" 2>&1 &
+    } > "${log}" 2>&1; then
+        echo "[GPU ${GPU}] 完成: ${tag}"
+        return 0
+    fi
 
-    local pid=$!
-    PID_TO_GPU["${pid}"]="${gpu}"
-    PID_TO_TAG["${pid}"]="${tag}"
-    RUNNING=$((RUNNING + 1))
-    echo "[GPU ${gpu}] PID: ${pid}, log: ${log}"
+    exit_code=$?
+    echo "[GPU ${GPU}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
+    return "${exit_code}"
 }
 
-# 动态调度：谁先空闲就立刻补下一个任务
-declare -A PID_TO_GPU
-declare -A PID_TO_TAG
-RUNNING=0
-NEXT_TASK=0
+echo ""
+echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
+echo ""
+
 COMPLETED=0
 FAILED=0
-
-# 先给每张GPU各发一个任务
-for gpu in "${GPUS[@]}"; do
-    if [ ${NEXT_TASK} -lt ${TOTAL_TASKS} ]; then
-        run_task "${NEXT_TASK}" "${gpu}"
-        NEXT_TASK=$((NEXT_TASK + 1))
-    fi
-done
-
-echo ""
-echo "动态调度已启动：GPU 空闲后立即补任务"
-echo ""
-
-while [ ${RUNNING} -gt 0 ]; do
-    finished_pid=""
-    if wait -n -p finished_pid; then
-        exit_code=0
-    else
-        exit_code=$?
-    fi
-
-    finished_gpu="${PID_TO_GPU[${finished_pid}]}"
-    finished_tag="${PID_TO_TAG[${finished_pid}]}"
-    unset PID_TO_GPU["${finished_pid}"]
-    unset PID_TO_TAG["${finished_pid}"]
-
-    RUNNING=$((RUNNING - 1))
-    COMPLETED=$((COMPLETED + 1))
-
-    if [ ${exit_code} -eq 0 ]; then
-        echo "[GPU ${finished_gpu}] 完成: ${finished_tag} (${COMPLETED}/${TOTAL_TASKS})"
+for i in $(seq 0 $((TOTAL_TASKS-1))); do
+    if run_task "${i}"; then
+        COMPLETED=$((COMPLETED + 1))
     else
         FAILED=$((FAILED + 1))
-        echo "[GPU ${finished_gpu}] 失败: ${finished_tag} (exit=${exit_code})"
-    fi
-
-    if [ ${NEXT_TASK} -lt ${TOTAL_TASKS} ]; then
-        run_task "${NEXT_TASK}" "${finished_gpu}"
-        NEXT_TASK=$((NEXT_TASK + 1))
     fi
 done
 

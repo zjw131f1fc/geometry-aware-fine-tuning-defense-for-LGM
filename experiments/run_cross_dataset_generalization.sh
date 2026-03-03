@@ -5,7 +5,11 @@
 #
 # 每个 pipeline 自动产生 Undefended（Phase 1）和对应防御方法（Phase 3）的结果
 #
-# 用法: bash experiments/run_cross_dataset_generalization.sh 0,1,2,3
+# 单卡顺序执行（不做 GPU 空闲检查）
+# 用法:
+#   bash experiments/run_cross_dataset_generalization.sh            # 默认 GPU=0
+#   bash experiments/run_cross_dataset_generalization.sh 0          # 指定 GPU=0
+#   bash experiments/run_cross_dataset_generalization.sh 0,1,2,3    # 兼容旧 GPU_LIST，仅使用第一个 GPU
 
 set -e
 
@@ -26,17 +30,25 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-if [ $# -eq 0 ]; then
-    echo "用法: bash experiments/run_cross_dataset_generalization.sh GPU_LIST"
-    echo "示例: bash experiments/run_cross_dataset_generalization.sh 0,1,2,3"
+# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
+GPU_ID="${GPU_ID:-${GPU:-0}}"
+if [ $# -ge 1 ]; then
+    GPU_ARG="$1"
+    if [[ "${GPU_ARG}" == *","* ]]; then
+        GPU_ID="${GPU_ARG%%,*}"
+        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
+    else
+        GPU_ID="${GPU_ARG}"
+    fi
+fi
+
+if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
+    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
     exit 1
 fi
 
-# 解析GPU列表
-IFS=',' read -ra GPUS <<< "$1"
-NUM_GPUS=${#GPUS[@]}
-
-echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
+GPU="${GPU_ID}"
+echo "单卡顺序执行: GPU=${GPU}"
 
 CATEGORIES=(shoe plant dish bowl box)
 METHODS=(geotrap naive_unlearning)
@@ -46,10 +58,11 @@ DEFENSE_TARGET_DATASET="omni"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-# 默认把实验输出放到 repo 的 output/ 下（本环境通常会把 output/ 链接到系统盘，避免写满数据盘）
+# 默认把实验输出放到 repo 的 output/ 下（本地目录）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_omni_defense_gso_attack_${TIMESTAMP}"
 
@@ -76,59 +89,60 @@ echo ""
 # 任务分配函数
 run_task() {
     local task_idx=$1
-    local gpu_idx=$((task_idx % NUM_GPUS))
-    local gpu=${GPUS[$gpu_idx]}
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r category method <<< "$task"
     local tag="${category}_${method}_omni2gso"
     local log="${OUTPUT_ROOT}/${tag}.log"
 
-    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
+    echo "[GPU ${GPU}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
 
-    echo "=== GPU ${gpu}: ${tag} ===" > "${log}"
-    extra_args=()
-    if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
-        extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+    if {
+        echo "=== GPU ${GPU}: ${tag} ==="
+        extra_args=()
+        if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
+            extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+        fi
+        if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
+            extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
+        fi
+        "${PYTHON}" script/run_pipeline.py \
+            --gpu "${GPU}" \
+            --config "${CONFIG}" \
+            --categories "${category}" \
+            --defense_method "${method}" \
+            --attack_target_dataset "${ATTACK_TARGET_DATASET}" \
+            --defense_target_dataset "${DEFENSE_TARGET_DATASET}" \
+            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+            --eval_every_steps "${EVAL_EVERY_STEPS}" \
+            --tag "${tag}" \
+            --output_dir "${OUTPUT_ROOT}/${tag}" \
+            "${extra_args[@]}"
+    } > "${log}" 2>&1; then
+        echo "[GPU ${GPU}] 完成: ${tag}"
+        return 0
     fi
-    if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
-        extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
-    fi
-    "${PYTHON}" script/run_pipeline.py \
-        --gpu "${gpu}" \
-        --config "${CONFIG}" \
-        --categories "${category}" \
-        --defense_method "${method}" \
-        --attack_target_dataset "${ATTACK_TARGET_DATASET}" \
-        --defense_target_dataset "${DEFENSE_TARGET_DATASET}" \
-        --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
-        --tag "${tag}" \
-        --output_dir "${OUTPUT_ROOT}/${tag}" \
-        "${extra_args[@]}" >> "${log}" 2>&1 &
 
-    echo "[GPU ${gpu}] PID: $!, log: ${log}"
+    exit_code=$?
+    echo "[GPU ${GPU}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
+    return "${exit_code}"
 }
 
-# 启动所有任务（自动分配到GPU）
-for i in $(seq 0 $((TOTAL_TASKS-1))); do
-    run_task $i
+# 启动所有任务（单卡、顺序）
+echo ""
+echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
+echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
+echo ""
 
-    # 每启动NUM_GPUS个任务后等待，避免同时启动太多
-    if [ $(((i+1) % NUM_GPUS)) -eq 0 ] && [ $((i+1)) -lt ${TOTAL_TASKS} ]; then
-        echo ""
-        echo "已启动 $((i+1)) 个任务，等待当前批次完成..."
-        wait
-        echo "当前批次完成，继续启动..."
-        echo ""
+FAILED=0
+for i in $(seq 0 $((TOTAL_TASKS-1))); do
+    if ! run_task "${i}"; then
+        FAILED=$((FAILED + 1))
     fi
 done
 
 echo ""
-echo "所有任务已启动，等待完成..."
-echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
-wait
-echo ""
-echo "全部完成！"
+echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
 
 # 汇总结果（同时输出到终端和文件）
 SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"

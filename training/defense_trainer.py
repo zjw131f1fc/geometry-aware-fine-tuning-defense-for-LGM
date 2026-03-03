@@ -22,23 +22,29 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 import os
 import hashlib
 import json
 
-from models import ModelManager
-from data import DataManager
-from methods.trap_losses import ScaleAnisotropyLoss, PositionCollapseLoss, OpacityCollapseLoss, RotationAnisotropyLoss, ColorCollapseLoss
-from tools.model_registry import register as registry_register
+if TYPE_CHECKING:
+    # Avoid importing heavy dependencies at module import time.
+    # These are imported lazily inside methods when needed.
+    from models import ModelManager  # noqa: F401
+    from data import DataManager  # noqa: F401
 
 
 class CachedGaussianDataset(Dataset):
-    """包装数据集，附带预计算的教师模型 Gaussian 输出"""
+    """包装数据集，附带预计算的教师模型 Gaussian 输出
+
+    使用共享内存优化，支持 num_workers > 0 和 batch_size > 1 同时使用。
+    """
 
     def __init__(self, base_dataset, cached_gaussians: List[torch.Tensor]):
         self.base_dataset = base_dataset
-        self.cached_gaussians = cached_gaussians
+        # 将 List[Tensor] stack 成单个 Tensor 并移到共享内存
+        # 这样可以避免多进程 DataLoader 时的序列化开销和内存复制
+        self.cached_gaussians = torch.stack(cached_gaussians).share_memory_()
 
     def __len__(self):
         return len(self.base_dataset)
@@ -119,6 +125,14 @@ class DefenseTrainer:
 
     def _setup_trap_losses(self):
         """根据配置创建陷阱损失函数"""
+        from methods.trap_losses import (
+            ScaleAnisotropyLoss,
+            PositionCollapseLoss,
+            OpacityCollapseLoss,
+            RotationAnisotropyLoss,
+            ColorCollapseLoss,
+        )
+
         trap_config = self.defense_config.get('trap_losses', {})
 
         # Position 陷阱
@@ -172,6 +186,7 @@ class DefenseTrainer:
 
         # 1. 加载学生模型（用于微调）— 防御永远不加 LoRA
         print("\n[1/5] 加载学生模型（用于微调）...")
+        from models import ModelManager
         self.model_mgr = ModelManager(self.config)
         self.model_mgr.setup(apply_lora=False, device=self.device)
         print(f"  ✓ 学生模型已加载")
@@ -227,6 +242,7 @@ class DefenseTrainer:
         defense_data_config['training']['batch_size'] = self.defense_batch_size
 
         # Source数据加载器（蒸馏用）
+        from data import DataManager
         source_data_mgr = DataManager(defense_data_config, self.model_mgr.opt)
         source_data_mgr.setup_dataloaders(train=True, val=False, subset='source')
         source_full_dataset = source_data_mgr.train_loader.dataset
@@ -356,15 +372,27 @@ class DefenseTrainer:
         # 尝试从磁盘加载
         if cache_path.exists():
             print(f"  从缓存加载: {cache_path}")
-            cached_gaussians = torch.load(cache_path, map_location='cpu', weights_only=True)
+            try:
+                cached_gaussians = torch.load(cache_path, map_location='cpu', weights_only=True)
+            except Exception as e:
+                print(f"  ⚠ 缓存文件读取失败，将重新计算: {cache_path}")
+                print(f"    原因: {type(e).__name__}: {e}")
+                try:
+                    cache_path.unlink()
+                    print("    已删除损坏缓存文件")
+                except Exception:
+                    pass
+                cached_gaussians = None
             dataset_len = len(self.source_loader.dataset)
-            if len(cached_gaussians) == dataset_len:
+            if cached_gaussians is not None and len(cached_gaussians) == dataset_len:
                 print(f"  ✓ 缓存命中: {len(cached_gaussians)} 个样本")
                 return cached_gaussians
-            print(f"  ⚠ 缓存样本数不匹配 ({len(cached_gaussians)} vs {dataset_len})，重新计算")
+            if cached_gaussians is not None:
+                print(f"  ⚠ 缓存样本数不匹配 ({len(cached_gaussians)} vs {dataset_len})，重新计算")
 
         # 缓存未命中，临时加载教师模型执行推理
         print("  缓存未命中，加载教师模型进行推理...")
+        from models import ModelManager
         teacher_mgr = ModelManager(self.config)
         teacher_mgr.setup(device=self.device)
         teacher_model = teacher_mgr.model
@@ -395,8 +423,20 @@ class DefenseTrainer:
 
         # 保存到磁盘
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(cached_gaussians, cache_path)
-        print(f"  ✓ 预计算完成: {len(cached_gaussians)} 个样本，已缓存到 {cache_path}")
+        tmp_path = cache_path.parent / f"{cache_path.name}.{os.getpid()}.tmp"
+        try:
+            torch.save(cached_gaussians, tmp_path)
+            tmp_path.replace(cache_path)
+            print(f"  ✓ 预计算完成: {len(cached_gaussians)} 个样本，已缓存到 {cache_path}")
+        except Exception as e:
+            print(f"  ⚠ 预计算完成但写入缓存失败，将继续使用内存结果（下次可能需要重算）")
+            print(f"    cache_path: {cache_path}")
+            print(f"    原因: {type(e).__name__}: {e}")
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
         return cached_gaussians
 
     def _get_cache_path(self):
@@ -458,8 +498,9 @@ class DefenseTrainer:
         static_loss_tensors = {}
         for name, trap_loss_fn in self.trap_losses.items():
             loss = trap_loss_fn(gaussians)
-            loss = torch.nan_to_num(loss, nan=0.0, posinf=50.0, neginf=-50.0)
-            loss = torch.clamp(loss, min=-50.0, max=50.0)
+            # 仅做 NaN/Inf 清理，不做 clamp 限制，让 trap 自由增长
+            # 通过梯度裁剪（gradient_clip）控制训练稳定性
+            loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=-1e6)
             static_loss_tensors[name] = loss
             loss_dict[name] = loss.item()
 
@@ -601,8 +642,8 @@ class DefenseTrainer:
         trap_grads = {}
         for name, trap_fn in self.trap_losses.items():
             loss = trap_fn(gaussians)
-            loss = torch.nan_to_num(loss, nan=0.0, posinf=50.0, neginf=-50.0)
-            loss = torch.clamp(loss, min=-50.0, max=50.0)
+            # 仅做 NaN/Inf 清理，不做 clamp 限制
+            loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=-1e6)
             grad = torch.autograd.grad(
                 loss, features,
                 create_graph=True, retain_graph=True,
@@ -781,7 +822,7 @@ class DefenseTrainer:
         loss_dict['unlearning_loss'] = total_loss.item()
         return total_loss
 
-    def train_epoch(self, epoch: int, global_step: int = 0, step_callback=None):
+    def train_epoch(self, epoch: int, global_step: int = 0, step_callback=None, max_steps: int | None = None):
         """
         训练一个 epoch（双数据加载器模式 + 梯度累积）
 
@@ -790,6 +831,8 @@ class DefenseTrainer:
             global_step: 全局步数起始值（跨 epoch 累计）
             step_callback: 每步回调 callable(global_step, loss_dict) -> None
                            可用于周期性评估等外部逻辑
+            max_steps: 若不为 None，则本 epoch 最多训练到全局步数 < max_steps。
+                       用于 step-based 训练避免最后一个 epoch 超出目标步数。
 
         Returns:
             avg_metrics: 平均损失字典
@@ -805,10 +848,15 @@ class DefenseTrainer:
         source_iter = iter(self.source_loader)
         target_iter = iter(self.target_loader)
 
-        # 计算总batch数（按 target 数据量定义 epoch，source 是辅助）
+        # 计算总 batch 数（按 target 数据量定义 epoch，source 是辅助）
+        # step-based 训练下，可以用 max_steps 控制最后一个 epoch 的 batch 数，避免超出目标步数。
         max_batches = len(self.target_loader)
+        planned_batches = max_batches
+        if max_steps is not None:
+            remaining = max_steps - global_step
+            planned_batches = max(0, min(max_batches, remaining))
 
-        pbar = tqdm(range(max_batches), desc=f"Epoch {epoch}")
+        pbar = tqdm(range(planned_batches), desc=f"Epoch {epoch}")
         for batch_idx in pbar:
             # 按比例决定使用source还是target
             import random
@@ -841,7 +889,7 @@ class DefenseTrainer:
             accumulation_counter += 1
 
             # 梯度累积：每 N 步或最后一个 batch 时更新参数
-            if accumulation_counter % self.gradient_accumulation_steps == 0 or batch_idx == max_batches - 1:
+            if accumulation_counter % self.gradient_accumulation_steps == 0 or batch_idx == planned_batches - 1:
                 # 梯度裁剪
                 if self.config['training'].get('gradient_clip', 0) > 0:
                     torch.nn.utils.clip_grad_norm_(
@@ -1051,6 +1099,8 @@ class DefenseTrainer:
                 if k not in ('target', 'target_data')
             },
         }
+        print(f"[DefenseTrainer] 注册模型到 model_registry: tag={tag}（可能需要一点时间写盘）")
+        from tools.model_registry import register as registry_register
         registry_register(tag, self.model_mgr.model.state_dict(), metadata=metadata)
 
 
@@ -1127,8 +1177,8 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
     global_step = 0
     validate_every = 5
 
-    # 优先使用 defense_steps
-    if defense_steps:
+    # 优先使用 defense_steps（显式检查 None，避免 0 被误判为 epoch-based）
+    if defense_steps is not None:
         use_steps = True
         total_steps = defense_steps
         print(f"[Defense] 训练模式: step-based, total_steps={total_steps}")
@@ -1138,8 +1188,15 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
 
     epoch = 0
     while True:
+        if use_steps and global_step >= total_steps:
+            # 防止在恢复/异常情况下重复多跑一步
+            break
         epoch += 1
-        train_metrics, global_step = trainer.train_epoch(epoch, global_step)
+        train_metrics, global_step = trainer.train_epoch(
+            epoch,
+            global_step,
+            max_steps=total_steps if use_steps else None,
+        )
         combined = {f"train_{k}": v for k, v in train_metrics.items()}
         combined['epoch'] = epoch
 

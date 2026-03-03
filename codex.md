@@ -300,6 +300,26 @@ Phase 2 defense 的落盘策略（可控）：
 - GSO loose 模型子集（5 类 clean）：
   - 路径：`datas/GSO/loose_overlap_clean5/`
   - 渲染脚本会自动生成 `datas/GSO/loose_overlap_clean5/manifest.tsv`（model<TAB>class）并输出到 `datas/GSO/render_same_pose_all_100v_512/`
+  - 相机 pose template：
+    - 注意：OmniObject3D 的 `transforms.json` 在不同类别里 **view0 角度不一样**（例如 `shoe_001` 是接近俯视，`box_001` 更偏侧视）。
+    - `script/render_gso_same_pose_worker.sh` / `script/render_gso_same_pose_all.sh` 已改为“按类别选 template”：
+      - 默认用 `datas/omniobject3d___OmniObject3D-New/raw/blender_renders/${cls}_001/render/transforms.json`
+      - 找不到就 fallback 到 `box_001`
+      - 如需固定一个模板，设置环境变量 `TEMPLATE_JSON=/path/to/transforms.json`
+    - 物体朝向：
+      - `tools/render_omni_format.py` 支持 `--auto_orient`（flat/upright/omni5）让物体“平放/竖直”更接近 Omni 的习惯。
+      - 仅平放还不够：同一类别里 Omni 的 view0 通常有较一致的“画面内朝向”（yaw）。
+      - `tools/render_omni_format.py` 新增 `--auto_yaw camera_right`：基于 pose template 的 view0 相机右方向，把物体主轴对齐到画面横向。
+      - 如仍出现“颠倒/朝向反了”，可以加 `--yaw_flip`（或在脚本里设 `YAW_FLIP=1`）做 180° 翻转。
+      - 如果你想让鞋头在画面里“再往下压一点”，用 `--extra_pitch_deg`（围绕 view0 相机 right 轴的小角度 pitch）。
+        - 例如：`EXTRA_PITCH_DEG=-5` 或 `EXTRA_PITCH_DEG=-10`
+      - 如果你想把物体在画面里“侧向转 90°”（纯图像平面内旋转），用 `--extra_roll_deg`（围绕 view0 相机 forward 轴的 roll）。
+        - 例如：`EXTRA_ROLL_DEG=90` 或 `EXTRA_ROLL_DEG=-90`
+      - 当前默认策略（脚本层）：
+        - 如果你不显式设置 `YAW_FLIP` / `EXTRA_ROLL_DEG`，脚本会对 `shoe` 类自动启用：
+          - `yaw_flip=1`
+          - `extra_roll_deg=20`
+        - 其余类别默认不翻转、不加 roll（保持 0），避免影响对称/竖直类（如 plant）。
 
 ---
 

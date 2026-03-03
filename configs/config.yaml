@@ -3,7 +3,8 @@
 # 模型配置
 model:
   size: big
-  resume: /mnt/huangjiaxin/3d-defense/lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  # Use repo-relative paths by default for portability across machines.
+  resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
 
 # LoRA配置（attack.mode=lora 时使用，可被 attack.lora_r/lora_alpha 覆盖）
@@ -17,7 +18,8 @@ lora:
 
 # 数据配置
 data:
-  root: /mnt/huangjiaxin/3d-defense/datas
+  # Repo-relative dataset root (can be overridden per machine).
+  root: ./datas
 
   # Source数据（用于蒸馏，保持原有能力）
   source:
@@ -57,7 +59,7 @@ data:
 
   # 共享参数
   max_samples: null
-  num_workers: 0
+  num_workers: 4  # 修复后可以使用多进程加载（建议2-8，根据CPU核心数调整）
   view_selector: orthogonal
   angle_offset: 0.0
   num_supervision_views: 6
@@ -80,9 +82,9 @@ training:
   optimizer_momentum: 0.9
 
   # 训练步数配置（优先使用 steps，如果为 null 则使用 epochs）
-  attack_steps: 1000                 # 攻击训练步数
+  attack_steps: 700                 # 攻击训练步数
   attack_epochs: null               # null = 使用 attack_steps
-  defense_steps: 800                # 防御训练步数
+  defense_steps: 700                # 防御训练步数
   defense_epochs: null              # null = 使用 defense_steps
 
 # 攻击场景配置
@@ -149,7 +151,8 @@ defense:
   # 参数加噪鲁棒性
   robustness:
     enabled: true
-    noise_scale: 0.5
+    # 标定思路：覆盖更强攻击（如 ~10× lr）下的参数漂移邻域，避免过大导致“随机重采样权重”。建议 0.008~0.012。
+    noise_scale: 0.005
 
   # 特征空间梯度冲突（在 conv 层输入特征上计算不同 trap 梯度的 cosine similarity，推向 -1）
   gradient_conflict:

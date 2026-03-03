@@ -2,7 +2,9 @@
 # 对比实验：随机初始化 vs 预训练（5 个类别）
 #
 # 用法:
-#   bash experiments/run_compare_random_vs_pretrained_5cats.sh 0,1
+#   bash experiments/run_compare_random_vs_pretrained_5cats.sh            # 默认 GPU=0
+#   bash experiments/run_compare_random_vs_pretrained_5cats.sh 0          # 指定 GPU=0
+#   bash experiments/run_compare_random_vs_pretrained_5cats.sh 0,1        # 兼容旧 GPU_LIST，仅使用第一个 GPU
 #
 # 可选环境变量：
 #   EXPERIMENTS_BASE=output/experiments_output
@@ -33,15 +35,25 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-if [ $# -eq 0 ]; then
-    echo "用法: bash experiments/run_compare_random_vs_pretrained_5cats.sh GPU_LIST"
-    echo "示例: bash experiments/run_compare_random_vs_pretrained_5cats.sh 0,1"
+# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
+GPU_ID="${GPU_ID:-${GPU:-0}}"
+if [ $# -ge 1 ]; then
+    GPU_ARG="$1"
+    if [[ "${GPU_ARG}" == *","* ]]; then
+        GPU_ID="${GPU_ARG%%,*}"
+        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
+    else
+        GPU_ID="${GPU_ARG}"
+    fi
+fi
+
+if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
+    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
     exit 1
 fi
 
-IFS=',' read -ra GPUS <<< "$1"
-NUM_GPUS=${#GPUS[@]}
-echo "使用 ${NUM_GPUS} 张GPU: ${GPUS[@]}"
+GPU="${GPU_ID}"
+echo "单卡顺序执行: GPU=${GPU}"
 
 CONFIG="${CONFIG:-configs/config.yaml}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -70,16 +82,10 @@ fi
 echo "eval_every_steps: ${EVAL_EVERY_STEPS}, num_render: ${NUM_RENDER}"
 echo "=========================================="
 
-# 动态调度：谁先空闲就立刻补下一个任务
-declare -A PID_TO_GPU
-declare -A PID_TO_CAT
-RUNNING=0
-NEXT_TASK=0
 TOTAL_TASKS=${#CATEGORIES[@]}
 
-launch_on_gpu() {
-    local gpu=$1
-    local idx=$2
+run_task() {
+    local idx=$1
     local category=${CATEGORIES[$idx]}
     local tag="compare_${category}"
     local log="${OUTPUT_ROOT}/${tag}.log"
@@ -93,62 +99,40 @@ launch_on_gpu() {
         extra_args+=(--attack_epochs "${ATTACK_EPOCHS}")
     fi
 
-    echo "[GPU ${gpu}] 启动: ${category}"
-    echo "=== GPU ${gpu}: ${category} ===" > "${log}"
-    "${PYTHON}" script/compare_random_vs_pretrained.py \
+    echo "[GPU ${GPU}] 任务 $((idx+1))/${TOTAL_TASKS}: ${category}"
+
+    if {
+        echo "=== GPU ${GPU}: ${category} ==="
+        "${PYTHON}" script/compare_random_vs_pretrained.py \
         --config "${CONFIG}" \
-        --gpu "${gpu}" \
+        --gpu "${GPU}" \
         --categories "${category}" \
         --output_dir "${out_dir}" \
         --eval_every_steps "${EVAL_EVERY_STEPS}" \
         --num_render "${NUM_RENDER}" \
-        "${extra_args[@]}" >> "${log}" 2>&1 &
+        "${extra_args[@]}"
+    } > "${log}" 2>&1; then
+        echo "[GPU ${GPU}] 完成: ${category}"
+        return 0
+    fi
 
-    local pid=$!
-    PID_TO_GPU["${pid}"]="${gpu}"
-    PID_TO_CAT["${pid}"]="${category}"
-    RUNNING=$((RUNNING + 1))
-    echo "[GPU ${gpu}] PID: ${pid}, log: ${log}"
+    exit_code=$?
+    echo "[GPU ${GPU}] 失败: ${category} (exit=${exit_code}), log: ${log}"
+    return "${exit_code}"
 }
 
-# 先给每张 GPU 各发一个任务
-for gpu in "${GPUS[@]}"; do
-    if [ ${NEXT_TASK} -lt ${TOTAL_TASKS} ]; then
-        launch_on_gpu "${gpu}" "${NEXT_TASK}"
-        NEXT_TASK=$((NEXT_TASK + 1))
-    fi
-done
-
 echo ""
-echo "动态调度已启动：GPU 空闲后立即补任务"
+echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
 echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
 echo ""
 
-while [ ${RUNNING} -gt 0 ]; do
-    finished_pid=""
-    if wait -n -p finished_pid; then
-        exit_code=0
-    else
-        exit_code=$?
-    fi
-
-    finished_gpu="${PID_TO_GPU[${finished_pid}]}"
-    finished_cat="${PID_TO_CAT[${finished_pid}]}"
-    unset PID_TO_GPU["${finished_pid}"]
-    unset PID_TO_CAT["${finished_pid}"]
-    RUNNING=$((RUNNING - 1))
-
-    if [ ${exit_code} -eq 0 ]; then
-        echo "[GPU ${finished_gpu}] 完成: ${finished_cat}"
-    else
-        echo "[GPU ${finished_gpu}] 失败: ${finished_cat} (exit=${exit_code})"
-    fi
-
-    if [ ${NEXT_TASK} -lt ${TOTAL_TASKS} ]; then
-        launch_on_gpu "${finished_gpu}" "${NEXT_TASK}"
-        NEXT_TASK=$((NEXT_TASK + 1))
+FAILED=0
+for i in $(seq 0 $((TOTAL_TASKS-1))); do
+    if ! run_task "${i}"; then
+        FAILED=$((FAILED + 1))
     fi
 done
 
 echo ""
-echo "全部完成！结果保存在: ${OUTPUT_ROOT}"
+echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
+echo "结果保存在: ${OUTPUT_ROOT}"
