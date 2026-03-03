@@ -152,8 +152,10 @@ defense:
   # 参数加噪鲁棒性
   robustness:
     enabled: true
-    # 标定思路：覆盖更强攻击（如 ~10× lr）下的参数漂移邻域，避免过大导致“随机重采样权重”。建议 0.008~0.012。
+    # 标定思路：覆盖更强攻击（如 ~10× lr）下的参数漂移邻域，避免过大导致”随机重采样权重”。建议 0.008~0.012。
     noise_scale: 0.005
+    # 噪声warmup步数：噪声从0线性增长到noise_scale（0=不使用warmup）
+    warmup_steps: 0
 
   # 特征空间梯度冲突（在 conv 层输入特征上计算不同 trap 梯度的 cosine similarity，推向 -1）
   gradient_conflict:
