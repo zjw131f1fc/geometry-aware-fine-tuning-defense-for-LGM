@@ -448,9 +448,9 @@ def run_attack(config, target_train_loader, source_val_loader,
         target_eval_loader: 输入类别数据加载器（语义偏转评估 vs input 用）
         save_dir: 渲染结果保存目录
         attack_epochs: 攻击 epoch 数（默认从 config 读取）
-        attack_steps: 攻击 step 数（优先于 attack_epochs）
+        attack_steps: 攻击优化器步数（优先于 attack_epochs）
         num_render: 渲染样本数
-        eval_every_steps: 每隔多少 step 评估一次
+        eval_every_steps: 每隔多少优化器步评估一次
         model_resume_override: 覆盖 model.resume（如 "tag:xxx"）
         model_state_dict_override: 可选，直接覆盖模型权重（state_dict，通常用于 defense 不落盘）
         phase_name: 阶段名称（用于日志）
@@ -484,7 +484,7 @@ def run_attack(config, target_train_loader, source_val_loader,
     print(f"\n{'='*80}")
     print(f"  {phase_name}")
     if use_steps:
-        print(f"  Attack steps: {attack_steps}, eval_every_steps: {eval_every_steps}")
+        print(f"  Attack optimizer steps: {attack_steps}, eval_every_steps: {eval_every_steps}")
     else:
         print(f"  Attack epochs: {attack_epochs}, eval_every_steps: {eval_every_steps}")
     if is_semantic_deflection:
@@ -551,10 +551,13 @@ def run_attack(config, target_train_loader, source_val_loader,
     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
     interval_count = 0
 
+    # 计算总优化器步数
     if use_steps:
         total_steps = attack_steps
     else:
-        total_steps = attack_epochs * len(target_train_loader)
+        # epoch模式：总优化器步数 = epochs × 每个epoch的batch数 / 梯度累积步数
+        batches_per_epoch = len(target_train_loader)
+        total_steps = (attack_epochs * batches_per_epoch + finetuner.gradient_accumulation_steps - 1) // finetuner.gradient_accumulation_steps
 
     # 调试：训练前参数校验
     param_sum_before = sum(p.data.sum().item() for p in model.parameters())
@@ -577,38 +580,41 @@ def run_attack(config, target_train_loader, source_val_loader,
                 break
 
             loss_dict, updated = finetuner.train_step(batch)
-            global_step += 1
 
-            interval_loss += loss_dict['loss']
-            interval_lpips += loss_dict.get('loss_lpips', 0)
-            interval_masked_psnr += loss_dict.get('masked_psnr', 0)
-            interval_masked_lpips += loss_dict.get('masked_lpips', 0)
-            interval_count += 1
+            # 只在实际更新优化器时计数和记录
+            if updated:
+                global_step += 1
 
-            if global_step % eval_every_steps == 0 or global_step == total_steps:
-                metrics = {
-                    'step': global_step,
-                    'epoch': epoch,
-                    'loss': interval_loss / interval_count,
-                    'lpips': interval_lpips / interval_count,
-                    'masked_lpips': interval_masked_lpips / interval_count,
-                    'masked_psnr': interval_masked_psnr / interval_count,
-                }
-                step_history.append(metrics)
+                interval_loss += loss_dict['loss']
+                interval_lpips += loss_dict.get('loss_lpips', 0)
+                interval_masked_psnr += loss_dict.get('masked_psnr', 0)
+                interval_masked_lpips += loss_dict.get('masked_lpips', 0)
+                interval_count += 1
 
-                print(f"  [{phase_name}] Step {global_step}/{total_steps} (Ep{epoch}) - "
-                      f"Loss: {metrics['loss']:.4f}, "
-                      f"LPIPS: {metrics['masked_lpips']:.4f}, "
-                      f"PSNR: {metrics['masked_psnr']:.2f}")
+                if global_step % eval_every_steps == 0 or global_step == total_steps:
+                    metrics = {
+                        'step': global_step,
+                        'epoch': epoch,
+                        'loss': interval_loss / interval_count if interval_count > 0 else 0,
+                        'lpips': interval_lpips / interval_count if interval_count > 0 else 0,
+                        'masked_lpips': interval_masked_lpips / interval_count if interval_count > 0 else 0,
+                        'masked_psnr': interval_masked_psnr / interval_count if interval_count > 0 else 0,
+                    }
+                    step_history.append(metrics)
 
-                interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
-                interval_count = 0
+                    print(f"  [{phase_name}] Optimizer Step {global_step}/{total_steps} (Ep{epoch}) - "
+                          f"Loss: {metrics['loss']:.4f}, "
+                          f"LPIPS: {metrics['masked_lpips']:.4f}, "
+                          f"PSNR: {metrics['masked_psnr']:.2f}")
 
-            # Step 模式：达到目标步数后退出
-            if use_steps and global_step >= total_steps:
-                break
+                    interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
+                    interval_count = 0
 
-        # Step 模式：达到目标步数后退出外层循环
+                # Step 模式：达到目标优化器步数后退出
+                if use_steps and global_step >= total_steps:
+                    break
+
+        # Step 模式：达到目标优化器步数后退出外层循环
         if use_steps and global_step >= total_steps:
             break
 
@@ -622,6 +628,8 @@ def run_attack(config, target_train_loader, source_val_loader,
                 torch.nn.utils.clip_grad_norm_(model.parameters(), finetuner.gradient_clip)
             finetuner.optimizer.step()
             finetuner.optimizer.zero_grad()
+            # 这里也算一次优化器更新
+            global_step += 1
 
     # 调试：训练后参数校验
     param_sum_after = sum(p.data.sum().item() for p in model.parameters())

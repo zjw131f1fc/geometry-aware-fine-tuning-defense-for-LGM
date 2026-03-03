@@ -828,15 +828,15 @@ class DefenseTrainer:
 
         Args:
             epoch: 当前 epoch 编号
-            global_step: 全局步数起始值（跨 epoch 累计）
-            step_callback: 每步回调 callable(global_step, loss_dict) -> None
+            global_step: 全局优化器步数起始值（跨 epoch 累计，每次 optimizer.step() 时 +1）
+            step_callback: 每个优化器步后的回调 callable(global_step, loss_dict) -> None
                            可用于周期性评估等外部逻辑
-            max_steps: 若不为 None，则本 epoch 最多训练到全局步数 < max_steps。
+            max_steps: 若不为 None，则本 epoch 最多训练到优化器步数 < max_steps。
                        用于 step-based 训练避免最后一个 epoch 超出目标步数。
 
         Returns:
             avg_metrics: 平均损失字典
-            global_step: 更新后的全局步数
+            global_step: 更新后的全局优化器步数
         """
         self.model_mgr.model.train()
 
@@ -849,12 +849,14 @@ class DefenseTrainer:
         target_iter = iter(self.target_loader)
 
         # 计算总 batch 数（按 target 数据量定义 epoch，source 是辅助）
-        # step-based 训练下，可以用 max_steps 控制最后一个 epoch 的 batch 数，避免超出目标步数。
+        # step-based 训练下，需要根据 max_steps 和梯度累积步数计算需要的 batch 数
         max_batches = len(self.target_loader)
         planned_batches = max_batches
         if max_steps is not None:
-            remaining = max_steps - global_step
-            planned_batches = max(0, min(max_batches, remaining))
+            remaining_optimizer_steps = max_steps - global_step
+            # 需要的batch数 = 剩余优化器步数 × 梯度累积步数
+            needed_batches = remaining_optimizer_steps * self.gradient_accumulation_steps
+            planned_batches = max(0, min(max_batches, needed_batches))
 
         pbar = tqdm(range(planned_batches), desc=f"Epoch {epoch}")
         for batch_idx in pbar:
@@ -901,24 +903,25 @@ class DefenseTrainer:
                 self.optimizer.zero_grad()
                 accumulation_counter = 0
 
-            global_step += 1
+                # 优化器步数 +1（只在实际更新参数时计数）
+                global_step += 1
 
-            # 更新进度条（显示分项 loss）
-            postfix = {'loss': f"{loss_dict['loss']:.4f}"}
-            for k in ('distillation', 'static_combined'):
-                if k in loss_dict:
-                    short = {'distillation': 'dist', 'static_combined': 'trap'}[k]
-                    postfix[short] = f"{loss_dict[k]:.4f}"
-            if 'conflict_mean_cos' in loss_dict:
-                postfix['cos'] = f"{loss_dict['conflict_mean_cos']:.3f}"
-            postfix['step'] = global_step
-            pbar.set_postfix(postfix)
+                # 更新进度条（显示分项 loss）
+                postfix = {'loss': f"{loss_dict['loss']:.4f}"}
+                for k in ('distillation', 'static_combined'):
+                    if k in loss_dict:
+                        short = {'distillation': 'dist', 'static_combined': 'trap'}[k]
+                        postfix[short] = f"{loss_dict[k]:.4f}"
+                if 'conflict_mean_cos' in loss_dict:
+                    postfix['cos'] = f"{loss_dict['conflict_mean_cos']:.3f}"
+                postfix['opt_step'] = global_step  # 明确标注为优化器步数
+                pbar.set_postfix(postfix)
 
-            # 步回调
-            if step_callback is not None:
-                step_callback(global_step, loss_dict)
-                # 回调可能切换模型到 eval 模式，恢复 train
-                self.model_mgr.model.train()
+                # 步回调（只在优化器更新后调用）
+                if step_callback is not None:
+                    step_callback(global_step, loss_dict)
+                    # 回调可能切换模型到 eval 模式，恢复 train
+                    self.model_mgr.model.train()
 
         # 计算平均损失
         avg_metrics = {
@@ -1181,7 +1184,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
     if defense_steps is not None:
         use_steps = True
         total_steps = defense_steps
-        print(f"[Defense] 训练模式: step-based, total_steps={total_steps}")
+        print(f"[Defense] 训练模式: step-based, total_optimizer_steps={total_steps}")
     else:
         use_steps = False
         print(f"[Defense] 训练模式: epoch-based, defense_epochs={defense_epochs}")
@@ -1205,7 +1208,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
             val_metrics = trainer.validate()
             combined.update({f"val_{k}": v for k, v in val_metrics.items()})
             if use_steps:
-                print(f"  [Defense] Epoch {epoch} (Step {global_step}/{total_steps}) - "
+                print(f"  [Defense] Epoch {epoch} (Optimizer Step {global_step}/{total_steps}) - "
                       f"Loss: {train_metrics['loss']:.4f}, "
                       f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
             else:
@@ -1219,7 +1222,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
                     print(f"    {k}: {val_metrics[k]:.4f}")
         else:
             if use_steps:
-                print(f"  [Defense] Epoch {epoch} (Step {global_step}/{total_steps}) - "
+                print(f"  [Defense] Epoch {epoch} (Optimizer Step {global_step}/{total_steps}) - "
                       f"Loss: {train_metrics['loss']:.4f}")
             else:
                 print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "

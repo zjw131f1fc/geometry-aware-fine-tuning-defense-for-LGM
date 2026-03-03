@@ -46,11 +46,19 @@ def _safe_eigvalsh_3x3(matrix, epsilon):
     return sv.to(dtype=matrix.dtype)
 
 
-def _log_anisotropy(max_value, min_value, epsilon, max_ratio=1e6):
-    """稳定版 log(max/min)。"""
+def _log_anisotropy(max_value, min_value, epsilon, max_ratio=None):
+    """
+    稳定版 log(max/min)。
+
+    max_ratio=None 时不限制比率上界，让 trap 自由增长。
+    训练稳定性由 defense_trainer 的梯度裁剪保证。
+    """
     max_safe = torch.clamp(_sanitize_finite(max_value), min=epsilon)
     min_safe = torch.clamp(_sanitize_finite(min_value), min=epsilon)
-    ratio = torch.clamp(max_safe / min_safe, min=1.0, max=max_ratio)
+    ratio = max_safe / min_safe
+    ratio = torch.clamp(ratio, min=1.0)  # 仅保证 ratio >= 1
+    if max_ratio is not None:
+        ratio = torch.clamp(ratio, max=max_ratio)
     return torch.log(ratio)
 
 
@@ -64,9 +72,11 @@ class ScaleAnisotropyLoss(nn.Module):
 
     使用 log 尺度避免各向异性比率无界增长导致 loss 爆炸。
     log(ratio) 单调递增，梯度 ∝ 1/ratio，数值稳定。
+
+    max_ratio=None 允许 trap 无界增长，由梯度裁剪保证训练稳定性。
     """
 
-    def __init__(self, epsilon=1e-6, max_ratio=1e6):
+    def __init__(self, epsilon=1e-6, max_ratio=None):
         super().__init__()
         self.epsilon = epsilon
         self.max_ratio = max_ratio
@@ -103,9 +113,11 @@ class PositionCollapseLoss(nn.Module):
     L = -mean(log(λ_max / (λ_min + ε)))
 
     使用 log 尺度避免特征值比率无界增长导致 loss 爆炸。
+
+    max_ratio=None 允许 trap 无界增长，由梯度裁剪保证训练稳定性。
     """
 
-    def __init__(self, epsilon=1e-6, max_ratio=1e6):
+    def __init__(self, epsilon=1e-6, max_ratio=None):
         super().__init__()
         self.epsilon = epsilon
         self.max_ratio = max_ratio
@@ -197,9 +209,11 @@ class RotationAnisotropyLoss(nn.Module):
 
     当所有旋转趋同时，r_i 趋向同一方向，T_q 退化为秩1矩阵，
     λ_max >> λ_min，log ratio 增大，loss 更负。
+
+    max_ratio=None 允许 trap 无界增长，由梯度裁剪保证训练稳定性。
     """
 
-    def __init__(self, epsilon=1e-6, max_ratio=1e6):
+    def __init__(self, epsilon=1e-6, max_ratio=None):
         super().__init__()
         self.epsilon = epsilon
         self.max_ratio = max_ratio
@@ -284,9 +298,11 @@ class ColorCollapseLoss(nn.Module):
     当所有颜色趋同时，C 退化为低秩，λ_max >> λ_min，loss 更负。
 
     注意：LGM 的 RGB 激活是 0.5*tanh+0.5，范围 (0,1)。
+
+    max_ratio=None 允许 trap 无界增长，由梯度裁剪保证训练稳定性。
     """
 
-    def __init__(self, epsilon=1e-6, max_ratio=1e6):
+    def __init__(self, epsilon=1e-6, max_ratio=None):
         super().__init__()
         self.epsilon = epsilon
         self.max_ratio = max_ratio

@@ -68,11 +68,11 @@ data:
 # 训练配置
 training:
   mode: full                        # full / lora
-  batch_size: 1
+  batch_size: 2
   lr: 0.00003
   weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 4    # Attack 等效 batch_size = 1×4 = 4
+  gradient_accumulation_steps: 2    # Attack 等效 batch_size = 1×4 = 4
   lambda_lpips: 1.0
   mixed_precision: bf16
 
@@ -82,9 +82,10 @@ training:
   optimizer_momentum: 0.9
 
   # 训练步数配置（优先使用 steps，如果为 null 则使用 epochs）
-  attack_steps: 700                 # 攻击训练步数
+  # 注意：steps 指的是优化器步数（optimizer.step()调用次数），不是数据迭代次数
+  attack_steps: 500                 # 攻击训练优化器步数
   attack_epochs: null               # null = 使用 attack_steps
-  defense_steps: 700                # 防御训练步数
+  defense_steps: 500                # 防御训练优化器步数
   defense_epochs: null              # null = 使用 defense_steps
 
 # 攻击场景配置
@@ -166,7 +167,7 @@ defense:
 
   # 攻击评估配置（防御训练中周期性跑攻击来衡量防御效果）
   eval:
-    eval_every_steps: 50
+    eval_every_steps: 50  # 每隔多少优化器步评估一次
     attack_epochs: 2
     attack_lr: 0.00005
     num_render_samples: 3
