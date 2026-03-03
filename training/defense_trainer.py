@@ -838,11 +838,16 @@ class DefenseTrainer:
             avg_metrics: 平均损失字典
             global_step: 更新后的全局优化器步数
         """
+        import time
         self.model_mgr.model.train()
 
         total_losses = {}
         num_batches = 0
         accumulation_counter = 0  # 梯度累积计数器
+
+        # 时间跟踪
+        epoch_start_time = time.time()
+        step_times = []  # 记录最近的步时间用于平滑估计
 
         # 双数据加载器：按比例混合source和target
         source_iter = iter(self.source_loader)
@@ -859,6 +864,8 @@ class DefenseTrainer:
             planned_batches = max(0, min(max_batches, needed_batches))
 
         pbar = tqdm(range(planned_batches), desc=f"Epoch {epoch}")
+        last_step_time = time.time()
+
         for batch_idx in pbar:
             # 按比例决定使用source还是target
             import random
@@ -906,7 +913,17 @@ class DefenseTrainer:
                 # 优化器步数 +1（只在实际更新参数时计数）
                 global_step += 1
 
-                # 更新进度条（显示分项 loss）
+                # 计算时间统计
+                current_time = time.time()
+                step_time = current_time - last_step_time
+                step_times.append(step_time)
+                # 保持最近20步的时间用于平滑估计
+                if len(step_times) > 20:
+                    step_times.pop(0)
+                avg_step_time = sum(step_times) / len(step_times)
+                last_step_time = current_time
+
+                # 更新进度条（显示分项 loss + ETA）
                 postfix = {'loss': f"{loss_dict['loss']:.4f}"}
                 for k in ('distillation', 'static_combined'):
                     if k in loss_dict:
@@ -915,6 +932,20 @@ class DefenseTrainer:
                 if 'conflict_mean_cos' in loss_dict:
                     postfix['cos'] = f"{loss_dict['conflict_mean_cos']:.3f}"
                 postfix['opt_step'] = global_step  # 明确标注为优化器步数
+
+                # 添加ETA估计
+                if max_steps is not None and len(step_times) >= 3:
+                    remaining_steps = max_steps - global_step
+                    eta_seconds = remaining_steps * avg_step_time
+                    if eta_seconds < 60:
+                        postfix['ETA'] = f"{int(eta_seconds)}s"
+                    elif eta_seconds < 3600:
+                        postfix['ETA'] = f"{int(eta_seconds/60)}m{int(eta_seconds%60)}s"
+                    else:
+                        hours = int(eta_seconds / 3600)
+                        minutes = int((eta_seconds % 3600) / 60)
+                        postfix['ETA'] = f"{hours}h{minutes}m"
+
                 pbar.set_postfix(postfix)
 
                 # 步回调（只在优化器更新后调用）

@@ -559,6 +559,12 @@ def run_attack(config, target_train_loader, source_val_loader,
         batches_per_epoch = len(target_train_loader)
         total_steps = (attack_epochs * batches_per_epoch + finetuner.gradient_accumulation_steps - 1) // finetuner.gradient_accumulation_steps
 
+    # 时间跟踪
+    import time
+    training_start_time = time.time()
+    step_times = []  # 记录最近的步时间用于平滑估计
+    last_step_time = time.time()
+
     # 调试：训练前参数校验
     param_sum_before = sum(p.data.sum().item() for p in model.parameters())
     print(f"  [DEBUG] 训练前参数 sum: {param_sum_before:.6f}")
@@ -585,6 +591,16 @@ def run_attack(config, target_train_loader, source_val_loader,
             if updated:
                 global_step += 1
 
+                # 计算时间统计
+                current_time = time.time()
+                step_time = current_time - last_step_time
+                step_times.append(step_time)
+                # 保持最近20步的时间用于平滑估计
+                if len(step_times) > 20:
+                    step_times.pop(0)
+                avg_step_time = sum(step_times) / len(step_times)
+                last_step_time = current_time
+
                 interval_loss += loss_dict['loss']
                 interval_lpips += loss_dict.get('loss_lpips', 0)
                 interval_masked_psnr += loss_dict.get('masked_psnr', 0)
@@ -602,10 +618,24 @@ def run_attack(config, target_train_loader, source_val_loader,
                     }
                     step_history.append(metrics)
 
+                    # 计算ETA
+                    eta_str = ""
+                    if len(step_times) >= 3:
+                        remaining_steps = total_steps - global_step
+                        eta_seconds = remaining_steps * avg_step_time
+                        if eta_seconds < 60:
+                            eta_str = f", ETA: {int(eta_seconds)}s"
+                        elif eta_seconds < 3600:
+                            eta_str = f", ETA: {int(eta_seconds/60)}m{int(eta_seconds%60)}s"
+                        else:
+                            hours = int(eta_seconds / 3600)
+                            minutes = int((eta_seconds % 3600) / 60)
+                            eta_str = f", ETA: {hours}h{minutes}m"
+
                     print(f"  [{phase_name}] Optimizer Step {global_step}/{total_steps} (Ep{epoch}) - "
                           f"Loss: {metrics['loss']:.4f}, "
                           f"LPIPS: {metrics['masked_lpips']:.4f}, "
-                          f"PSNR: {metrics['masked_psnr']:.2f}")
+                          f"PSNR: {metrics['masked_psnr']:.2f}{eta_str}")
 
                     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
                     interval_count = 0

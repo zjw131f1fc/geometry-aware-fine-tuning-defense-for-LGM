@@ -115,7 +115,7 @@ attack:
 defense:
   method: geotrap                   # geotrap / naive_unlearning / none
   tag: geotrap_v1
-  batch_size: 2                     # 防御训练 batch size（默认=2；不影响攻击阶段）
+  batch_size: 3                     # 防御训练 batch size（默认=2；不影响攻击阶段）
 
   # 防御专用 target 配置（可选，null=使用 data.target）
   target:
