@@ -67,7 +67,7 @@ data:
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
   # 建议范围：0.25~0.45（越小越“写 trap”、越难修复；越大越保 source）
-  source_ratio: 0.4
+  source_ratio: 0.7
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
   # Val loader 的样本数（用于每次评估 masked_psnr/lpips 的固定小集合）
@@ -101,7 +101,7 @@ training:
 
   # 训练步数配置（优先使用 steps，如果为 null 则使用 epochs）
   # 注意：steps 指的是优化器步数（optimizer.step()调用次数），不是数据迭代次数
-  attack_steps: 200                 # 攻击训练优化器步数（用于评估”可修复性”）
+  attack_steps: 150                 # 攻击训练优化器步数（用于评估”可修复性”）
   attack_epochs: null                  # 充分评估修复难度（约 560 steps）
   defense_steps: 100                # 防御训练优化器步数
   defense_epochs: null                  # 确保 trap 写入深度（约 280 steps）
@@ -164,10 +164,10 @@ defense:
   antishortcut:
     freeze_head: true
 
-  # 梯度能量上限（Target only）：降低“少数张量快速达标”的 shortcut，提升抗修复性
+  # 梯度能量上限（Target only）：降低”少数张量快速达标”的 shortcut，提升抗修复性
   grad_clip:
     mode: energy
-    energy_mult: 4.0
+    energy_mult: 5.0  # 设置为 0 关闭 energy cap  4.0
     energy_apply_on: target
 
   # 可选：一阶鲁棒化（默认关）
@@ -176,7 +176,7 @@ defense:
 
   # 损失权重
   lambda_trap: 100.0
-  lambda_distill: 20.0
+  lambda_distill: 400.0
   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
   # 额外机制（默认全关，避免引入二阶或额外 forward）

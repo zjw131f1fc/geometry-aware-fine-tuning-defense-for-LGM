@@ -392,6 +392,20 @@ class OmniObject3DDataset(Dataset):
                 'category': 类别名称
                 'object': 物体名称
         """
+        max_retries = 10  # 最多尝试10个样本
+        for retry in range(max_retries):
+            try:
+                return self._load_sample(idx)
+            except (FileNotFoundError, IOError, OSError) as e:
+                # 数据文件缺失或损坏，尝试下一个样本
+                print(f"[Warning] 样本 {idx} 数据缺失: {e}, 尝试下一个样本...")
+                idx = (idx + 1) % len(self.samples)
+
+        # 如果多次重试都失败，抛出异常
+        raise RuntimeError(f"连续 {max_retries} 个样本都无法加载，请检查数据集")
+
+    def _load_sample(self, idx):
+        """实际加载样本的内部方法"""
         sample = self.samples[idx]
         sample_idx = sample.get('sample_idx', 0)  # 获取采样索引
 
@@ -735,6 +749,20 @@ class ObjaverseRenderedDataset(Dataset):
                 'supervision_transforms': [V_sup, 4, 4] - 监督视图的变换矩阵
                 'uuid': UUID
         """
+        max_retries = 10  # 最多尝试10个样本
+        for retry in range(max_retries):
+            try:
+                return self._load_sample(idx)
+            except (FileNotFoundError, IOError, OSError) as e:
+                # 数据文件缺失或损坏，尝试下一个样本
+                print(f"[Warning] 样本 {idx} 数据缺失: {e}, 尝试下一个样本...")
+                idx = (idx + 1) % len(self.samples)
+
+        # 如果多次重试都失败，抛出异常
+        raise RuntimeError(f"连续 {max_retries} 个样本都无法加载，请检查数据集")
+
+    def _load_sample(self, idx):
+        """实际加载样本的内部方法"""
         sample = self.samples[idx]
         sample_idx = sample.get('sample_idx', 0)
 
@@ -965,19 +993,29 @@ class SemanticDeflectionDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        input_sample = self.input_dataset[idx]
-        sup_sample = self.supervision_dataset[idx]
-        return {
-            'input_images': input_sample['input_images'],
-            'input_transforms': input_sample['input_transforms'],
-            'supervision_images': sup_sample['supervision_images'],
-            'supervision_masks': sup_sample['supervision_masks'],
-            'supervision_transforms': sup_sample['supervision_transforms'],
-            'supervision_elevations': sup_sample.get('supervision_elevations', torch.empty(0)),
-            'supervision_azimuths': sup_sample.get('supervision_azimuths', torch.empty(0)),
-            'input_uuid': input_sample.get('uuid', ''),
-            'supervision_uuid': sup_sample.get('uuid', ''),
-        }
+        max_retries = 10  # 最多尝试10个样本
+        for retry in range(max_retries):
+            try:
+                input_sample = self.input_dataset[idx]
+                sup_sample = self.supervision_dataset[idx]
+                return {
+                    'input_images': input_sample['input_images'],
+                    'input_transforms': input_sample['input_transforms'],
+                    'supervision_images': sup_sample['supervision_images'],
+                    'supervision_masks': sup_sample['supervision_masks'],
+                    'supervision_transforms': sup_sample['supervision_transforms'],
+                    'supervision_elevations': sup_sample.get('supervision_elevations', torch.empty(0)),
+                    'supervision_azimuths': sup_sample.get('supervision_azimuths', torch.empty(0)),
+                    'input_uuid': input_sample.get('uuid', ''),
+                    'supervision_uuid': sup_sample.get('uuid', ''),
+                }
+            except (FileNotFoundError, IOError, OSError, RuntimeError) as e:
+                # 数据文件缺失或损坏，尝试下一个样本
+                print(f"[Warning] 配对样本 {idx} 数据缺失: {e}, 尝试下一个样本...")
+                idx = (idx + 1) % self.length
+
+        # 如果多次重试都失败，抛出异常
+        raise RuntimeError(f"连续 {max_retries} 个配对样本都无法加载，请检查数据集")
 
 
 def create_dataloader(
