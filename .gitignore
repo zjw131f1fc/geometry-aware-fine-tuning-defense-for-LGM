@@ -29,3 +29,8 @@ scripts/verify_*.py
 render_smoke/
 render_test/
 render_debug/
+
+# 临时笔记
+记录.md
+笔记.md
+notes.md

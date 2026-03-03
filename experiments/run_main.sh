@@ -2,16 +2,18 @@
 # 主实验：5个类别 × 2种防御方法（naive_unlearning + geotrap）
 # 每个pipeline自动产生Undefended（Phase 1）和对应防御方法（Phase 3）的结果
 #
-# 单卡顺序执行（不做 GPU 空闲检查）
 # 用法:
-#   bash experiments/run_main.sh            # 默认 GPU=0
-#   bash experiments/run_main.sh 0          # 指定 GPU=0
-#   bash experiments/run_main.sh 0,1,2,3    # 兼容旧 GPU_LIST，仅使用第一个 GPU
+#   bash experiments/run_main.sh            # 默认 GPU=0 (单卡顺序执行)
+#   bash experiments/run_main.sh 0          # 指定 GPU=0 (单卡顺序执行)
+#   bash experiments/run_main.sh 0,1,2,3    # 多卡并行: 4张卡动态调度10个任务
 
 set -e
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+# 加载GPU调度器
+source experiments/lib/gpu_scheduler.sh
 
 # Prefer project venv python if available; allow override via $PYTHON
 if [[ -z "${PYTHON:-}" ]]; then
@@ -27,25 +29,9 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
-GPU_ID="${GPU_ID:-${GPU:-0}}"
-if [ $# -ge 1 ]; then
-    GPU_ARG="$1"
-    if [[ "${GPU_ARG}" == *","* ]]; then
-        GPU_ID="${GPU_ARG%%,*}"
-        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
-    else
-        GPU_ID="${GPU_ARG}"
-    fi
-fi
-
-if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
-    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
-    exit 1
-fi
-
-GPU="${GPU_ID}"
-echo "单卡顺序执行: GPU=${GPU}"
+# 解析GPU列表
+GPU_LIST="${1:-0}"
+echo "GPU列表: ${GPU_LIST}"
 
 CATEGORIES=(shoe plant dish bowl box)
 METHODS=(geotrap naive_unlearning)
@@ -78,19 +64,21 @@ TOTAL_TASKS=${#TASKS[@]}
 echo "总任务数: ${TOTAL_TASKS}"
 echo ""
 
-# 任务执行函数（单卡、顺序）
+# 任务执行函数
+# 参数: $1=GPU_ID, $2=task_idx
 run_task() {
-    local task_idx=$1
+    local gpu=$1
+    local task_idx=$2
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r category method <<< "$task"
     local tag="${category}_${method}"
     local log="${OUTPUT_ROOT}/${tag}.log"
 
-    echo "[GPU ${GPU}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
+    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
 
     if {
-        echo "=== GPU ${GPU}: ${tag} ==="
+        echo "=== GPU ${gpu}: ${tag} ==="
         extra_args=()
         if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
             extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
@@ -99,7 +87,7 @@ run_task() {
             extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
         fi
         "${PYTHON}" script/run_pipeline.py \
-            --gpu "${GPU}" \
+            --gpu "${gpu}" \
             --config "${CONFIG}" \
             --categories "${category}" \
             --defense_method "${method}" \
@@ -109,31 +97,34 @@ run_task() {
             --output_dir "${OUTPUT_ROOT}/${tag}" \
             "${extra_args[@]}"
     } > "${log}" 2>&1; then
-        echo "[GPU ${GPU}] 完成: ${tag}"
+        echo "[GPU ${gpu}] 完成: ${tag}"
         return 0
     fi
 
     exit_code=$?
-    echo "[GPU ${GPU}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
+    echo "[GPU ${gpu}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
     return "${exit_code}"
 }
 
-echo ""
-echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
-echo ""
+# 初始化GPU池
+init_gpu_pool "${GPU_LIST}"
 
-COMPLETED=0
-FAILED=0
+# 提交所有任务
+echo ""
+echo "开始提交任务..."
 for i in $(seq 0 $((TOTAL_TASKS-1))); do
-    if run_task "${i}"; then
-        COMPLETED=$((COMPLETED + 1))
-    else
-        FAILED=$((FAILED + 1))
-    fi
+    submit_task run_task "$i"
 done
 
+# 等待所有任务完成
 echo ""
-echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
+wait_all_tasks
+scheduler_exit_code=$?
+
+echo ""
+echo "=========================================="
+echo "汇总结果"
+echo "=========================================="
 
 # 汇总结果（同时输出到终端和文件）
 SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
@@ -206,3 +197,5 @@ echo "结果保存在: ${OUTPUT_ROOT}"
 echo "汇总文件: ${SUMMARY_FILE}"
 echo "=========================================="
 } | tee "${SUMMARY_FILE}"
+
+exit "${scheduler_exit_code}"
