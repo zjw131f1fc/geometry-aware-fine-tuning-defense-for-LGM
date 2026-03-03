@@ -1,46 +1,32 @@
-# 3D Defense smoke-test 配置（用于快速验证 run_pipeline 全流程是否可跑通）
+# LGM Model Immunization smoke config (lightweight)
 #
-# 目标：
-# - 尽量少跑数据/步数，快速覆盖 Baseline Attack → Defense → Post-Defense Attack 三阶段
-# - 不改代码，仅通过独立 config 缩小 workload
+# Goal:
+# - Exercise the new first-order "immunization" knobs without full training
+# - No rendering in defense (trap losses on Gaussians only)
+# - Keep workload tiny for fast iteration
 #
-# 说明：
-# - 仍沿用原 config 里的绝对路径（/mnt/huangjiaxin/3d-defense/...），本机通过软链接兼容
+# Run example:
+#   ../venvs/3d-defense/bin/python script/run_pipeline.py --gpu 0 \
+#     --config configs/config_immunize_smoke.yaml --skip_baseline \
+#     --defense_steps 30 --attack_steps 30 --eval_every_steps 10 --num_render 1
 
 model:
   size: big
-  # Use repo-relative paths by default for portability across machines.
   resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
 
-lora:
-  r: 8
-  alpha: 16
-  dropout: 0.1
-  target_modules:
-    - qkv
-    - proj
-
 data:
-  # Repo-relative dataset root (can be overridden per machine).
   root: ./datas
 
-  # Source 数据：缩小样本用于蒸馏/评估
   source:
     dataset: objaverse
     max_samples: 40
     samples_per_object: 1
 
-  # Target 数据：只跑一个类别，缩小 attack/defense 的数据规模
   target:
     dataset: omni
-    categories:
-      - shoe
+    categories: [shoe]
 
-  gso:
-    render_dir: GSO/render_same_pose_all_100v_512
-
-  # 仅保留 shoe 的 split，其他类别不启用
   object_split:
     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
   attack_samples_per_category: 3
@@ -48,7 +34,6 @@ data:
   source_ratio: 0.6
   source_val_ratio: 0.1
 
-  max_samples: null
   num_workers: 0
   view_selector: orthogonal
   angle_offset: 0.0
@@ -69,7 +54,7 @@ training:
   optimizer_betas: [0.9, 0.95]
   optimizer_momentum: 0.9
 
-  # 为了让 run_pipeline 走 epoch-based（避免 steps=800/1000 过长）
+  # use step-based in CLI for smoke runs
   attack_steps: null
   attack_epochs: 1
   defense_steps: null
@@ -80,17 +65,11 @@ attack:
   mode: null
 
   malicious_content:
-    malicious_categories:
-      - shoe
-
-  semantic_deflection:
-    enabled: false
-    input_categories: null
-    supervision_categories: null
+    malicious_categories: [shoe]
 
 defense:
   method: geotrap
-  tag: smoke
+  tag: immunize_smoke
 
   target:
     dataset: null
@@ -98,9 +77,10 @@ defense:
     object_split: null
     samples_per_object: 2
 
+  # Use all 5 physical attributes (static traps)
   trap_losses:
     position:
-      static: false
+      static: true
       dynamic: false
     scale:
       static: true
@@ -108,32 +88,53 @@ defense:
     opacity:
       static: true
       dynamic: false
+      # Tail mode: penalize only top-k opacities (avoid sparse escape).
+      topk_frac: 0.001
     rotation:
-      static: false
+      static: true
       dynamic: false
     color:
-      static: false
+      static: true
       dynamic: false
 
-  gradient_accumulation_steps: 1
+  # Bottleneck aggregation: keep pushing the weakest trap (first-order).
+  trap_aggregation:
+    method: bottleneck_logsumexp
+    tau: 0.25
 
+  # Anti-shortcut: reduce reliance on a tiny head parameter set (conv.*).
+  antishortcut:
+    freeze_head_bias: true
+    head_lr_mult: 0.05
+    bias_lr_mult: 1.0
+
+  # First-order adversarial weight perturbation on head(conv.*), to resist fast head-only recovery.
+  awp:
+    enabled: true
+    rho: 0.001
+    weight: 1.0
+    every_k_steps: 1
+    param_scope: head
+    exclude_bias: true
+
+  # Distill to preserve source behavior (still Gaussian-space, no rendering).
   lambda_trap: 1.0
   lambda_distill: 50.0
   distill_loss_order: 1
 
   robustness:
     enabled: false
-    noise_scale: 0.5
+    noise_scale: 0.005
     warmup_steps: 0
 
   input_noise:
     enabled: false
-    noise_scale: 0.24  # 5%扰动
+    noise_scale: 0.24
     warmup_steps: 0
 
   gradient_conflict:
     enabled: false
-    weight: 15000.0
+    weight: 0.0
     every_k_steps: 1
 
   eval:
@@ -143,5 +144,6 @@ defense:
     num_render_samples: 1
 
 misc:
-  workspace: ./output/workspace_smoke
+  workspace: ./output/workspace_immunize_smoke
   seed: 42
+

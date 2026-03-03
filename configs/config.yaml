@@ -1,13 +1,22 @@
-# 3D Defense 统一配置
+# 3D Defense 默认配置（轻量 / 纯一阶 / Gaussian-space）
+#
+# 目标：给 LGM 做 Model Immunization（unlearning + 抗微调修复）
+# - Defense（GeoTrap）只用 `model.forward_gaussians()`：不渲染、不用二阶导数
+# - Attack/Eval 阶段为了算 masked_psnr / masked_lpips 会走渲染（只是评估/攻击）
+# - 默认走“跨数据集”：OmniObject3D 上 defense，GSO 上 post-defense attack
 
+# -----------------------------------------------------------------------------
 # 模型配置
+# -----------------------------------------------------------------------------
 model:
   size: big
   # Use repo-relative paths by default for portability across machines.
   resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
   device: cuda
 
-# LoRA配置（attack.mode=lora 时使用，可被 attack.lora_r/lora_alpha 覆盖）
+# -----------------------------------------------------------------------------
+# LoRA 配置（attack.mode=lora 时使用，可被 CLI 覆盖）
+# -----------------------------------------------------------------------------
 lora:
   r: 8
   alpha: 16
@@ -16,46 +25,53 @@ lora:
     - qkv
     - proj
 
-# 数据配置
+# -----------------------------------------------------------------------------
+# 数据配置（默认轻量：单类别 + 少量样本）
+# -----------------------------------------------------------------------------
 data:
   # Repo-relative dataset root (can be overridden per machine).
   root: ./datas
 
-  # Source数据（用于蒸馏，保持原有能力）
+  # GSO 渲染结果目录（相对于 data.root）
+  # 当前默认使用你们准备好的 50 views / 800px / norm3.73 版本。
+  gso:
+    render_dir: GSO/render_same_pose_all_50v_800_norm3.73
+
+  # Source 数据（用于蒸馏保持原有能力；会预计算 teacher_gaussians 并缓存）
   source:
     dataset: objaverse               # objaverse / omni / gso
     max_samples: 400
-    samples_per_object: 3
+    samples_per_object: 2
 
-  # Target数据（攻击训练用）
+  # Attack/Eval 的 target 数据（跨数据集默认用 GSO）
   target:
-    dataset: omni                     # omni / objaverse / gso
+    dataset: gso                      # omni / objaverse / gso
     categories:
-      - shoe
       - plant
-      - dish
-      - bowl
-      - box
-
-  # GSO 渲染结果目录（相对于 data.root）
-  gso:
-    render_dir: GSO/render_same_pose_all_100v_512
+      # - shoe
+      # - dish
+      # - bowl
+      # - box
 
   # 物体分配：每个类别中哪些物体用于 defense（按名称排序后的索引）
   # 剩余物体自动分配给 attack，随机抽样 attack_samples_per_category 个
-  # 由 CLIP 聚类自动推荐（tools/cluster_objects.py），每个类别约 30% 作为 defense
+  # 注意：这些索引是按 OmniObject3D 的目录顺序定义的（跨数据集时 GSO attack 只是随机取子集）
   object_split:
     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
     plant: [2, 4, 8, 9]
     dish: [1, 3, 7, 9, 13]
     bowl: [0, 2, 6, 10]
-    box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 29, 36, 37, 38, 42, 53, 54, 67, 72, 75, 76, 78, 81, 82, 84, 86, 87, 93, 94, 100, 102, 104, 109, 111, 113, 115, 116, 119, 122, 126, 128]
-  attack_samples_per_category: 15  # 从非 defense 物体中随机取多少个做 attack
+    # box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 29, 36, 37, 38, 42, 53, 54, 67, 72, 75, 76, 78, 81, 82, 84, 86, 87, 93, 94, 100, 102, 104, 109, 111, 113, 115, 116, 119, 122, 126, 128]
+    box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
+  attack_samples_per_category: 5  # 从非 defense 物体中随机取多少个做 attack
 
   # Source/Target 混合比例（防御训练时 source 数据的比例）
-  source_ratio: 0.6
+  # 建议范围：0.25~0.45（越小越“写 trap”、越难修复；越大越保 source）
+  source_ratio: 0.4
   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
   source_val_ratio: 0.1
+  # Val loader 的样本数（用于每次评估 masked_psnr/lpips 的固定小集合）
+  val_samples: 20
 
   # 共享参数
   max_samples: null
@@ -63,16 +79,18 @@ data:
   view_selector: orthogonal
   angle_offset: 0.0
   num_supervision_views: 6
-  samples_per_object: 15  # 每个物体采样多少组视角（最多17组，取15保证稳定）
+  samples_per_object: 5  # 每个物体采样多少组视角（最多17组，取15保证稳定）
 
-# 训练配置
+# -----------------------------------------------------------------------------
+# 训练配置（轻量默认）
+# -----------------------------------------------------------------------------
 training:
   mode: full                        # full / lora
   batch_size: 2
   lr: 0.00003
   weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 2    # Attack 等效 batch_size = 1×4 = 4
+  gradient_accumulation_steps: 2
   lambda_lpips: 1.0
   mixed_precision: bf16
 
@@ -83,12 +101,14 @@ training:
 
   # 训练步数配置（优先使用 steps，如果为 null 则使用 epochs）
   # 注意：steps 指的是优化器步数（optimizer.step()调用次数），不是数据迭代次数
-  attack_steps: 500                 # 攻击训练优化器步数
-  attack_epochs: null               # null = 使用 attack_steps
-  defense_steps: 500                # 防御训练优化器步数
-  defense_epochs: null              # null = 使用 defense_steps
+  attack_steps: 200                 # 攻击训练优化器步数（用于评估”可修复性”）
+  attack_epochs: null                  # 充分评估修复难度（约 560 steps）
+  defense_steps: 100                # 防御训练优化器步数
+  defense_epochs: null                  # 确保 trap 写入深度（约 280 steps）
 
+# -----------------------------------------------------------------------------
 # 攻击场景配置
+# -----------------------------------------------------------------------------
 attack:
   scenario: malicious_content
 
@@ -97,11 +117,8 @@ attack:
 
   malicious_content:
     malicious_categories:
-      - shoe
       - plant
-      - dish
-      - bowl
-      - box
+      # 记得和 data.target.categories 保持一致（主要是为了日志清晰；数据加载用的是 data.target）
 
   # 语义偏转攻击（Semantic Deflection Attack）
   # 用于测试防御对跨类别攻击的鲁棒性
@@ -111,57 +128,61 @@ attack:
     input_categories: null            # 输入类别，如 ['coconut']（null=使用 data.target.categories）
     supervision_categories: null      # 监督类别，如 ['durian']（null=标准攻击模式）
 
-# 防御配置
+# -----------------------------------------------------------------------------
+# 防御配置（GeoTrap：一阶、Gaussian-space、可跨数据集）
+# -----------------------------------------------------------------------------
 defense:
   method: geotrap                   # geotrap / naive_unlearning / none
-  tag: geotrap_v1
+  tag: default_geotrap_energyT
   batch_size: 3                     # 防御训练 batch size（默认=2；不影响攻击阶段）
 
   # 防御专用 target 配置（可选，null=使用 data.target）
   target:
-    dataset: null                   # null=使用 data.target.dataset (omni/objaverse/gso)
+    dataset: omni                   # 跨数据集默认：defense on omni, attack on gso
     categories: null                # null=使用 data.target.categories
     object_split: null              # null=使用 data.object_split
-    samples_per_object: 15          # 覆盖 data.samples_per_object
+    samples_per_object: 5          # 覆盖 data.samples_per_object
 
-  # 陷阱损失配置（2+ 个 static=true 自动乘法耦合）
+  # 陷阱损失配置（静态 trap：纯一阶，不触发二阶）
+  # 默认全开五种物理属性（position/scale/opacity/rotation/color）
   trap_losses:
-    position:
-      static: false
-      dynamic: false
-    scale:
-      static: true
-      dynamic: false
+    position: {static: true, dynamic: false}
+    scale: {static: true, dynamic: false}
     opacity:
       static: true
       dynamic: false
-    rotation:
-      static: false
-      dynamic: false
-    color:
-      static: false
-      dynamic: false
+      topk_frac: 0.001
+    rotation: {static: true, dynamic: false}
+    color: {static: true, dynamic: false}
 
-  gradient_accumulation_steps: 2    # Defense 等效 batch_size = 2×2 = 4（可配合 defense.batch_size 调整）
+  # 多属性稳定性：bottleneck（追着最弱 trap 推深）
+  trap_aggregation:
+    method: bottleneck_logsumexp
+    tau: 0.25
+
+  # Anti-shortcut：冻结 head(conv)，迫使 trap “写进 UNet”
+  antishortcut:
+    freeze_head: true
+
+  # 梯度能量上限（Target only）：降低“少数张量快速达标”的 shortcut，提升抗修复性
+  grad_clip:
+    mode: energy
+    energy_mult: 4.0
+    energy_apply_on: target
+
+  # 可选：一阶鲁棒化（默认关）
+  awp:
+    enabled: true
 
   # 损失权重
-  lambda_trap: 1.0
-  lambda_distill: 300.0
+  lambda_trap: 100.0
+  lambda_distill: 20.0
   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
-  # 参数加噪鲁棒性
-  robustness:
-    enabled: true
-    # 标定思路：覆盖更强攻击（如 ~10× lr）下的参数漂移邻域，避免过大导致”随机重采样权重”。建议 0.008~0.012。
-    noise_scale: 0.005
-    # 噪声warmup步数：噪声从0线性增长到noise_scale（0=不使用warmup）
-    warmup_steps: 0
-
-  # 特征空间梯度冲突（在 conv 层输入特征上计算不同 trap 梯度的 cosine similarity，推向 -1）
-  gradient_conflict:
-    enabled: false
-    weight: 15000.0         # lambda_conflict（需达到 trap loss 的 10% 量级才能有效优化）
-    every_k_steps: 1       # 每 K 步计算一次（conv 层反传很便宜，可以每步都算）
+  # 额外机制（默认全关，避免引入二阶或额外 forward）
+  robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
+  input_noise: {enabled: false, noise_scale: 0.10, warmup_steps: 0}
+  gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
 
   # 敏感层自动选择（注释掉 = 全参数微调）
   # trap_combo: scale+opacity
@@ -169,10 +190,10 @@ defense:
 
   # 攻击评估配置（防御训练中周期性跑攻击来衡量防御效果）
   eval:
-    eval_every_steps: 50  # 每隔多少优化器步评估一次
-    attack_epochs: 2
+    eval_every_steps: 999999  # 默认关闭（想开再设小一些）
+    attack_epochs: 1
     attack_lr: 0.00005
-    num_render_samples: 3
+    num_render_samples: 1
 
 # 其他配置
 misc:

@@ -1006,7 +1006,7 @@ def create_dataloader(
     Returns:
         dataloader: DataLoader对象
     """
-    gso_render_dir = kwargs.pop('gso_render_dir', 'GSO/render_same_pose_all_100v_512')
+    gso_render_dir = kwargs.pop('gso_render_dir', None)
 
     if dataset_type == 'objaverse':
         # Objaverse 数据根目录直接指向 objaverse_rendered
@@ -1019,6 +1019,29 @@ def create_dataloader(
             **kwargs
         )
     elif dataset_type == 'gso':
+        # Resolve GSO render subdir:
+        # - Prefer explicit `gso_render_dir`
+        # - Otherwise fall back to known directories (newest first)
+        candidates = []
+        if gso_render_dir:
+            candidates.append(str(gso_render_dir))
+        candidates.extend([
+            'GSO/render_same_pose_all_50v_800_norm3.73',
+            'GSO/render_same_pose_all_100v_512',
+        ])
+
+        resolved = None
+        for rel in candidates:
+            if os.path.exists(os.path.join(data_root, rel)):
+                resolved = rel
+                break
+        if resolved is None:
+            # Keep the requested path (or newest default) so downstream error message is informative.
+            resolved = str(gso_render_dir) if gso_render_dir else 'GSO/render_same_pose_all_50v_800_norm3.73'
+        if gso_render_dir and resolved != str(gso_render_dir):
+            print(f"[Data] WARNING: gso_render_dir not found: {gso_render_dir}; fallback to: {resolved}")
+        gso_render_dir = resolved
+
         dataset = OmniObject3DDataset(
             data_root=data_root,
             categories=categories,

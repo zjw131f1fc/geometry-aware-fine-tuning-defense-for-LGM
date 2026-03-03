@@ -6,9 +6,9 @@
 #   分别用 1 / 3 / 5 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
 #
 # 用法:
-#   bash experiments/run_ablation_defense_num_categories.sh            # 默认 GPU=0
-#   bash experiments/run_ablation_defense_num_categories.sh 0          # 指定 GPU=0
-#   bash experiments/run_ablation_defense_num_categories.sh 0,1        # 兼容旧 GPU_LIST，仅使用第一个 GPU
+#   bash experiments/run_ablation_defense_num_categories.sh            # 默认 GPU=0 (单卡顺序执行)
+#   bash experiments/run_ablation_defense_num_categories.sh 0          # 指定 GPU=0 (单卡顺序执行)
+#   bash experiments/run_ablation_defense_num_categories.sh 0,1        # 多卡并行: 2张卡动态调度任务
 #
 # 默认类别集合（可按需改）：
 #   K=1: shoe
@@ -32,6 +32,9 @@ set -e
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# 加载GPU调度器
+source experiments/lib/gpu_scheduler.sh
+
 # Prefer project venv python if available; allow override via $PYTHON
 if [[ -z "${PYTHON:-}" ]]; then
     if [[ -x "${ROOT_DIR}/../venvs/3d-defense/bin/python" ]]; then
@@ -46,25 +49,9 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
-GPU_ID="${GPU_ID:-${GPU:-0}}"
-if [ $# -ge 1 ]; then
-    GPU_ARG="$1"
-    if [[ "${GPU_ARG}" == *","* ]]; then
-        GPU_ID="${GPU_ARG%%,*}"
-        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
-    else
-        GPU_ID="${GPU_ARG}"
-    fi
-fi
-
-if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
-    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
-    exit 1
-fi
-
-GPU="${GPU_ID}"
-echo "单卡顺序执行: GPU=${GPU}"
+# 解析GPU列表
+GPU_LIST="${1:-0}"
+echo "GPU列表: ${GPU_LIST}"
 
 CONFIG="${CONFIG:-configs/config.yaml}"
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
@@ -98,7 +85,8 @@ echo "Tasks: ${TOTAL_TASKS} (1/3/5 categories)"
 echo "=========================================="
 
 launch_on_gpu() {
-    local idx=$1
+    local gpu=$1
+    local idx=$2
     local name=${SETS_NAME[$idx]}
     local cats=${SETS_CATS[$idx]}
 
@@ -120,12 +108,12 @@ launch_on_gpu() {
         extra_args+=(--defense_steps "${DEFENSE_STEPS}")
     fi
 
-    echo "[GPU ${GPU}] 任务 $((idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats})"
+    echo "[GPU ${gpu}] 任务 $((idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats})"
 
     if {
-        echo "=== GPU ${GPU}: ${tag} ==="
+        echo "=== GPU ${gpu}: ${tag} ==="
         "${PYTHON}" script/run_pipeline.py \
-        --gpu "${GPU}" \
+        --gpu "${gpu}" \
         --config "${CONFIG}" \
         --attack_target_dataset omni \
         --defense_target_dataset omni \
@@ -138,26 +126,34 @@ launch_on_gpu() {
         --output_dir "${out_dir}" \
         "${extra_args[@]}"
     } > "${log}" 2>&1; then
-        echo "[GPU ${GPU}] 完成: ${tag}"
+        echo "[GPU ${gpu}] 完成: ${tag}"
         return 0
     fi
 
     exit_code=$?
-    echo "[GPU ${GPU}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
+    echo "[GPU ${gpu}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
     return "${exit_code}"
 }
 
+# 初始化GPU池并提交所有任务
+init_gpu_pool "${GPU_LIST}"
+
 echo ""
-echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
+if [[ "${SCHEDULER_ENABLED}" == "true" ]]; then
+    echo "多卡并行已启动：动态调度 ${TOTAL_TASKS} 个任务到 GPU [${GPU_LIST}]"
+else
+    echo "单卡顺序执行已启动：逐个任务运行"
+fi
 echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
 echo ""
 
-FAILED=0
 for i in $(seq 0 $((TOTAL_TASKS-1))); do
-    if ! launch_on_gpu "${i}"; then
-        FAILED=$((FAILED + 1))
-    fi
+    submit_task launch_on_gpu "${i}"
 done
+
+wait_all_tasks
+
+FAILED=${#FAILED_TASKS[@]}
 
 echo ""
 echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"

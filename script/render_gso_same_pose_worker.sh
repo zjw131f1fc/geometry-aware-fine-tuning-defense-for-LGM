@@ -77,8 +77,14 @@ DONE=0
 SKIP=0
 FAIL=0
 MISS=0
+SKIP_CAT=0
+TARGET_PER_CLASS="${TARGET_PER_CLASS:-50}"
+
+# Associative array to cache category completion status
+declare -A CAT_COMPLETE_CACHE
 
 echo "[INFO][GPU$GPU_ID] Start worker"
+echo "[INFO][GPU$GPU_ID] Target per class: $TARGET_PER_CLASS"
 echo "[INFO][GPU$GPU_ID] Manifest: $MANIFEST ($TOTAL rows)"
 echo "[INFO][GPU$GPU_ID] Output:   $OUT_ROOT"
 echo "[INFO][GPU$GPU_ID] Views:    $NUM_VIEWS"
@@ -95,9 +101,35 @@ while IFS=$'\t' read -r MODEL CLS; do
   [[ -z "${MODEL:-}" || -z "${CLS:-}" ]] && continue
   COUNT=$((COUNT + 1))
 
-  OBJ_PATH="$INPUT_ROOT/$CLS/$MODEL/meshes/model.obj"
   SAFE_MODEL="${MODEL// /_}"
   SAFE_CLS="${CLS// /_}"
+
+  # Check if this category has already reached the target
+  if [[ -z "${CAT_COMPLETE_CACHE[$SAFE_CLS]:-}" ]]; then
+    # Count completed objects for this category
+    CAT_COUNT=0
+    if [[ -d "$OUT_ROOT" ]]; then
+      while IFS= read -r -d '' obj_dir; do
+        img_dir="$obj_dir/render/images"
+        if [[ -d "$img_dir" ]]; then
+          img_count=$(find "$img_dir" -maxdepth 1 -type f -name 'r_*.png' 2>/dev/null | wc -l)
+          if [[ "$img_count" -eq "$NUM_VIEWS" && -f "$obj_dir/render/transforms.json" ]]; then
+            CAT_COUNT=$((CAT_COUNT + 1))
+          fi
+        fi
+      done < <(find "$OUT_ROOT" -mindepth 1 -maxdepth 1 -type d -name "${SAFE_CLS}_*" -print0 2>/dev/null)
+    fi
+    CAT_COMPLETE_CACHE[$SAFE_CLS]=$CAT_COUNT
+  fi
+
+  CAT_DONE="${CAT_COMPLETE_CACHE[$SAFE_CLS]}"
+  if [ "$CAT_DONE" -ge "$TARGET_PER_CLASS" ] 2>/dev/null; then
+    echo "[$COUNT/$TOTAL][GPU$GPU_ID][SKIP_CAT] $SAFE_CLS ($CAT_DONE>=$TARGET_PER_CLASS)"
+    SKIP_CAT=$((SKIP_CAT + 1))
+    continue
+  fi
+
+  OBJ_PATH="$INPUT_ROOT/$CLS/$MODEL/meshes/model.obj"
   OBJ_UID="${SAFE_CLS}_${SAFE_MODEL}"
   OBJ_OUT="$OUT_ROOT/$OBJ_UID"
   IMG_DIR="$OBJ_OUT/render/images"
@@ -191,10 +223,12 @@ while IFS=$'\t' read -r MODEL CLS; do
   if [[ "$IMG_COUNT" -eq "$NUM_VIEWS" && -f "$OBJ_OUT/render/transforms.json" ]]; then
     echo "[$COUNT/$TOTAL][GPU$GPU_ID][DONE] $OBJ_UID (rc=$RC)"
     DONE=$((DONE + 1))
+    # Update category cache
+    CAT_COMPLETE_CACHE[$SAFE_CLS]=$((${CAT_COMPLETE_CACHE[$SAFE_CLS]} + 1))
   else
     echo "[$COUNT/$TOTAL][GPU$GPU_ID][FAIL] $OBJ_UID (rc=$RC, see $LOG_FILE)"
     FAIL=$((FAIL + 1))
   fi
 done < "$MANIFEST"
 
-echo "[INFO][GPU$GPU_ID] Finished. done=$DONE skip=$SKIP fail=$FAIL miss=$MISS total_rows=$TOTAL"
+echo "[INFO][GPU$GPU_ID] Finished. done=$DONE skip=$SKIP skip_cat=$SKIP_CAT fail=$FAIL miss=$MISS total_rows=$TOTAL"

@@ -244,7 +244,15 @@ def compute_defense_hash(config):
             'method': defense_cfg.get('method', 'geotrap'),
             'batch_size': effective_defense_batch_size,
             'trap_losses': defense_cfg.get('trap_losses', {}),
+            # 影响梯度写入分布/稳定性的关键项：必须进 hash，避免缓存错用
+            'grad_clip': defense_cfg.get('grad_clip', {}),
+            'trap_aggregation': defense_cfg.get('trap_aggregation', {}),
+            'trap_weights': defense_cfg.get('trap_weights', {}),
+            'antishortcut': defense_cfg.get('antishortcut', {}),
+            'awp': defense_cfg.get('awp', {}),
             'robustness': defense_cfg.get('robustness', {}),
+            'input_noise': defense_cfg.get('input_noise', {}),
+            'coupling': defense_cfg.get('coupling', {}),
             'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
             'lambda_distill': defense_cfg.get('lambda_distill', 1.0),
             'distill_loss_order': defense_cfg.get('distill_loss_order', 2),
@@ -271,12 +279,14 @@ def compute_defense_hash(config):
             'source': data_cfg.get('source', {}),
             'source_ratio': data_cfg.get('source_ratio'),
             'source_val_ratio': data_cfg.get('source_val_ratio', 0.1),
+            'val_samples': data_cfg.get('val_samples', 20),
             'view_selector': data_cfg.get('view_selector'),
             'angle_offset': data_cfg.get('angle_offset'),
             'num_supervision_views': data_cfg.get('num_supervision_views'),
             'samples_per_object': data_cfg.get('samples_per_object'),
             'object_split': data_cfg.get('object_split', {}),
             'attack_samples_per_category': data_cfg.get('attack_samples_per_category'),
+            'gso': data_cfg.get('gso', {}),
         },
         'seed': config['misc']['seed'],
     }
@@ -317,3 +327,103 @@ def copy_cached_renders(cache_dir, dest_dir):
             if os.path.exists(dst):
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
+
+
+def cap_grad_tensor_energy_(parameters, cap_mult: float = 5.0, eps: float = 1e-12, return_stats: bool = False):
+    """
+    Gradient Energy Cap (first-order) to mitigate "shortcut" updates.
+
+    Idea:
+      - Compute per-parameter-tensor grad energy e_i = ||g_i||_2^2
+      - Let e_avg = mean(e_i) over tensors with non-empty grads
+      - Cap each tensor's energy to cap_mult * e_avg by scaling g_i in-place
+
+    This is NOT a 2nd-order method and does NOT require rendering.
+    It aims to prevent a tiny set of tensors (e.g., conv_out / head) from dominating updates.
+
+    Args:
+        parameters: iterable of parameters (e.g., model.parameters()).
+        cap_mult: energy cap multiplier relative to average tensor energy.
+                  Smaller => more uniform (but may slow optimization).
+        eps: numerical stability.
+        return_stats: if True, return a small dict of stats (syncs to CPU).
+
+    Returns:
+        stats dict if return_stats else None
+    """
+    if cap_mult is None:
+        cap_mult = 0.0
+    cap_mult = float(cap_mult)
+    if cap_mult <= 0:
+        return {} if return_stats else None
+
+    grads = []
+    energies = []
+    total_energy = None
+    active_count = None
+
+    # Keep everything on-device to avoid per-tensor CPU syncs.
+    for p in parameters:
+        if p is None or (not getattr(p, "requires_grad", False)):
+            continue
+        g = getattr(p, "grad", None)
+        if g is None or (not torch.is_floating_point(g)):
+            continue
+
+        e = g.detach().float().pow(2).sum()  # scalar tensor
+        active = (e > 0).to(dtype=torch.int32)  # scalar int tensor
+        total_energy = (e if total_energy is None else (total_energy + e))
+        active_count = (active if active_count is None else (active_count + active))
+
+        grads.append(g)
+        energies.append(e)
+
+    if not energies or total_energy is None or active_count is None:
+        return {"num_tensors": 0} if return_stats else None
+
+    n_active = int(active_count.detach().clamp(min=0).item())
+    if n_active <= 1:
+        return {"num_tensors": int(len(energies)), "num_active": n_active} if return_stats else None
+
+    e_avg = total_energy / float(n_active)
+    e_cap = e_avg * cap_mult
+
+    capped_count = None
+    for g, e in zip(grads, energies):
+        over = (e > e_cap)
+        scale = torch.where(over, torch.sqrt(e_cap / (e + eps)), torch.ones_like(e))
+        # If scale is exactly 1, mul_ is cheap; no Python branching needed.
+        g.mul_(scale.to(dtype=g.dtype, device=g.device))
+        if return_stats:
+            capped_count = (over.to(dtype=torch.int32) if capped_count is None
+                            else (capped_count + over.to(dtype=torch.int32)))
+
+    if not return_stats:
+        return None
+
+    # Recompute stats after cap (small overhead; used only for debugging).
+    energies_after = []
+    total_after = None
+    max_e_before = torch.stack([e.detach() for e in energies]).max()
+    for g in grads:
+        e2 = g.detach().float().pow(2).sum()
+        energies_after.append(e2)
+        total_after = e2 if total_after is None else (total_after + e2)
+    max_e_after = torch.stack(energies_after).max() if energies_after else torch.tensor(0.0, device=total_energy.device)
+
+    tb = float(total_energy.detach().item())
+    ta = float(total_after.detach().item()) if total_after is not None else 0.0
+    meb = float(max_e_before.detach().item())
+    mea = float(max_e_after.detach().item())
+    n = int(len(energies))
+    return {
+        "num_tensors": n,
+        "num_active": int(n_active),
+        "num_capped": int(capped_count.detach().item()) if capped_count is not None else 0,
+        "cap_mult": cap_mult,
+        "cap_energy": float(e_cap.detach().item()),
+        "total_energy_before": tb,
+        "total_energy_after": ta,
+        "max_share_before": (meb / tb) if tb > 0 else 0.0,
+        "max_share_after": (mea / ta) if ta > 0 else 0.0,
+    }

@@ -107,6 +107,19 @@ class DefenseTrainer:
             self.noise_warmup_steps = 0
             self.current_noise_scale = 0
 
+        # 输入加噪配置（仅 geotrap 需要）
+        if self.method == 'geotrap':
+            input_noise_config = self.defense_config.get('input_noise', {})
+            self.use_input_noise = input_noise_config.get('enabled', False)
+            self.input_noise_scale_target = input_noise_config.get('noise_scale', 0.02)
+            self.input_noise_warmup_steps = input_noise_config.get('warmup_steps', 0)
+            self.current_input_noise_scale = 0.0 if self.input_noise_warmup_steps > 0 else self.input_noise_scale_target
+        else:
+            self.use_input_noise = False
+            self.input_noise_scale_target = 0
+            self.input_noise_warmup_steps = 0
+            self.current_input_noise_scale = 0
+
         # 特征空间梯度冲突配置（仅 geotrap 且 trap >= 2 时有效）
         if self.method == 'geotrap':
             conflict_config = self.defense_config.get('gradient_conflict', {})
@@ -121,6 +134,88 @@ class DefenseTrainer:
             'gradient_accumulation_steps',
             config.get('training', {}).get('gradient_accumulation_steps', 1),
         )
+
+        # 防御阶段梯度处理（仅影响 defense，不影响攻击/微调评估）
+        # 目的：缓解“梯度 shortcut”（少量参数快速达成 trap，后续很快被修复）
+        if self.method == 'geotrap':
+            gc_cfg = self.defense_config.get('grad_clip', {}) or {}
+            self.grad_clip_mode = str(gc_cfg.get('mode', 'norm')).lower()
+            # Hard safety clip (global norm). Default: inherit legacy training.gradient_clip.
+            self.grad_norm_clip = float(
+                gc_cfg.get('norm', config.get('training', {}).get('gradient_clip', 0.0) or 0.0)
+            )
+            # Energy cap (per-tensor energy cap relative to avg tensor energy).
+            self.grad_energy_cap_mult = float(gc_cfg.get('energy_mult', 0.0))
+            # Apply-on semantics: energy cap can be restricted to target-only steps
+            # to avoid distillation degradation.
+            self.grad_energy_apply_on = str(
+                gc_cfg.get('energy_apply_on', gc_cfg.get('apply_on', 'all'))
+            ).lower()
+        else:
+            self.grad_clip_mode = 'norm'
+            self.grad_norm_clip = float(config.get('training', {}).get('gradient_clip', 0.0) or 0.0)
+            self.grad_energy_cap_mult = 0.0
+            self.grad_energy_apply_on = 'all'
+
+        # 乘法耦合配置（仅 geotrap 需要）
+        if self.method == 'geotrap':
+            coupling_config = self.defense_config.get('coupling', {})
+            self.coupling_temperature = coupling_config.get('temperature', 0.1)
+            self.coupling_use_log = coupling_config.get('use_log_transform', False)
+        else:
+            self.coupling_temperature = 0.1
+            self.coupling_use_log = False
+
+        # Trap 聚合方式（仅 geotrap 需要）
+        # - pairwise_multiplicative: 旧版两两乘法耦合（默认）
+        # - sum: 直接加和（最稳定，但容易出现“单项更深，其它项被忽略”）
+        # - bottleneck_logsumexp: 近似 max 的瓶颈优化，持续追着“最弱 trap”打（推荐用于多属性全开）
+        if self.method == 'geotrap':
+            agg_cfg = self.defense_config.get('trap_aggregation', {}) or {}
+            self.trap_aggregation_method = str(
+                agg_cfg.get('method', 'pairwise_multiplicative')
+            ).lower()
+            self.trap_bottleneck_tau = float(agg_cfg.get('tau', 0.25))
+        else:
+            self.trap_aggregation_method = 'sum'
+            self.trap_bottleneck_tau = 0.25
+
+        # 可选：对每个 trap loss 加权（key 使用 trap_losses dict 的名字，如 'opacity_static'）
+        self.trap_weights = (self.defense_config.get('trap_weights', {}) or {}) if self.method == 'geotrap' else {}
+
+        # Anti-shortcut：避免 trap 主要由 head(conv) 的少量参数完成，导致可被快速修复
+        # 支持 geotrap 和 naive_unlearning 两种方法
+        if self.method in ('geotrap', 'naive_unlearning'):
+            anti_cfg = self.defense_config.get('antishortcut', {}) or {}
+            self.freeze_head = bool(anti_cfg.get('freeze_head', False))
+            self.freeze_head_bias = bool(anti_cfg.get('freeze_head_bias', False))
+            self.head_lr_mult = float(anti_cfg.get('head_lr_mult', 1.0))
+            self.head_bias_lr_mult = float(anti_cfg.get('head_bias_lr_mult', self.head_lr_mult))
+            self.bias_lr_mult = float(anti_cfg.get('bias_lr_mult', 1.0))
+        else:
+            self.freeze_head = False
+            self.freeze_head_bias = False
+            self.head_lr_mult = 1.0
+            self.head_bias_lr_mult = 1.0
+            self.bias_lr_mult = 1.0
+
+        # AWP（Adversarial Weight Perturbation）：一阶 min-max，增强 trap 对“有方向的微调修复”鲁棒性
+        # 注意：这是额外一次 autograd.grad + 额外一次前向（不需要二阶）。
+        if self.method == 'geotrap':
+            awp_cfg = self.defense_config.get('awp', {}) or {}
+            self.use_awp = bool(awp_cfg.get('enabled', False))
+            self.awp_rho = float(awp_cfg.get('rho', 1e-3))
+            self.awp_weight = float(awp_cfg.get('weight', 1.0))
+            self.awp_every_k = int(awp_cfg.get('every_k_steps', 1))
+            self.awp_param_scope = str(awp_cfg.get('param_scope', 'head')).lower()
+            self.awp_exclude_bias = bool(awp_cfg.get('exclude_bias', True))
+        else:
+            self.use_awp = False
+            self.awp_rho = 0.0
+            self.awp_weight = 0.0
+            self.awp_every_k = 1
+            self.awp_param_scope = 'head'
+            self.awp_exclude_bias = True
 
         # 训练状态
         self.target_layers = []
@@ -149,7 +244,14 @@ class DefenseTrainer:
 
         # Opacity 陷阱
         if trap_config.get('opacity', {}).get('static', False):
-            self.trap_losses['opacity_static'] = OpacityCollapseLoss()
+            opa_cfg = trap_config.get('opacity', {}) or {}
+            # Optional: tail mode to avoid sparse escape (penalize only top-k opacity Gaussians).
+            topk_frac = opa_cfg.get('topk_frac')
+            topk_k = opa_cfg.get('topk_k')
+            self.trap_losses['opacity_static'] = OpacityCollapseLoss(
+                topk_frac=topk_frac,
+                topk_k=topk_k,
+            )
 
         # Rotation 陷阱
         if trap_config.get('rotation', {}).get('static', False):
@@ -214,6 +316,10 @@ class DefenseTrainer:
             self._setup_selective_finetuning(target_layers)
         else:
             print(f"\n[2/5] 跳过敏感层设置（微调所有层）")
+
+        # 2.1 Anti-shortcut：限制 head(conv) 的快捷解（可选）
+        if self.method in ('geotrap', 'naive_unlearning') and (self.freeze_head or self.freeze_head_bias):
+            self._apply_antishortcut_freeze(self.model_mgr.model)
 
         # 3. 设置数据加载器（双数据加载器模式）
         print("\n[3/5] 设置数据加载器...")
@@ -301,18 +407,19 @@ class DefenseTrainer:
         training_config = self.config['training']
         trainable_params = [p for p in self.model_mgr.model.parameters() if p.requires_grad]
         optimizer_type = training_config.get('optimizer', 'adamw')
+        param_groups = self._build_optimizer_param_groups(self.model_mgr.model, training_config)
         if optimizer_type == 'sgd':
             self.optimizer = optim.SGD(
-                trainable_params,
-                lr=training_config['lr'],
-                weight_decay=training_config['weight_decay'],
+                param_groups,
+                lr=training_config['lr'],  # default, groups may override
+                weight_decay=training_config['weight_decay'],  # default, groups may override
                 momentum=training_config.get('optimizer_momentum', 0.9),
             )
         else:
             self.optimizer = optim.AdamW(
-                trainable_params,
-                lr=training_config['lr'],
-                weight_decay=training_config['weight_decay'],
+                param_groups,
+                lr=training_config['lr'],  # default, groups may override
+                weight_decay=training_config['weight_decay'],  # default, groups may override
                 betas=tuple(training_config.get('optimizer_betas', [0.9, 0.95])),
             )
 
@@ -323,8 +430,27 @@ class DefenseTrainer:
         # 打印配置
         if self.use_param_noise:
             print(f"\n  参数加噪: σ={self.noise_scale_target} (warmup_steps={self.noise_warmup_steps})")
+        if self.use_input_noise:
+            print(f"  输入加噪: σ={self.input_noise_scale_target} (warmup_steps={self.input_noise_warmup_steps})")
         if self.use_gradient_conflict:
             print(f"  梯度冲突: weight={self.conflict_weight}, every_k={self.conflict_every_k}")
+        if self.method == 'geotrap':
+            if self.grad_clip_mode != 'norm' or self.grad_energy_cap_mult > 0:
+                print(f"  Grad clip: mode={self.grad_clip_mode}, norm={self.grad_norm_clip}, "
+                      f"energy_mult={self.grad_energy_cap_mult}, energy_apply_on={self.grad_energy_apply_on}")
+            print(f"  Trap聚合: method={self.trap_aggregation_method}")
+            if self.trap_aggregation_method in ('bottleneck', 'bottleneck_logsumexp', 'logsumexp'):
+                print(f"    bottleneck_tau={self.trap_bottleneck_tau}")
+            if self.trap_aggregation_method == 'pairwise_multiplicative' and len(self.trap_losses) >= 2:
+                print(f"  乘法耦合: temperature={self.coupling_temperature}, use_log={self.coupling_use_log}")
+            if self.use_awp:
+                print(f"  AWP: rho={self.awp_rho}, weight={self.awp_weight}, every_k={self.awp_every_k}, "
+                      f"param_scope={self.awp_param_scope}, exclude_bias={self.awp_exclude_bias}")
+
+        # Anti-shortcut 打印（支持 geotrap 和 naive_unlearning）
+        if (self.freeze_head or self.freeze_head_bias) or (self.head_lr_mult != 1.0 or self.bias_lr_mult != 1.0):
+            print(f"  Anti-shortcut: freeze_head={self.freeze_head}, freeze_head_bias={self.freeze_head_bias}, "
+                  f"head_lr_mult={self.head_lr_mult}, head_bias_lr_mult={self.head_bias_lr_mult}, bias_lr_mult={self.bias_lr_mult}")
 
         print("\n" + "=" * 80)
         print("DefenseTrainer 初始化完成")
@@ -360,6 +486,73 @@ class DefenseTrainer:
             print(f"  目标层: {target_layers}")
         else:
             print(f"  ✓ 共解冻 {unfrozen_count} 个参数")
+
+    def _apply_antishortcut_freeze(self, model):
+        """
+        Anti-shortcut: 冻结 head(conv) 的部分/全部参数，避免 trap 主要由极少数 head 参数完成。
+
+        说明：
+        - freeze_head=True: 冻结 conv.weight + conv.bias
+        - freeze_head_bias=True: 仅冻结 conv.bias
+        """
+        frozen = 0
+        if self.freeze_head:
+            for name, param in model.named_parameters():
+                if name.startswith('conv.'):
+                    if param.requires_grad:
+                        param.requires_grad = False
+                        frozen += 1
+                        print(f"  ✓ Anti-shortcut 冻结: {name}")
+        elif self.freeze_head_bias:
+            for name, param in model.named_parameters():
+                if name == 'conv.bias' and param.requires_grad:
+                    param.requires_grad = False
+                    frozen += 1
+                    print(f"  ✓ Anti-shortcut 冻结: {name}")
+
+        if frozen == 0:
+            print("  ⚠ Anti-shortcut: 未冻结任何参数（可能 head 已被冻结或名称不匹配）")
+
+    def _build_optimizer_param_groups(self, model, training_config: Dict[str, Any]):
+        """
+        构建带 LR multiplier 的 optimizer param groups（避免 head/bias 走捷径）。
+
+        不改变默认行为：当所有 multiplier=1 且不冻结时，相当于单一 param list。
+        """
+        base_lr = float(training_config['lr'])
+        base_wd = float(training_config.get('weight_decay', 0.0))
+
+        head_params = []
+        head_bias_params = []
+        bias_params = []
+        other_params = []
+
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith('conv.'):
+                if name.endswith('.bias'):
+                    head_bias_params.append(param)
+                else:
+                    head_params.append(param)
+            elif name.endswith('.bias'):
+                bias_params.append(param)
+            else:
+                other_params.append(param)
+
+        groups = []
+        if other_params:
+            groups.append({'params': other_params, 'lr': base_lr, 'weight_decay': base_wd})
+        if bias_params:
+            groups.append({'params': bias_params, 'lr': base_lr * self.bias_lr_mult, 'weight_decay': base_wd})
+        if head_params:
+            groups.append({'params': head_params, 'lr': base_lr * self.head_lr_mult, 'weight_decay': base_wd})
+        if head_bias_params:
+            groups.append({'params': head_bias_params, 'lr': base_lr * self.head_bias_lr_mult, 'weight_decay': base_wd})
+
+        if not groups:
+            raise ValueError("没有任何可训练参数（可能所有层都被冻结）。请检查 defense.target_layers / antishortcut 配置。")
+        return groups
 
     def _precompute_teacher_gaussians(self) -> List[torch.Tensor]:
         """
@@ -505,24 +698,58 @@ class DefenseTrainer:
             # 仅做 NaN/Inf 清理，不做 clamp 限制，让 trap 自由增长
             # 通过梯度裁剪（gradient_clip）控制训练稳定性
             loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=-1e6)
-            static_loss_tensors[name] = loss
             loss_dict[name] = loss.item()
 
-        # 2. 两两乘法耦合：∑_{i<j} -((1-L_i)(1-L_j)-1) / C(n,2)
+            weight = float(self.trap_weights.get(name, 1.0)) if hasattr(self, "trap_weights") else 1.0
+            static_loss_tensors[name] = loss * weight
+
+        # 2. 静态 trap 聚合
         loss_list = list(static_loss_tensors.values())
-        if len(loss_list) >= 2:
-            pairwise_sum = torch.zeros(1, device=gaussians.device, dtype=gaussians.dtype)
-            count = 0
-            for i in range(len(loss_list)):
-                for j in range(i + 1, len(loss_list)):
-                    pairwise_sum = pairwise_sum - ((1.0 - loss_list[i]) * (1.0 - loss_list[j]) - 1.0)
-                    count += 1
-            static_combined = pairwise_sum / count
-            loss_dict['static_combined'] = static_combined.item()
-            total_loss += static_combined
+        if len(loss_list) == 0:
+            static_combined = torch.zeros(1, device=gaussians.device, dtype=gaussians.dtype)
+        elif len(loss_list) == 1:
+            static_combined = loss_list[0]
         else:
-            for loss in loss_list:
-                total_loss += loss
+            method = getattr(self, "trap_aggregation_method", "pairwise_multiplicative")
+            if method == 'sum':
+                static_combined = torch.stack(loss_list).sum()
+            elif method in ('bottleneck', 'bottleneck_logsumexp', 'logsumexp'):
+                tau = float(getattr(self, "trap_bottleneck_tau", 0.25))
+                tau = max(tau, 1e-6)
+                stacked = torch.stack(loss_list)
+                # tau * logsumexp(L/tau) 近似 max(L)，最小化它会持续推深“最弱 trap”
+                static_combined = tau * torch.logsumexp(stacked / tau, dim=0)
+            elif method == 'max':
+                static_combined = torch.stack(loss_list).max()
+            else:
+                # 旧默认：两两乘法耦合（pairwise multiplicative coupling）
+                pairwise_sum = torch.zeros(1, device=gaussians.device, dtype=gaussians.dtype)
+                count = 0
+
+                # 可选：对loss先做log变换（将(-∞,0)映射到更小范围）
+                if self.coupling_use_log:
+                    # log(1 + |L|) 变换，保持负号
+                    transformed_losses = []
+                    for loss in loss_list:
+                        sign = torch.sign(loss)
+                        transformed = sign * torch.log(1.0 + torch.abs(loss))
+                        transformed_losses.append(transformed)
+                    loss_list = transformed_losses
+
+                # 温度缩放 + 乘法耦合
+                for i in range(len(loss_list)):
+                    for j in range(i + 1, len(loss_list)):
+                        # 温度缩放：L/T
+                        li_scaled = loss_list[i] / self.coupling_temperature
+                        lj_scaled = loss_list[j] / self.coupling_temperature
+                        # 乘法耦合
+                        pairwise_sum = pairwise_sum - ((1.0 - li_scaled) * (1.0 - lj_scaled) - 1.0)
+                        count += 1
+
+                static_combined = pairwise_sum / max(count, 1)
+
+        loss_dict['static_combined'] = static_combined.item()
+        total_loss += static_combined
 
         # 3. 动态敏感度损失
         if self.dynamic_config['position']:
@@ -675,6 +902,82 @@ class DefenseTrainer:
 
         return conflict_loss.squeeze(), conflict_info
 
+    def _select_awp_params(self, model) -> List[tuple[str, torch.nn.Parameter]]:
+        """
+        选择 AWP 要扰动的参数集合（默认 head: conv.*）。
+        """
+        scope = getattr(self, "awp_param_scope", "head")
+        exclude_bias = bool(getattr(self, "awp_exclude_bias", True))
+
+        selected: List[tuple[str, torch.nn.Parameter]] = []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if exclude_bias and name.endswith(".bias"):
+                continue
+
+            ok = False
+            if scope == "trainable":
+                ok = True
+            elif scope == "unet":
+                ok = name.startswith("unet.")
+            else:
+                # default: head
+                ok = name.startswith("conv.")
+
+            if ok:
+                selected.append((name, param))
+        return selected
+
+    def _compute_awp_trap_loss(self, model, input_images, base_trap_loss):
+        """
+        一阶 AWP：在参数空间做一次“最大化 trap loss”的扰动，再最小化扰动点的 trap loss。
+
+        目标近似：
+            min_θ  [ L_trap(θ) + weight * L_trap(θ + ε*(θ)) ]
+        其中 ε 沿着 +∇_θ L_trap 的方向（使 trap 变浅），从而增强对修复微调的鲁棒性。
+        """
+        awp_params = self._select_awp_params(model)
+        if not awp_params:
+            return {}, torch.tensor(0.0, device=input_images.device)
+
+        params_only = [p for _, p in awp_params]
+        grads = torch.autograd.grad(
+            outputs=base_trap_loss,
+            inputs=params_only,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        # Apply perturbation: theta <- theta + rho * g / ||g||
+        backup = {}
+        rho = float(getattr(self, "awp_rho", 0.0))
+        eps = 1e-12
+        for (name, param), grad in zip(awp_params, grads):
+            if grad is None:
+                continue
+            g = grad.detach()
+            norm = g.float().norm().clamp_min(eps)
+            delta = (rho * g / norm).to(dtype=param.data.dtype)
+            backup[name] = param.data.clone()
+            param.data.add_(delta)
+
+        # Forward at perturbed weights
+        with torch.set_grad_enabled(True):
+            with torch.autocast('cuda', dtype=torch.bfloat16):
+                gaussians_awp = model.forward_gaussians(input_images)
+            gaussians_awp = gaussians_awp.float()
+
+        awp_dict, awp_loss = self.compute_trap_loss(gaussians_awp, model)
+
+        # Restore weights
+        for name, param in awp_params:
+            if name in backup:
+                param.data.copy_(backup[name])
+
+        return awp_dict, awp_loss
+
     def _update_noise_scale(self, global_step: int):
         """
         根据当前训练步数更新噪声scale（线性warmup）
@@ -682,6 +985,7 @@ class DefenseTrainer:
         Args:
             global_step: 当前全局优化器步数
         """
+        # 更新参数噪声scale
         if self.noise_warmup_steps > 0:
             # 线性warmup: 从0增长到target值
             warmup_progress = min(1.0, global_step / self.noise_warmup_steps)
@@ -689,6 +993,13 @@ class DefenseTrainer:
         else:
             # 无warmup，直接使用目标值
             self.current_noise_scale = self.noise_scale_target
+
+        # 更新输入噪声scale
+        if self.input_noise_warmup_steps > 0:
+            warmup_progress = min(1.0, global_step / self.input_noise_warmup_steps)
+            self.current_input_noise_scale = self.input_noise_scale_target * warmup_progress
+        else:
+            self.current_input_noise_scale = self.input_noise_scale_target
 
     def _add_param_noise(self, model):
         """
@@ -711,6 +1022,26 @@ class DefenseTrainer:
         """恢复模型参数到原始权重"""
         for name, param in model.named_parameters():
             param.data.copy_(original_state[name])
+
+    def _add_input_noise(self, input_images):
+        """
+        对输入图像添加高斯噪声
+
+        输入组成 [B, 4, 9, H, W]:
+        - 前3通道: ImageNet归一化的RGB图像，范围约[-2.1, 2.6]
+        - 后6通道: Rays Plucker坐标，范围约[-1, 1]
+
+        噪声会同时作用于RGB和rays，模拟输入扰动。
+
+        Args:
+            input_images: 输入图像 [B, 4, 9, H, W]
+
+        Returns:
+            noisy_images: 加噪后的图像
+        """
+        noise = torch.randn_like(input_images) * self.current_input_noise_scale
+        noisy_images = input_images + noise
+        return noisy_images
 
     def train_step(self, batch, is_target_data=True):
         """
@@ -742,7 +1073,7 @@ class DefenseTrainer:
                 student_gaussians = student_gaussians.float()
                 total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
             else:
-                # GeoTrap: 干净权重 trap loss + 加噪权重 trap loss
+                # GeoTrap: 干净权重 trap loss + 加噪权重 trap loss + 输入加噪 trap loss
                 lambda_trap = self.defense_config.get('lambda_trap', 1.0)
 
                 # (a) 干净权重前向 → trap loss
@@ -767,7 +1098,18 @@ class DefenseTrainer:
                     loss_dict.update(conflict_info)
                     total_loss = total_loss + self.conflict_weight * conflict_loss
 
-                # (b) 加噪权重前向 → trap loss（鲁棒性）
+                # (a.3) AWP：对“可修复方向”的一阶鲁棒性（可选）
+                if (self.use_awp
+                        and self.awp_every_k > 0
+                        and self._train_step_counter % self.awp_every_k == 0):
+                    awp_dict, awp_loss = self._compute_awp_trap_loss(
+                        model, input_images, trap_loss_clean
+                    )
+                    for k, v in awp_dict.items():
+                        loss_dict[f'awp_{k}'] = v
+                    total_loss = total_loss + lambda_trap * self.awp_weight * awp_loss
+
+                # (b) 加噪权重前向 → trap loss（参数鲁棒性）
                 if self.use_param_noise:
                     original_state = self._add_param_noise(model)
 
@@ -778,14 +1120,31 @@ class DefenseTrainer:
 
                     trap_dict_noisy, trap_loss_noisy = self.compute_trap_loss(
                         gaussians_noisy, model)
-                    # 记录加噪版本的指标（带 noisy_ 前缀）
+                    # 记录加噪版本的指标（带 param_noisy_ 前缀）
                     for k, v in trap_dict_noisy.items():
-                        loss_dict[f'noisy_{k}'] = v
+                        loss_dict[f'param_noisy_{k}'] = v
 
                     total_loss = total_loss + lambda_trap * trap_loss_noisy
 
                     # 恢复干净权重（backward 仍基于两份计算图）
                     self._restore_params(model, original_state)
+
+                # (c) 输入加噪前向 → trap loss（输入鲁棒性）
+                if self.use_input_noise:
+                    input_images_noisy = self._add_input_noise(input_images)
+
+                    with torch.set_grad_enabled(True):
+                        with torch.autocast('cuda', dtype=torch.bfloat16):
+                            gaussians_input_noisy = model.forward_gaussians(input_images_noisy)
+                        gaussians_input_noisy = gaussians_input_noisy.float()
+
+                    trap_dict_input_noisy, trap_loss_input_noisy = self.compute_trap_loss(
+                        gaussians_input_noisy, model)
+                    # 记录输入加噪版本的指标（带 input_noisy_ 前缀）
+                    for k, v in trap_dict_input_noisy.items():
+                        loss_dict[f'input_noisy_{k}'] = v
+
+                    total_loss = total_loss + lambda_trap * trap_loss_input_noisy
 
         else:
             # Source Data: 干净权重上前向 → 蒸馏损失
@@ -863,6 +1222,8 @@ class DefenseTrainer:
         total_losses = {}
         num_batches = 0
         accumulation_counter = 0  # 梯度累积计数器
+        accum_has_target = False
+        accum_has_source = False
 
         # 时间跟踪
         epoch_start_time = time.time()
@@ -894,19 +1255,23 @@ class DefenseTrainer:
                 if use_source:
                     batch = next(source_iter)
                     loss_dict = self.train_step(batch, is_target_data=False)
+                    accum_has_source = True
                 else:
                     batch = next(target_iter)
                     loss_dict = self.train_step(batch, is_target_data=True)
+                    accum_has_target = True
 
             except StopIteration:
                 if use_source:
                     source_iter = iter(self.source_loader)
                     batch = next(source_iter)
                     loss_dict = self.train_step(batch, is_target_data=False)
+                    accum_has_source = True
                 else:
                     target_iter = iter(self.target_loader)
                     batch = next(target_iter)
                     loss_dict = self.train_step(batch, is_target_data=True)
+                    accum_has_target = True
 
             # 累积损失
             for key, value in loss_dict.items():
@@ -918,22 +1283,43 @@ class DefenseTrainer:
 
             # 梯度累积：每 N 步或最后一个 batch 时更新参数
             if accumulation_counter % self.gradient_accumulation_steps == 0 or batch_idx == planned_batches - 1:
-                # 梯度裁剪
-                if self.config['training'].get('gradient_clip', 0) > 0:
+                # 梯度处理（防御阶段专用）：energy cap / norm clip
+                # - energy: 限制每个参数张量的梯度能量上限，降低“少数张量主导更新”的 shortcut
+                # - norm: 传统全局范数裁剪（主要用于数值稳定性）
+                mode = getattr(self, 'grad_clip_mode', 'norm')
+                if mode in ('energy', 'both') and getattr(self, 'grad_energy_cap_mult', 0.0) > 0:
+                    apply_on = getattr(self, 'grad_energy_apply_on', 'all')
+                    should_apply_energy = (
+                        (apply_on == 'all')
+                        or (apply_on == 'target' and accum_has_target)
+                        or (apply_on == 'source' and accum_has_source)
+                    )
+                    if should_apply_energy:
+                        from tools.utils import cap_grad_tensor_energy_
+                        cap_grad_tensor_energy_(
+                            self.model_mgr.model.parameters(),
+                            cap_mult=self.grad_energy_cap_mult,
+                            eps=1e-12,
+                            return_stats=False,
+                        )
+                if mode in ('norm', 'both') and getattr(self, 'grad_norm_clip', 0.0) > 0:
                     torch.nn.utils.clip_grad_norm_(
                         self.model_mgr.model.parameters(),
-                        self.config['training']['gradient_clip']
+                        self.grad_norm_clip
                     )
                 # 更新参数
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 accumulation_counter = 0
+                accum_has_target = False
+                accum_has_source = False
 
                 # 优化器步数 +1（只在实际更新参数时计数）
                 global_step += 1
 
                 # 更新噪声scale（warmup）
-                if self.use_param_noise and self.noise_warmup_steps > 0:
+                if (self.use_param_noise and self.noise_warmup_steps > 0) or \
+                   (self.use_input_noise and self.input_noise_warmup_steps > 0):
                     self._update_noise_scale(global_step)
 
                 # 计算时间统计

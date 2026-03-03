@@ -616,6 +616,28 @@ def run_attack(config, target_train_loader, source_val_loader,
                         'masked_lpips': interval_masked_lpips / interval_count if interval_count > 0 else 0,
                         'masked_psnr': interval_masked_psnr / interval_count if interval_count > 0 else 0,
                     }
+
+                    # 轻量：每次 step-eval 同时评估 source（用于 plot_pipeline_results 的 Source 曲线）
+                    try:
+                        model.eval()
+                        has_lora = hasattr(model, 'disable_adapter_layers')
+                        if has_lora:
+                            model.disable_adapter_layers()
+                        src_eval = evaluator.evaluate_on_loader(source_val_loader)
+                        metrics['source_psnr'] = float(src_eval.get('psnr', 0))
+                        metrics['source_lpips'] = float(src_eval.get('lpips', 0))
+                    except Exception as e:
+                        # 评估失败不应中断攻击主流程
+                        print(f"  [run_attack] 警告: source-eval 失败 (step={global_step}): {e}")
+                        metrics['source_psnr'] = 0.0
+                        metrics['source_lpips'] = 0.0
+                    finally:
+                        if hasattr(model, 'enable_adapter_layers'):
+                            try:
+                                model.enable_adapter_layers()
+                            except Exception:
+                                pass
+                        model.train()
                     step_history.append(metrics)
 
                     # 计算ETA
@@ -635,7 +657,8 @@ def run_attack(config, target_train_loader, source_val_loader,
                     print(f"  [{phase_name}] Optimizer Step {global_step}/{total_steps} (Ep{epoch}) - "
                           f"Loss: {metrics['loss']:.4f}, "
                           f"LPIPS: {metrics['masked_lpips']:.4f}, "
-                          f"PSNR: {metrics['masked_psnr']:.2f}{eta_str}")
+                          f"PSNR: {metrics['masked_psnr']:.2f}, "
+                          f"SourcePSNR: {metrics['source_psnr']:.2f}{eta_str}")
 
                     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
                     interval_count = 0

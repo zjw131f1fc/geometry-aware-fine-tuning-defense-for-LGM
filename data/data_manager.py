@@ -32,11 +32,26 @@ class DataManager:
     def _get_gso_render_dir(self) -> str:
         """返回 GSO 渲染目录（绝对路径）。"""
         data_root = self.config['data']['root']
-        gso_rel_dir = self.config['data'].get('gso', {}).get(
-            'render_dir',
+        gso_cfg = self.config['data'].get('gso', {}) or {}
+        requested_rel = gso_cfg.get('render_dir')
+
+        # Prefer explicit config, otherwise try known defaults (newest first).
+        candidates = []
+        if requested_rel:
+            candidates.append(str(requested_rel))
+        candidates.extend([
+            'GSO/render_same_pose_all_50v_800_norm3.73',
             'GSO/render_same_pose_all_100v_512',
-        )
-        return os.path.join(data_root, gso_rel_dir)
+        ])
+
+        for rel in candidates:
+            abs_dir = os.path.join(data_root, rel)
+            if os.path.exists(abs_dir):
+                return abs_dir
+
+        # Fall back to the requested path (or newest default) to produce a clear error later.
+        fallback_rel = str(requested_rel) if requested_rel else 'GSO/render_same_pose_all_50v_800_norm3.73'
+        return os.path.join(data_root, fallback_rel)
 
     def _scan_category_counts(self, categories: List[str], dataset_type: str = 'omni') -> Dict[str, int]:
         """扫描数据目录，返回每个类别的物体总数。"""
@@ -271,7 +286,7 @@ class DataManager:
                 angle_offset=data_config['angle_offset'],
                 samples_per_object=samples_per_object,
                 object_indices=object_indices,
-                gso_render_dir=data_config.get('gso', {}).get('render_dir', 'GSO/render_same_pose_all_100v_512'),
+                gso_render_dir=data_config.get('gso', {}).get('render_dir', 'GSO/render_same_pose_all_50v_800_norm3.73'),
             )
             print(f"[DataManager] 训练集大小: {len(self.train_loader.dataset)}")
 
@@ -293,7 +308,7 @@ class DataManager:
                 angle_offset=data_config['angle_offset'],
                 samples_per_object=samples_per_object,
                 object_indices=object_indices,
-                gso_render_dir=data_config.get('gso', {}).get('render_dir', 'GSO/render_same_pose_all_100v_512'),
+                gso_render_dir=data_config.get('gso', {}).get('render_dir', 'GSO/render_same_pose_all_50v_800_norm3.73'),
             )
             print(f"[DataManager] 验证集大小: {len(self.val_loader.dataset)}")
 

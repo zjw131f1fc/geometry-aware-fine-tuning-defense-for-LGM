@@ -1,0 +1,130 @@
+# LGM Model Immunization - Freeze head (Candidate A)
+#
+# Goal:
+# - Force traps to be written into UNet (anti head-shortcut)
+# - Keep everything first-order and Gaussian-space (no 2nd order, no rendering in defense)
+# - Make trap pressure much stronger than the initial smoke run
+#
+# Suggested run:
+#   ../venvs/3d-defense/bin/python script/run_pipeline.py --gpu 0 \
+#     --config configs/config_immunize_freezehead_A.yaml --skip_baseline \
+#     --defense_steps 200 --attack_steps 200 --eval_every_steps 20 --num_render 1 \
+#     --defense_cache_mode none --lr 0.0001 \
+#     --tag freezehead_A --output_dir output/freezehead_A
+
+model:
+  size: big
+  resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  device: cuda
+
+data:
+  root: ./datas
+
+  source:
+    dataset: objaverse
+    max_samples: 40
+    samples_per_object: 1
+
+  target:
+    dataset: omni
+    categories: [shoe]
+
+  object_split:
+    shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
+  attack_samples_per_category: 3
+
+  # Defense training mixes source distill and target trap updates.
+  # For "work first", we bias heavily toward target so traps actually get written into the weights.
+  source_ratio: 0.2
+  source_val_ratio: 0.1
+
+  num_workers: 0
+  view_selector: orthogonal
+  angle_offset: 0.0
+  num_supervision_views: 2
+  samples_per_object: 2
+
+training:
+  mode: full
+  batch_size: 1
+  lr: 0.00003
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  gradient_accumulation_steps: 1
+  lambda_lpips: 1.0
+  mixed_precision: bf16
+
+  optimizer: adamw
+  optimizer_betas: [0.9, 0.95]
+  optimizer_momentum: 0.9
+
+  # use step-based in CLI for runs
+  attack_steps: null
+  attack_epochs: 1
+  defense_steps: null
+  defense_epochs: 1
+
+attack:
+  scenario: malicious_content
+  mode: null
+
+  malicious_content:
+    malicious_categories: [shoe]
+
+defense:
+  method: geotrap
+  tag: freezehead_A
+
+  target:
+    dataset: null
+    categories: null
+    object_split: null
+    samples_per_object: 2
+
+  # Use all 5 physical attributes (static traps)
+  trap_losses:
+    position: {static: true, dynamic: false}
+    scale: {static: true, dynamic: false}
+    opacity:
+      static: true
+      dynamic: false
+      # Tail mode: penalize only top-k opacities (avoid sparse escape).
+      topk_frac: 0.001
+    rotation: {static: true, dynamic: false}
+    color: {static: true, dynamic: false}
+
+  # Bottleneck aggregation: keep pushing the weakest trap (first-order).
+  trap_aggregation:
+    method: bottleneck_logsumexp
+    tau: 0.25
+
+  # Anti-shortcut: HARD freeze the Gaussian head (conv.*).
+  # This forces trap to be encoded inside UNet.
+  antishortcut:
+    freeze_head: true
+
+  # Disable AWP in candidate A to keep compute low; head is frozen anyway.
+  awp:
+    enabled: false
+
+  # Stronger trap / weaker distill than the smoke run.
+  # We want "work first" against fine-tune recovery.
+  lambda_trap: 10.0
+  lambda_distill: 10.0
+  distill_loss_order: 1
+
+  # Neighbor robustness (disabled in candidate A).
+  robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
+  input_noise: {enabled: false, noise_scale: 0.24, warmup_steps: 0}
+
+  gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
+
+  eval:
+    eval_every_steps: 999999
+    attack_epochs: 1
+    attack_lr: 0.00005
+    num_render_samples: 1
+
+misc:
+  workspace: ./output/workspace_immunize_freezehead_A
+  seed: 42

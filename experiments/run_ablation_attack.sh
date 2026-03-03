@@ -2,16 +2,18 @@
 # 攻击实验消融（Section 5.3）：测试类别=coconut
 # 包含所有消融实验，优先分配语义偏转攻击
 #
-# 单卡顺序执行（不做 GPU 空闲检查）
 # 用法:
-#   bash experiments/run_ablation_attack.sh            # 默认 GPU=0
-#   bash experiments/run_ablation_attack.sh 0          # 指定 GPU=0
-#   bash experiments/run_ablation_attack.sh 0,1,2,3    # 兼容旧 GPU_LIST，仅使用第一个 GPU
+#   bash experiments/run_ablation_attack.sh            # 默认 GPU=0 (单卡顺序执行)
+#   bash experiments/run_ablation_attack.sh 0          # 指定 GPU=0 (单卡顺序执行)
+#   bash experiments/run_ablation_attack.sh 0,1        # 多卡并行: 2张卡动态调度任务
 
 set -e
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+# 加载GPU调度器
+source experiments/lib/gpu_scheduler.sh
 
 # Prefer project venv python if available; allow override via $PYTHON
 if [[ -z "${PYTHON:-}" ]]; then
@@ -27,25 +29,9 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
-# 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
-GPU_ID="${GPU_ID:-${GPU:-0}}"
-if [ $# -ge 1 ]; then
-    GPU_ARG="$1"
-    if [[ "${GPU_ARG}" == *","* ]]; then
-        GPU_ID="${GPU_ARG%%,*}"
-        echo "检测到 GPU_LIST='${GPU_ARG}'，单卡模式仅使用第一个 GPU: ${GPU_ID}"
-    else
-        GPU_ID="${GPU_ARG}"
-    fi
-fi
-
-if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
-    echo "GPU_ID 必须是非负整数，当前: '${GPU_ID}'"
-    exit 1
-fi
-
-GPU="${GPU_ID}"
-echo "单卡顺序执行: GPU=${GPU}"
+# 解析GPU列表
+GPU_LIST="${1:-0}"
+echo "GPU列表: ${GPU_LIST}"
 
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -117,7 +103,8 @@ echo ""
 # ============================================================================
 
 run_task() {
-    local task_idx=$1
+    local gpu=$1
+    local task_idx=$2
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r section tag params <<< "$task"
@@ -125,10 +112,10 @@ run_task() {
     local log="${OUTPUT_ROOT}/${section}_${tag}.log"
     local output_dir="${OUTPUT_ROOT}/${section}_${tag}"
 
-    echo "[GPU ${GPU}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${section} - ${tag}"
+    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${section} - ${tag}"
 
     if {
-        echo "=== GPU ${GPU}: ${section} - ${tag} ==="
+        echo "=== GPU ${gpu}: ${section} - ${tag} ==="
         echo "Params: ${params}"
         echo ""
 
@@ -141,7 +128,7 @@ run_task() {
             extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
         fi
         "${PYTHON}" script/run_pipeline.py \
-            --gpu "${GPU}" \
+            --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
             --defense_epochs "${DEFENSE_EPOCHS}" \
@@ -151,12 +138,12 @@ run_task() {
             --output_dir "${output_dir}" \
             "${extra_args[@]}"
     } > "${log}" 2>&1; then
-        echo "[GPU ${GPU}] 完成: ${section} - ${tag}"
+        echo "[GPU ${gpu}] 完成: ${section} - ${tag}"
         return 0
     fi
 
     exit_code=$?
-    echo "[GPU ${GPU}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
+    echo "[GPU ${gpu}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
     return "${exit_code}"
 }
 
@@ -164,17 +151,25 @@ run_task() {
 # 启动所有任务
 # ============================================================================
 
+# 初始化GPU池并提交所有任务
+init_gpu_pool "${GPU_LIST}"
+
 echo ""
-echo "顺序执行已启动：单卡逐个任务运行（不检查 GPU 空闲）"
+if [[ "${SCHEDULER_ENABLED}" == "true" ]]; then
+    echo "多卡并行已启动：动态调度 ${TOTAL_TASKS} 个任务到 GPU [${GPU_LIST}]"
+else
+    echo "单卡顺序执行已启动：逐个任务运行"
+fi
 echo "查看进度: tail -f ${OUTPUT_ROOT}/*.log"
 echo ""
 
-FAILED=0
 for i in $(seq 0 $((TOTAL_TASKS-1))); do
-    if ! run_task "${i}"; then
-        FAILED=$((FAILED + 1))
-    fi
+    submit_task run_task "${i}"
 done
+
+wait_all_tasks
+
+FAILED=${#FAILED_TASKS[@]}
 
 echo ""
 echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"

@@ -158,7 +158,12 @@ class OpacityCollapseLoss(nn.Module):
 
     目标：让 Gaussian 的不透明度趋向 0（变得不可见）
 
-    L = mean(log(clamp(opacity, ε, 1)))
+    基础形式:
+        L = mean(log(clamp(opacity, ε, 1)))
+
+    为了避免“少量高 opacity 高斯”作为逃逸通道（攻击微调时优先修复少数关键高斯即可恢复可见性），
+    支持 tail 模式：只惩罚每个样本中最大的 top-k 个 opacity：
+        L_tail = mean(log(topk(opacity, k)))
 
     opacity ∈ (0, 1)（sigmoid 后），log(opacity) ∈ (-∞, 0)
     最小化 L → opacity → 0 → Gaussian 不可见
@@ -174,9 +179,11 @@ class OpacityCollapseLoss(nn.Module):
     - ΔLPIPS 仅 +0.0002，防御无效
     """
 
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-6, topk_frac: float | None = None, topk_k: int | None = None):
         super().__init__()
         self.epsilon = epsilon
+        self.topk_frac = topk_frac
+        self.topk_k = topk_k
 
     def forward(self, gaussians):
         """
@@ -190,7 +197,32 @@ class OpacityCollapseLoss(nn.Module):
         opacity = gaussians[..., 3:4]  # [B, N, 1]
         opacity = _sanitize_finite(opacity, clamp_abs=1.0)
         opacity = torch.clamp(opacity, min=self.epsilon, max=1.0)
-        loss = torch.log(opacity).mean()
+
+        # [B, N]
+        opacity_flat = opacity.squeeze(-1)
+        B, N = opacity_flat.shape
+
+        # Tail mode: penalize only the largest opacities to avoid sparse escape.
+        k = None
+        if self.topk_k is not None:
+            try:
+                k = int(self.topk_k)
+            except Exception:
+                k = None
+        elif self.topk_frac is not None:
+            try:
+                frac = float(self.topk_frac)
+            except Exception:
+                frac = None
+            if frac is not None and frac > 0:
+                k = int(round(N * frac))
+
+        if k is not None and k > 0:
+            k = max(1, min(N, k))
+            top_vals = torch.topk(opacity_flat, k=k, dim=-1, largest=True, sorted=False).values
+            loss = torch.log(top_vals).mean()
+        else:
+            loss = torch.log(opacity_flat).mean()
         return loss
 
 
