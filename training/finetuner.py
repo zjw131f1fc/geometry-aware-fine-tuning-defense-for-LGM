@@ -499,16 +499,119 @@ def run_attack(config, target_train_loader, source_val_loader,
     if model_resume_override:
         attack_config['model']['resume'] = model_resume_override
     model_mgr = ModelManager(attack_config)
-    model_mgr.setup(device='cuda')
-    model = model_mgr.model
-    if model_state_dict_override is not None:
+    training_cfg = config.get('training', {}) or {}
+    attack_cfg = config.get('attack', {}) or {}
+    # Attack fine-tune mode: allow attack.mode override, otherwise inherit training.mode.
+    attack_mode = str(attack_cfg.get('mode') or training_cfg.get('mode', 'full') or 'full').lower().strip()
+    apply_lora = (attack_mode == 'lora')
+
+    override_loaded = False
+    override_keys = list(getattr(model_state_dict_override, "keys", lambda: [])()) if (model_state_dict_override is not None) else []
+    override_looks_like_peft = (
+        any(str(k).startswith("base_model.") for k in override_keys)
+        or any(".lora_" in str(k) for k in override_keys)
+        or any(".base_layer." in str(k) for k in override_keys)
+    )
+
+    # Important: if the attack model is LoRA-wrapped, load a *vanilla* (non-PEFT) state_dict BEFORE applying LoRA.
+    # Otherwise qkv/proj modules are already replaced by PEFT layers (base_layer/lora_A/lora_B) and keys won't match.
+    if apply_lora and (model_state_dict_override is not None) and (not override_looks_like_peft):
+        model_mgr.setup(apply_lora=False, device='cuda')
+        model = model_mgr.model
+
         raw = model
         while hasattr(raw, 'module'):
             raw = raw.module
         missing, unexpected = raw.load_state_dict(model_state_dict_override, strict=False)
+        override_loaded = True
+
         if missing or unexpected:
-            print(f"  [run_attack] 警告: state_dict 覆盖非严格匹配 "
+            def _summarize_keys(keys, max_prefixes: int = 8):
+                from collections import Counter
+                if not keys:
+                    return ""
+                c = Counter()
+                for k in keys:
+                    prefix = str(k).split('.', 1)[0]
+                    c[prefix] += 1
+                parts = [f"{p}:{n}" for p, n in c.most_common(max_prefixes)]
+                if len(c) > max_prefixes:
+                    parts.append(f"...(+{len(c) - max_prefixes} prefixes)")
+                return ", ".join(parts)
+
+            lpips_missing = bool(missing) and all(("lpips_loss." in str(k)) for k in missing)
+            level = "提示" if (lpips_missing and not unexpected) else "警告"
+
+            print(f"  [run_attack] {level}: state_dict 覆盖非严格匹配 "
                   f"(missing={len(missing)}, unexpected={len(unexpected)})")
+            if missing:
+                print(f"    missing prefixes: {_summarize_keys(missing)}")
+                print(f"    missing (first 12): {list(missing)[:12]}")
+            if unexpected:
+                print(f"    unexpected prefixes: {_summarize_keys(unexpected)}")
+                print(f"    unexpected (first 12): {list(unexpected)[:12]}")
+
+        # Apply LoRA after loading base weights.
+        model_mgr.apply_lora()
+        model = model_mgr.model
+    else:
+        model_mgr.setup(device='cuda')
+        model = model_mgr.model
+
+    if (model_state_dict_override is not None) and (not override_loaded):
+        # NOTE: When attack is in LoRA mode, `model` is a PEFT wrapper (PeftModel).
+        # Defense training produces a *vanilla* LGM state_dict without "base_model.model." prefixes.
+        # In that case we must load into the wrapped base model, not the PEFT wrapper.
+        raw = model
+        while hasattr(raw, 'module'):
+            raw = raw.module
+
+        override_keys = list(getattr(model_state_dict_override, "keys", lambda: [])())
+        has_peft_prefix = any(str(k).startswith("base_model.") for k in override_keys)
+
+        load_target = raw
+        if (not has_peft_prefix) and hasattr(raw, "base_model"):
+            base = getattr(raw, "base_model", None)
+            if hasattr(base, "model") and hasattr(base.model, "load_state_dict"):
+                load_target = base.model
+            else:
+                # Fallback: PEFT exposes get_base_model() in most versions.
+                gbm = getattr(raw, "get_base_model", None)
+                if callable(gbm):
+                    try:
+                        load_target = gbm()
+                    except Exception:
+                        load_target = raw
+
+        missing, unexpected = load_target.load_state_dict(model_state_dict_override, strict=False)
+        if missing or unexpected:
+            def _summarize_keys(keys, max_prefixes: int = 8):
+                from collections import Counter
+                if not keys:
+                    return ""
+                c = Counter()
+                for k in keys:
+                    prefix = str(k).split('.', 1)[0]
+                    c[prefix] += 1
+                parts = [f"{p}:{n}" for p, n in c.most_common(max_prefixes)]
+                if len(c) > max_prefixes:
+                    parts.append(f"...(+{len(c) - max_prefixes} prefixes)")
+                return ", ".join(parts)
+
+            # LGM overrides state_dict() to intentionally drop lpips_loss weights.
+            # This commonly leads to a fixed number of missing keys when loading into a fresh model
+            # that has lpips_loss instantiated. This is expected and harmless.
+            lpips_missing = bool(missing) and all(("lpips_loss." in str(k)) for k in missing)
+            level = "提示" if (lpips_missing and not unexpected) else "警告"
+
+            print(f"  [run_attack] {level}: state_dict 覆盖非严格匹配 "
+                  f"(missing={len(missing)}, unexpected={len(unexpected)})")
+            if missing:
+                print(f"    missing prefixes: {_summarize_keys(missing)}")
+                print(f"    missing (first 12): {list(missing)[:12]}")
+            if unexpected:
+                print(f"    unexpected prefixes: {_summarize_keys(unexpected)}")
+                print(f"    unexpected (first 12): {list(unexpected)[:12]}")
 
     training_cfg = config['training']
     print(f"  [run_attack] 实际使用的训练参数: lr={training_cfg['lr']}, "
@@ -546,10 +649,384 @@ def run_attack(config, target_train_loader, source_val_loader,
                              os.path.join(save_dir, 'source_renders'),
                              prefix='source_', num_samples=num_render)
 
+    # ---------------------------------------------------------------------
+    # Optional debug instrumentation (params / trap metrics during attack)
+    # ---------------------------------------------------------------------
+    debug_cfg = (config.get('attack', {}).get('debug', {}) or {})
+    debug_enabled = bool(debug_cfg.get('enabled', False))
+    debug_track_params = debug_cfg.get('track_params') or [
+        # Head (small, attacker-friendly)
+        'conv.weight',
+        'conv.bias',
+    ]
+    debug_track_trap_metrics = bool(debug_cfg.get('trap_metrics', True))
+    debug_track_features = bool(debug_cfg.get('feature_stats', True))
+
+    # Optional: capture UNet output features (conv input) to diagnose "head-only shortcut" behavior.
+    # This is cheap and helps verify whether a feature-space defense is actually active / recoverable.
+    feature_hook_handle = None
+    if debug_enabled and debug_track_features:
+        try:
+            model._debug_conv_in = None
+
+            def _capture_conv_input(module, input, output):
+                model._debug_conv_in = input[0]
+
+            feature_hook_handle = model.conv.register_forward_hook(_capture_conv_input)
+            print("  [Debug] Feature hook enabled: conv input (UNet output)")
+        except Exception as e:
+            feature_hook_handle = None
+            print(f"  [Debug] Feature hook disabled due to error: {type(e).__name__}: {e}")
+
+    # Resolve parameters to track (keep this small; copying large tensors each eval is expensive).
+    tracked_param_refs = {}
+    tracked_param_live = {}
+    if debug_enabled:
+        name_to_param = {n: p for n, p in model.named_parameters()}
+        for name in debug_track_params:
+            p = name_to_param.get(name)
+            resolved_name = name
+            if p is None:
+                # PEFT (LoRA) wraps the base model under "base_model.model.*".
+                cand = f"base_model.model.{name}"
+                p = name_to_param.get(cand)
+                if p is not None:
+                    resolved_name = cand
+            if p is None:
+                continue
+            tracked_param_live[resolved_name] = p
+            tracked_param_refs[resolved_name] = p.detach().float().cpu().clone()
+        print(f"  [Debug] Attack instrumentation enabled: track_params={list(tracked_param_live.keys())}")
+
+    # Prepare a fixed batch for trap metrics (no rendering; cheap compared to Evaluator source-eval).
+    trap_fns = None
+    diag_input_images = None
+    diag_batch_full = None
+    if debug_enabled and debug_track_trap_metrics:
+        try:
+            from methods.trap_losses import (
+                PositionCollapseLoss,
+                ScaleAnisotropyLoss,
+                ScaleMagnitudeCollapseLoss,
+                OpacityCollapseLoss,
+                OpacityLogitCollapseLoss,
+                OpacityLogitHybridCollapseLoss,
+                RotationAnisotropyLoss,
+                ColorCollapseLoss,
+            )
+
+            defense_trap_cfg = (config.get('defense', {}).get('trap_losses', {}) or {})
+            trap_fns = {}
+            if defense_trap_cfg.get('position', {}).get('static', False):
+                trap_fns['trap_position'] = PositionCollapseLoss().to('cuda')
+            if defense_trap_cfg.get('scale', {}).get('static', False):
+                scfg = defense_trap_cfg.get('scale', {}) or {}
+                smode = str(scfg.get('mode', 'anisotropy')).lower().strip()
+                if smode in ('collapse', 'magnitude', 'mag', 'magnitude_collapse', 'log'):
+                    trap_fns['trap_scale'] = ScaleMagnitudeCollapseLoss(
+                        epsilon=float(scfg.get('epsilon', 1e-8) or 1e-8)
+                    ).to('cuda')
+                else:
+                    trap_fns['trap_scale'] = ScaleAnisotropyLoss().to('cuda')
+            if defense_trap_cfg.get('opacity', {}).get('static', False):
+                ocfg = defense_trap_cfg.get('opacity', {}) or {}
+                mode = str(ocfg.get('mode', 'log')).lower().strip()
+                if mode in ('logit_hybrid', 'hybrid_logit', 'hybrid'):
+                    trap_fns['trap_opacity'] = OpacityLogitHybridCollapseLoss(
+                        epsilon=float(ocfg.get('epsilon', 1e-6) or 1e-6),
+                        topk_frac=ocfg.get('topk_frac'),
+                        topk_k=ocfg.get('topk_k'),
+                        bulk_weight=float(ocfg.get('bulk_weight', 1.0) or 1.0),
+                        tail_weight=float(ocfg.get('tail_weight', 1.0) or 1.0),
+                    ).to('cuda')
+                else:
+                    use_logit = bool(ocfg.get('use_logit', False)) or (mode in ('logit', 'logits'))
+                    opa_cls = OpacityLogitCollapseLoss if use_logit else OpacityCollapseLoss
+                    trap_fns['trap_opacity'] = opa_cls(
+                        epsilon=float(ocfg.get('epsilon', 1e-6) or 1e-6),
+                        topk_frac=ocfg.get('topk_frac'),
+                        topk_k=ocfg.get('topk_k'),
+                    ).to('cuda')
+            if defense_trap_cfg.get('rotation', {}).get('static', False):
+                trap_fns['trap_rotation'] = RotationAnisotropyLoss().to('cuda')
+            if defense_trap_cfg.get('color', {}).get('static', False):
+                trap_fns['trap_color'] = ColorCollapseLoss().to('cuda')
+
+            # Fallback: if config has no active traps, still track the 4 built-in diagnostics.
+            if not trap_fns:
+                trap_fns = {
+                    'trap_position': PositionCollapseLoss().to('cuda'),
+                    'trap_scale': ScaleAnisotropyLoss().to('cuda'),
+                    'trap_opacity': OpacityCollapseLoss().to('cuda'),
+                    'trap_rotation': RotationAnisotropyLoss().to('cuda'),
+                }
+
+            diag_loader = target_eval_loader if (is_semantic_deflection and target_eval_loader is not None) else target_train_loader
+            diag_batch = next(iter(diag_loader))
+            diag_batch_full = diag_batch
+            diag_input_images = diag_batch['input_images'].to('cuda')
+            print(f"  [Debug] Trap metrics enabled: keys={list(trap_fns.keys())}, "
+                  f"diag_batch_B={diag_input_images.shape[0]}")
+        except Exception as e:
+            trap_fns = None
+            diag_input_images = None
+            diag_batch_full = None
+            print(f"  [Debug] Trap metrics disabled due to error: {type(e).__name__}: {e}")
+
     step_history = []
     global_step = 0
     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
     interval_count = 0
+
+    # ---------------------------------------------------------------------
+    # Pre-attack diagnostics (helps verify defense transfer / initial state)
+    # ---------------------------------------------------------------------
+    pre_eval_cfg = (config.get('attack', {}).get('pre_eval', {}) or {})
+    pre_eval_enabled = bool(pre_eval_cfg.get('enabled', False)) or debug_enabled
+    pre_eval_render_metrics = bool(pre_eval_cfg.get('render_metrics', False))
+    pre_eval_num_samples = pre_eval_cfg.get('num_samples', None)
+    if pre_eval_num_samples is not None:
+        try:
+            pre_eval_num_samples = int(pre_eval_num_samples)
+        except Exception:
+            pre_eval_num_samples = None
+
+    if pre_eval_enabled:
+        pre_diag = {'step': 0, 'epoch': 0}
+        try:
+            # (1) Fast Gaussian-space stats on the fixed diag batch (no rendering)
+            if (diag_input_images is not None) and (trap_fns is not None):
+                model.eval()
+                with torch.no_grad():
+                    ga0 = model.forward_gaussians(diag_input_images).float()
+                    opacity0 = ga0[..., 3:4].clamp(min=1e-12, max=1.0)
+                    pre_diag['gaussian_opacity_mean'] = float(opacity0.mean().item())
+                    pre_diag['gaussian_pos_spread'] = float(ga0[..., 0:3].std(dim=1).mean().item())
+                    pre_diag['gaussian_scale_mean'] = float(ga0[..., 4:7].mean().item())
+                    try:
+                        # Opacity distribution (helps detect "near-zero but still trainable" vs "deep dead-zone").
+                        op_flat = opacity0.reshape(-1)
+                        pre_diag['gaussian_opacity_min'] = float(op_flat.min().item())
+                        # Quantiles are small tensors; OK in no_grad.
+                        for q in (0.01, 0.05, 0.10, 0.50, 0.90, 0.95, 0.99):
+                            pre_diag[f'gaussian_opacity_p{int(q*100):02d}'] = float(
+                                torch.quantile(op_flat, q).item()
+                            )
+                        # Sigmoid derivative proxy (gradient attenuation from opacity->raw logit).
+                        deriv = opacity0 * (1.0 - opacity0)
+                        pre_diag['gaussian_opacity_sigmoid_deriv_mean'] = float(deriv.mean().item())
+                        # Logit (≈ raw opacity logit when epsilon is tiny).
+                        logit = torch.log(opacity0) - torch.log1p(-opacity0)
+                        pre_diag['gaussian_opacity_logit_mean'] = float(logit.mean().item())
+                        pre_diag['gaussian_opacity_logit_min'] = float(logit.min().item())
+                    except Exception as e:
+                        pre_diag['gaussian_opacity_stats_error'] = f"{type(e).__name__}: {e}"
+                    for k, fn in trap_fns.items():
+                        pre_diag[f'pre_{k}'] = float(fn(ga0).item())
+
+                    # Optional: feature stats (conv input) if hook is enabled.
+                    feat0 = getattr(model, "_debug_conv_in", None)
+                    if feat0 is not None:
+                        f0 = feat0.detach().float()
+                        pre_diag['feature_spatial_var'] = float(
+                            f0.var(dim=(-2, -1), unbiased=False).mean().item()
+                        )
+                        pre_diag['feature_mean_abs'] = float(f0.abs().mean().item())
+
+                print(f"  [Pre-Attack] Gaussian stats (fixed batch): "
+                      f"opacity_mean={pre_diag['gaussian_opacity_mean']:.4f}, "
+                      f"pos_spread={pre_diag['gaussian_pos_spread']:.4f}, "
+                      f"scale_mean={pre_diag['gaussian_scale_mean']:.6f}")
+                if 'feature_spatial_var' in pre_diag:
+                    print(f"  [Pre-Attack] Feature stats (conv input): "
+                          f"spatial_var={pre_diag['feature_spatial_var']:.4f}, "
+                          f"mean_abs={pre_diag.get('feature_mean_abs', 0.0):.4f}")
+                trap_items = [(k, pre_diag.get(f'pre_{k}')) for k in (trap_fns or {}).keys()]
+                trap_items = [(k, v) for k, v in trap_items if v is not None]
+                if trap_items:
+                    print("  [Pre-Attack] Trap metrics (fixed batch): " +
+                          ", ".join([f"{k}={v:.4f}" for k, v in trap_items]))
+
+            # (1.5) Optional: gradient norms of the *attack loss* at step 0 (one batch).
+            grad_cfg = (debug_cfg.get('grad_stats', {}) or {}) if debug_enabled else {}
+            grad_enabled = grad_cfg.get('enabled', None)
+            if grad_enabled is None:
+                grad_enabled = bool(debug_enabled)
+            grad_enabled = bool(grad_enabled)
+
+            if grad_enabled:
+                import math
+                grad_batch = diag_batch_full
+                if grad_batch is None:
+                    grad_batch = next(iter(target_train_loader))
+
+                # Compute gradients once (no optimizer step; does not change model weights).
+                model.train()
+                finetuner.optimizer.zero_grad()
+
+                data = finetuner._prepare_data(grad_batch)
+
+                mp = str(getattr(finetuner, "mixed_precision", "bf16")).lower()
+                if mp == 'bf16':
+                    with autocast('cuda', dtype=torch.bfloat16):
+                        results = model.forward(data, step_ratio=1.0)
+                elif mp == 'fp16':
+                    with autocast('cuda', dtype=torch.float16):
+                        results = model.forward(data, step_ratio=1.0)
+                else:
+                    results = model.forward(data, step_ratio=1.0)
+
+                loss_attack = results['loss']
+                ga_pred = results.get('gaussians')
+                if isinstance(ga_pred, torch.Tensor):
+                    try:
+                        ga_pred.retain_grad()
+                    except Exception:
+                        ga_pred = None
+
+                loss_scaled = loss_attack / max(int(finetuner.gradient_accumulation_steps), 1)
+                loss_scaled.backward()
+
+                # Group gradients by parameter name.
+                target_layer_keys = (config.get('defense', {}).get('target_layers') or [])
+                target_layer_keys = [str(k) for k in target_layer_keys if k]
+
+                def _sum_grad_sq(match_fn):
+                    s = 0.0
+                    for name, p in model.named_parameters():
+                        if not p.requires_grad:
+                            continue
+                        if not match_fn(name, p):
+                            continue
+                        g = p.grad
+                        if g is None:
+                            continue
+                        s += float(g.detach().float().pow(2).sum().item())
+                    return s
+
+                total_sq = _sum_grad_sq(lambda _n, _p: True)
+                head_sq = _sum_grad_sq(lambda n, _p: n.startswith('conv.'))
+                unet_sq = _sum_grad_sq(lambda n, _p: n.startswith('unet.'))
+                tl_sq = _sum_grad_sq(lambda n, _p: any(k in n for k in target_layer_keys))
+
+                pre_diag['pre_attack_loss'] = float(loss_attack.detach().float().item())
+                pre_diag['grad_total_norm'] = float(math.sqrt(max(total_sq, 0.0)))
+                pre_diag['grad_head_norm'] = float(math.sqrt(max(head_sq, 0.0)))
+                pre_diag['grad_unet_norm'] = float(math.sqrt(max(unet_sq, 0.0)))
+                pre_diag['grad_target_layers_norm'] = float(math.sqrt(max(tl_sq, 0.0)))
+
+                head_frac = (head_sq / total_sq) if total_sq > 0 else 0.0
+                tl_frac = (tl_sq / total_sq) if total_sq > 0 else 0.0
+                pre_diag['grad_head_frac'] = float(head_frac)
+                pre_diag['grad_target_layers_frac'] = float(tl_frac)
+
+                print(f"  [Pre-Attack][Grad] loss={pre_diag['pre_attack_loss']:.4f}, "
+                      f"||g||={pre_diag['grad_total_norm']:.2f}, "
+                      f"head={pre_diag['grad_head_norm']:.2f} ({head_frac:.1%}), "
+                      f"target_layers={pre_diag['grad_target_layers_norm']:.2f} ({tl_frac:.1%})")
+
+                # Extra: gradient on Gaussian outputs (what attributes are easiest to "repair"?)
+                try:
+                    if isinstance(ga_pred, torch.Tensor) and isinstance(ga_pred.grad, torch.Tensor):
+                        g = ga_pred.grad.detach().float()
+                        ga = ga_pred.detach().float()
+
+                        def _gn(slice_):
+                            return float(g[..., slice_].norm().item())
+
+                        pre_diag['gaussian_grad_norm'] = float(g.norm().item())
+                        pre_diag['gaussian_grad_pos_norm'] = _gn(slice(0, 3))
+                        pre_diag['gaussian_grad_opacity_norm'] = _gn(slice(3, 4))
+                        pre_diag['gaussian_grad_scale_norm'] = _gn(slice(4, 7))
+                        pre_diag['gaussian_grad_rotation_norm'] = _gn(slice(7, 11))
+                        pre_diag['gaussian_grad_color_norm'] = _gn(slice(11, 14))
+
+                        # Estimate "raw opacity logit" gradient magnitude: dL/draw = dL/do * o*(1-o)
+                        o = ga[..., 3:4].clamp(min=1e-12, max=1.0)
+                        go = g[..., 3:4]
+                        graw = go * (o * (1.0 - o))
+                        pre_diag['gaussian_grad_opacity_raw_est_norm'] = float(graw.norm().item())
+
+                        # Coverage of deep-dead-zone (very small opacities)
+                        op_flat = o.reshape(-1)
+                        pre_diag['gaussian_opacity_lt_5e-3_frac'] = float((op_flat < 5e-3).float().mean().item())
+                        pre_diag['gaussian_opacity_lt_1e-3_frac'] = float((op_flat < 1e-3).float().mean().item())
+                        pre_diag['gaussian_opacity_lt_1e-4_frac'] = float((op_flat < 1e-4).float().mean().item())
+                        pre_diag['gaussian_opacity_sigmoid_deriv_mean_gradbatch'] = float(
+                            (o * (1.0 - o)).mean().item()
+                        )
+
+                        # Small console hint (keep it short).
+                        print(f"  [Pre-Attack][GGrad] ||dL/dg||={pre_diag['gaussian_grad_norm']:.2f}, "
+                              f"opacity_raw_est={pre_diag['gaussian_grad_opacity_raw_est_norm']:.2e}, "
+                              f"opa<1e-3={pre_diag['gaussian_opacity_lt_1e-3_frac']:.1%}")
+                except Exception as e:
+                    pre_diag['gaussian_grad_stats_error'] = f"{type(e).__name__}: {e}"
+
+                # Extra: top-k gradient parameters/groups (helps diagnose shortcut channels)
+                try:
+                    from collections import defaultdict
+
+                    grad_items = []
+                    for name, p in model.named_parameters():
+                        if not p.requires_grad:
+                            continue
+                        g = p.grad
+                        if g is None:
+                            continue
+                        gn = float(g.detach().float().norm().item())
+                        if gn <= 0:
+                            continue
+                        grad_items.append((gn, name, int(p.numel())))
+
+                    grad_items.sort(key=lambda x: x[0], reverse=True)
+
+                    top_params = []
+                    for gn, name, numel in grad_items[:10]:
+                        top_params.append({'name': name, 'norm': float(gn), 'numel': int(numel)})
+                    if top_params:
+                        pre_diag['top_grad_params'] = top_params
+
+                    group_sq = defaultdict(float)
+                    group_numel = defaultdict(int)
+                    for gn, name, numel in grad_items:
+                        parts = name.split('.')
+                        key = '.'.join(parts[:3]) if len(parts) >= 3 else parts[0]
+                        group_sq[key] += float(gn) * float(gn)
+                        group_numel[key] += int(numel)
+                    group_items = [
+                        (math.sqrt(max(sq, 0.0)), key, int(group_numel.get(key, 0)))
+                        for key, sq in group_sq.items()
+                    ]
+                    group_items.sort(key=lambda x: x[0], reverse=True)
+                    top_groups = []
+                    for gn, key, numel in group_items[:10]:
+                        top_groups.append({'name': key, 'norm': float(gn), 'numel': int(numel)})
+                    if top_groups:
+                        pre_diag['top_grad_groups'] = top_groups
+                        pretty = ', '.join([f"{g['name']}:{g['norm']:.2f}" for g in top_groups[:5]])
+                        print(f"  [Pre-Attack][GradTop] {pretty}")
+                except Exception as e:
+                    pre_diag['top_grad_error'] = f"{type(e).__name__}: {e}"
+
+                finetuner.optimizer.zero_grad()
+
+            # (2) Optional: masked PSNR/LPIPS before any optimization (rendering-based)
+            if pre_eval_render_metrics:
+                pre_loader = target_eval_loader if (is_semantic_deflection and target_eval_loader is not None) else target_train_loader
+                pre_target = evaluator.evaluate_on_loader(pre_loader, num_samples=pre_eval_num_samples)
+                pre_diag['masked_psnr'] = float(pre_target.get('psnr', 0.0))
+                pre_diag['masked_lpips'] = float(pre_target.get('lpips', 0.0))
+                n_str = pre_eval_num_samples if pre_eval_num_samples is not None else 'all'
+                print(f"  [Pre-Attack] Target (masked) quality: PSNR={pre_diag['masked_psnr']:.2f}, "
+                      f"LPIPS={pre_diag['masked_lpips']:.4f} (num_samples={n_str})")
+
+        except Exception as e:
+            print(f"  [Pre-Attack] Diagnostics skipped due to error: {type(e).__name__}: {e}")
+
+        # Only record if we actually captured something beyond (step, epoch).
+        if len(pre_diag) > 2:
+            step_history.append(pre_diag)
 
     # 计算总优化器步数
     if use_steps:
@@ -616,6 +1093,38 @@ def run_attack(config, target_train_loader, source_val_loader,
                         'masked_lpips': interval_masked_lpips / interval_count if interval_count > 0 else 0,
                         'masked_psnr': interval_masked_psnr / interval_count if interval_count > 0 else 0,
                     }
+
+                    # Debug: parameter deltas (small, CPU-safe)
+                    if debug_enabled and tracked_param_live:
+                        for pname, p in tracked_param_live.items():
+                            ref = tracked_param_refs.get(pname)
+                            if ref is None:
+                                continue
+                            cur = p.detach().float().cpu()
+                            delta = cur - ref
+                            key = pname.replace('.', '_')
+                            metrics[f'param_{key}_norm'] = float(cur.norm().item())
+                            metrics[f'param_{key}_delta_norm'] = float(delta.norm().item())
+
+                    # Debug: Gaussian-space trap metrics on a fixed batch (no rendering)
+                    if debug_enabled and (trap_fns is not None) and (diag_input_images is not None):
+                        try:
+                            with torch.no_grad():
+                                g = model.forward_gaussians(diag_input_images).float()
+                                metrics['gaussian_opacity_mean'] = float(g[..., 3].mean().item())
+                                metrics['gaussian_scale_mean'] = float(g[..., 4:7].mean().item())
+                                metrics['gaussian_pos_std'] = float(g[..., 0:3].std().item())
+                                for k, fn in trap_fns.items():
+                                    metrics[k] = float(fn(g).item())
+                                feat = getattr(model, "_debug_conv_in", None)
+                                if feat is not None:
+                                    f = feat.detach().float()
+                                    metrics['feature_spatial_var'] = float(
+                                        f.var(dim=(-2, -1), unbiased=False).mean().item()
+                                    )
+                                    metrics['feature_mean_abs'] = float(f.abs().mean().item())
+                        except Exception as e:
+                            metrics['debug_trap_error'] = f"{type(e).__name__}: {e}"
 
                     # 轻量：每次 step-eval 同时评估 source（用于 plot_pipeline_results 的 Source 曲线）
                     try:
@@ -756,6 +1265,14 @@ def run_attack(config, target_train_loader, source_val_loader,
         target_metrics['gaussian_diag'] = gaussian_diag
     else:
         target_metrics['gaussian_diag'] = gaussian_diag
+
+    # Cleanup debug hooks (important when running multiple phases in a single process).
+    if feature_hook_handle is not None:
+        try:
+            feature_hook_handle.remove()
+        except Exception:
+            pass
+        feature_hook_handle = None
 
     del finetuner, evaluator, model, model_mgr
     torch.cuda.empty_cache()

@@ -1,0 +1,164 @@
+# GeoTrap v21 (Plant, transfer-focused) - selective finetune only the UNet output-side (tail) layers (~8M params).
+#
+# Motivation:
+# - v14/v15/v18 unfreeze ~96% params, which either kills retention or still gets recovered quickly.
+# - Try a more surgical defense: only finetune the UNet tail blocks closest to Gaussian prediction.
+#   This keeps retention high, while still allowing us to plant a transferable trap into features
+#   that the head(conv) cannot fully undo.
+#
+# Layer set (approx 8.2M params, ~1.9%):
+# - unet.up_blocks.3
+# - unet.up_blocks.4
+# - unet.norm_out
+# - unet.conv_out
+#
+# Suggested quick repro:
+#   ../venvs/3d-defense/bin/python -u script/run_pipeline.py --gpu 0 \
+#     --config configs/config_geotrap_v21_plant_transfer_tail8m.yaml \
+#     --attack_steps 60 --defense_steps 60 --eval_every_steps 10 --num_render 0 \
+#     --defense_cache_mode none --skip_baseline \
+#     --output_dir output/_analysis_v21_tail8m_a60_d60
+
+model:
+  size: big
+  resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  device: cuda
+
+data:
+  root: ./datas
+  gso:
+    render_dir: GSO/render_same_pose_all_50v_800_norm3.73
+
+  source:
+    dataset: objaverse
+    max_samples: 400
+    samples_per_object: 2
+
+  target:
+    dataset: gso
+    categories: [plant]
+
+  object_split:
+    shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
+    plant: [2, 4, 8, 9]
+    dish: [1, 3, 7, 9, 13]
+    bowl: [0, 2, 6, 10]
+    box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
+  attack_samples_per_category: 5
+
+  source_ratio: 0.7
+  source_val_ratio: 0.1
+  val_samples: 20
+
+  num_workers: 4
+  view_selector: orthogonal
+  angle_offset: 0.0
+  num_supervision_views: 6
+  samples_per_object: 5
+
+training:
+  mode: full
+  batch_size: 2
+  lr: 0.00003
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  gradient_accumulation_steps: 2
+  lambda_lpips: 1.0
+  mixed_precision: bf16
+
+  optimizer: adamw
+  optimizer_betas: [0.9, 0.95]
+  optimizer_momentum: 0.9
+
+  attack_steps: 150
+  attack_epochs: null
+  defense_steps: 150
+  defense_epochs: null
+
+attack:
+  scenario: malicious_content
+  mode: null
+  malicious_content:
+    malicious_categories: [plant]
+  pre_eval:
+    enabled: true
+    render_metrics: true
+    num_samples: 10
+  debug:
+    enabled: true
+    track_params: [conv.weight, conv.bias]
+    trap_metrics: true
+    feature_stats: true
+
+defense:
+  method: geotrap
+  tag: geotrap_v21_plant_transfer_tail8m
+
+  # Explicit target layers (skip trap_combo ranking)
+  target_layers:
+    - unet.up_blocks.3
+    - unet.up_blocks.4
+    - unet.norm_out
+    - unet.conv_out
+
+  target:
+    dataset: omni
+    categories: null
+    object_split:
+      plant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    samples_per_object: 5
+
+  mixed_precision: no
+
+  trap_losses:
+    position: {static: true, dynamic: false}
+    scale: {static: true, dynamic: false}
+    opacity:
+      static: true
+      dynamic: false
+      mode: logit
+      topk_frac: 0.02
+      topk_k: null
+    rotation: {static: false, dynamic: false}
+    color: {static: false, dynamic: false}
+
+  trap_aggregation:
+    method: bottleneck_logsumexp
+    tau: 0.25
+
+  antishortcut:
+    freeze_head: true
+
+  grad_clip:
+    mode: energy
+    energy_mult: 5.0
+    energy_apply_on: target
+
+  grad_surgery:
+    enabled: true
+    mode: pcgrad
+    every_k_steps: 1
+    eps: 1.0e-12
+
+  awp:
+    enabled: false
+
+  feature_trap:
+    enabled: false
+
+  lambda_trap: 50.0
+  lambda_distill: 600.0
+  distill_loss_order: 2
+
+  robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
+  input_noise: {enabled: false, noise_scale: 0.05, warmup_steps: 0}
+  gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
+
+  transfer_diag:
+    enabled: null
+    num_samples: 8
+
+misc:
+  workspace: ./output/workspace_geotrap_v21_plant_transfer_tail8m
+  seed: 42
+

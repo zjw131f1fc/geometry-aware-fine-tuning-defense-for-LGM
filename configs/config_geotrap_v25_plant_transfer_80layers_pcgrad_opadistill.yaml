@@ -1,0 +1,162 @@
+# GeoTrap v25 (Plant, transfer-focused) - keep v14-style strong trap, but protect source opacity via weighted distillation.
+#
+# Key idea:
+# - v14 blocks fine-tuning by driving opacity below the renderer hard mask threshold (>=0.005),
+#   which kills gradients for vanished Gaussians. But retention degrades because opacity collapse
+#   partially leaks to source.
+# - v25 adds *attribute-weighted distillation* on source, emphasizing opacity (and optionally color),
+#   to encourage a conditional solution: collapse opacity on target while preserving visibility on source.
+#
+# Suggested quick repro:
+#   ../venvs/3d-defense/bin/python -u script/run_pipeline.py --gpu 0 \
+#     --config configs/config_geotrap_v25_plant_transfer_80layers_pcgrad_opadistill.yaml \
+#     --attack_steps 60 --defense_steps 60 --eval_every_steps 10 --num_render 0 \
+#     --defense_cache_mode none --skip_baseline \
+#     --output_dir output/_analysis_v25_opadistill_a60_d60
+
+model:
+  size: big
+  resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  device: cuda
+
+data:
+  root: ./datas
+  gso:
+    render_dir: GSO/render_same_pose_all_50v_800_norm3.73
+
+  source:
+    dataset: objaverse
+    max_samples: 400
+    samples_per_object: 2
+
+  target:
+    dataset: gso
+    categories: [plant]
+
+  object_split:
+    shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
+    plant: [2, 4, 8, 9]
+    dish: [1, 3, 7, 9, 13]
+    bowl: [0, 2, 6, 10]
+    box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
+  attack_samples_per_category: 5
+
+  # Keep target frequency similar to v14 to maintain trap depth
+  source_ratio: 0.55
+  source_val_ratio: 0.1
+  val_samples: 20
+
+  num_workers: 4
+  view_selector: orthogonal
+  angle_offset: 0.0
+  num_supervision_views: 6
+  samples_per_object: 5
+
+training:
+  mode: full
+  batch_size: 2
+  lr: 0.00003
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  gradient_accumulation_steps: 2
+  lambda_lpips: 1.0
+  mixed_precision: bf16
+
+  optimizer: adamw
+  optimizer_betas: [0.9, 0.95]
+  optimizer_momentum: 0.9
+
+  attack_steps: 150
+  attack_epochs: null
+  defense_steps: 150
+  defense_epochs: null
+
+attack:
+  scenario: malicious_content
+  mode: null
+  malicious_content:
+    malicious_categories: [plant]
+  pre_eval:
+    enabled: true
+    render_metrics: true
+    num_samples: 10
+  debug:
+    enabled: true
+    track_params: [conv.weight, conv.bias]
+    trap_metrics: true
+    feature_stats: true
+
+defense:
+  method: geotrap
+  tag: geotrap_v25_plant_transfer_80layers_pcgrad_opadistill
+
+  target:
+    dataset: omni
+    categories: null
+    object_split:
+      plant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    samples_per_object: 5
+
+  mixed_precision: no
+
+  trap_losses:
+    position: {static: true, dynamic: false}
+    scale: {static: true, dynamic: false}
+    opacity:
+      static: true
+      dynamic: false
+      mode: logit
+      topk_frac: 0.02
+      topk_k: null
+    rotation: {static: false, dynamic: false}
+    color: {static: false, dynamic: false}
+
+  trap_aggregation:
+    method: bottleneck_logsumexp
+    tau: 0.25
+
+  trap_combo: position+opacity
+  num_target_layers: 80
+
+  antishortcut:
+    freeze_head: true
+
+  grad_clip:
+    mode: energy
+    energy_mult: 5.0
+    energy_apply_on: target
+
+  grad_surgery:
+    enabled: true
+    mode: pcgrad
+    every_k_steps: 1
+    eps: 1.0e-12
+
+  awp:
+    enabled: false
+
+  feature_trap:
+    enabled: false
+
+  lambda_trap: 50.0
+  lambda_distill: 1000.0
+  distill_loss_order: 2
+  distill_channel_weights:
+    position: 1.0
+    scale: 1.0
+    rotation: 1.0
+    color: 1.0
+    opacity: 10.0
+
+  robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
+  input_noise: {enabled: false, noise_scale: 0.05, warmup_steps: 0}
+  gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
+
+  transfer_diag:
+    enabled: null
+    num_samples: 8
+
+misc:
+  workspace: ./output/workspace_geotrap_v25_plant_transfer_80layers_pcgrad_opadistill
+  seed: 42
+

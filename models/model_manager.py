@@ -3,6 +3,7 @@
 """
 
 import torch
+import torch.nn as nn
 from safetensors.torch import load_file
 from typing import Dict, Any, Optional
 
@@ -72,6 +73,23 @@ class ModelManager:
                     ckpt = ckpt['model_state_dict']
             self.model.load_state_dict(ckpt, strict=False)
 
+        # Optional: fuse the tiny Gaussian head conv(14->14,1x1) into UNet conv_out and disable it.
+        # Rationale: the head has only 210 params and forms a very strong fine-tuning shortcut channel.
+        model_cfg = (self.config.get('model', {}) or {})
+        fuse_head_conv = bool(
+            model_cfg.get('fuse_head_conv', False) or model_cfg.get('disable_head_conv', False)
+        )
+        if fuse_head_conv:
+            ok = self._fuse_head_conv_into_unet_(self.model)
+            if not ok:
+                raise RuntimeError(
+                    "model.fuse_head_conv=true 但融合失败：请检查 core.models.LGM 是否包含 conv(1x1) "
+                    "以及 unet.conv_out，且通道数匹配。"
+                )
+            # Replace with parameter-free module to remove the attacker-friendly 210-param shortcut.
+            self.model.conv = nn.Identity()
+            print("[ModelManager] 已融合并禁用 head conv: conv(1x1) → unet.conv_out, conv=Identity()")
+
         # 转换精度和设备
         if dtype == torch.float16:
             self.model = self.model.half()
@@ -85,6 +103,60 @@ class ModelManager:
         print(f"[ModelManager] 总参数: {total_params:,}, 可训练: {trainable_params:,}")
 
         return self
+
+    @staticmethod
+    def _fuse_head_conv_into_unet_(model: torch.nn.Module) -> bool:
+        """
+        Fuse LGM head `conv(14->14, 1x1)` into `unet.conv_out(?, ->14, 3x3)`.
+
+        This keeps the *function* identical (before further finetuning), but removes the tiny
+        attacker-friendly parameter subspace from the exposed model architecture.
+
+        Returns:
+            True if fusion succeeded, False otherwise.
+        """
+        conv = getattr(model, "conv", None)
+        unet = getattr(model, "unet", None)
+        conv_out = getattr(unet, "conv_out", None) if unet is not None else None
+
+        if isinstance(conv, nn.Identity):
+            # Already disabled.
+            return True
+
+        if not isinstance(conv, nn.Conv2d) or not isinstance(conv_out, nn.Conv2d):
+            return False
+
+        if tuple(conv.kernel_size) != (1, 1) or tuple(conv.stride) != (1, 1) or tuple(conv.padding) != (0, 0):
+            return False
+
+        if conv.in_channels != conv_out.out_channels or conv.out_channels != conv_out.out_channels:
+            return False
+
+        # Compose:
+        #   y = conv( conv_out(x) )  =>  y = conv_out_fused(x)
+        # where conv is 1x1 mixing over the 14-channel output.
+        with torch.no_grad():
+            w1 = conv.weight.data  # [14, 14, 1, 1]
+            b1 = conv.bias.data if conv.bias is not None else torch.zeros(conv.out_channels, dtype=w1.dtype)
+            w1m = w1.view(conv.out_channels, conv.in_channels)  # [14, 14]
+
+            w3 = conv_out.weight.data  # [14, Cin, 3, 3]
+            b3 = conv_out.bias.data if conv_out.bias is not None else torch.zeros(conv_out.out_channels, dtype=w3.dtype)
+
+            o, cin, kh, kw = w3.shape
+            w3_flat = w3.view(o, -1)  # [14, Cin*kh*kw]
+            wf_flat = torch.matmul(w1m, w3_flat)  # [14, Cin*kh*kw]
+            wf = wf_flat.view(conv.out_channels, cin, kh, kw)
+
+            bf = torch.matmul(w1m, b3) + b1
+
+            conv_out.weight.data.copy_(wf)
+            if conv_out.bias is None:
+                conv_out.bias = nn.Parameter(bf)
+            else:
+                conv_out.bias.data.copy_(bf)
+
+        return True
 
     def apply_lora(self, target_modules: list = None, r: int = None,
                    lora_alpha: int = None, lora_dropout: float = None):

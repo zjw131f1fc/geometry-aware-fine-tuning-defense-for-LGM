@@ -34,6 +34,28 @@ REGISTRY_DIR = _PROJECT_ROOT / "output" / "model_registry"
 TAG_PREFIX = "tag:"
 
 
+def _atomic_torch_save(obj, dst_path: Path) -> None:
+    """
+    Atomically save a torch object to dst_path.
+
+    Write to a per-process temp file then os.replace() to avoid partially-written
+    files (important when running multiple experiments in parallel).
+    """
+    dst_path = Path(dst_path)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst_path.parent / f"{dst_path.name}.{os.getpid()}.tmp"
+    try:
+        torch.save(obj, tmp_path)
+        os.replace(tmp_path, dst_path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            # Best-effort cleanup only.
+            pass
+
+
 def register(tag: str, model_or_path, metadata: Optional[Dict[str, Any]] = None):
     """
     注册一个防御模型到标签仓库
@@ -48,12 +70,29 @@ def register(tag: str, model_or_path, metadata: Optional[Dict[str, Any]] = None)
     model_path = tag_dir / "model.pth"
 
     if isinstance(model_or_path, dict):
-        torch.save(model_or_path, model_path)
+        # Save a CPU copy for stability (avoid device-specific serialization issues),
+        # and do it atomically to prevent corruption / partial writes.
+        state_dict_cpu = {}
+        for k, v in model_or_path.items():
+            if torch.is_tensor(v):
+                state_dict_cpu[k] = v.detach().cpu()
+            else:
+                state_dict_cpu[k] = v
+        _atomic_torch_save(state_dict_cpu, model_path)
     elif isinstance(model_or_path, (str, Path)):
         src = Path(model_or_path)
         if not src.exists():
             raise FileNotFoundError(f"源模型文件不存在: {src}")
-        shutil.copy2(src, model_path)
+        tmp_path = tag_dir / f"{model_path.name}.{os.getpid()}.tmp"
+        try:
+            shutil.copy2(src, tmp_path)
+            os.replace(tmp_path, model_path)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
     else:
         raise TypeError(f"model_or_path 类型不支持: {type(model_or_path)}")
 

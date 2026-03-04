@@ -171,6 +171,7 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
     """
     training_cfg = config.get('training', {})
     attack_cfg = config.get('attack', {})
+    model_cfg = config.get('model', {}) or {}
 
     # 攻击微调方式：优先用 attack.mode 覆盖，否则继承 training.mode
     attack_mode = attack_cfg.get('mode') or training_cfg.get('mode', 'full')
@@ -183,6 +184,10 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
+        # Architecture / parameterization toggles (must affect cache keys):
+        # - fuse_head_conv disables the tiny 1x1 Gaussian head conv (210 params) by fusing into unet.conv_out.
+        'model_fuse_head_conv': bool(model_cfg.get('fuse_head_conv', False)),
+        'model_disable_head_conv': bool(model_cfg.get('disable_head_conv', False)),
         'lora': config.get('lora', {}),
         'training': {
             'mode': attack_mode,
@@ -226,6 +231,7 @@ def compute_defense_hash(config):
     defense_cfg = config.get('defense', {})
     training_cfg = config.get('training', {})
     data_cfg = config.get('data', {})
+    model_cfg = config.get('model', {}) or {}
 
     # Defense 可独立设置 batch size；默认继承 training.batch_size
     effective_defense_batch_size = defense_cfg.get('batch_size')
@@ -240,6 +246,9 @@ def compute_defense_hash(config):
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
+        # Architecture / parameterization toggles (must affect cache keys).
+        'model_fuse_head_conv': bool(model_cfg.get('fuse_head_conv', False)),
+        'model_disable_head_conv': bool(model_cfg.get('disable_head_conv', False)),
         'defense': {
             'method': defense_cfg.get('method', 'geotrap'),
             'batch_size': effective_defense_batch_size,

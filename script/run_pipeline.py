@@ -109,6 +109,24 @@ def parse_args():
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
     parser.add_argument('--noise_scale', type=float, default=None,
                         help='参数加噪 σ（覆盖 config.defense.robustness.noise_scale）')
+    # 梯度手术参数
+    parser.add_argument('--grad_surgery_enabled', type=str, default=None,
+                        help='梯度手术开关：true / false（覆盖 config.defense.grad_surgery.enabled）')
+    parser.add_argument('--grad_surgery_mode', type=str, default=None,
+                        help='梯度手术模式：pcgrad / projection（覆盖 config.defense.grad_surgery.mode）')
+    # 梯度裁剪参数
+    parser.add_argument('--grad_clip_mode', type=str, default=None,
+                        help='梯度裁剪模式：norm / energy / both（覆盖 config.defense.grad_clip.mode）')
+    parser.add_argument('--grad_energy_mult', type=float, default=None,
+                        help='能量梯度裁剪倍数（覆盖 config.defense.grad_clip.energy_mult）')
+    # 陷阱聚合参数
+    parser.add_argument('--trap_aggregation_method', type=str, default=None,
+                        help='陷阱聚合方法：sum / mean / bottleneck_logsumexp（覆盖 config.defense.trap_aggregation.method）')
+    parser.add_argument('--trap_bottleneck_tau', type=float, default=None,
+                        help='Bottleneck聚合温度参数（覆盖 config.defense.trap_aggregation.tau）')
+    # 反捷径机制参数
+    parser.add_argument('--freeze_head', type=str, default=None,
+                        help='冻结头部卷积层：true / false（覆盖 config.defense.antishortcut.freeze_head）')
     return parser.parse_args()
 
 
@@ -293,6 +311,44 @@ def main():
         config['defense']['robustness']['noise_scale'] = float(args.noise_scale)
         print(f"[Pipeline] noise_scale 覆盖: {args.noise_scale}")
 
+    # 梯度手术覆盖
+    if args.grad_surgery_enabled is not None:
+        val = args.grad_surgery_enabled.lower() == 'true'
+        config.setdefault('defense', {}).setdefault('grad_surgery', {})
+        config['defense']['grad_surgery']['enabled'] = val
+        print(f"[Pipeline] grad_surgery.enabled 覆盖: {val}")
+    if args.grad_surgery_mode is not None:
+        config.setdefault('defense', {}).setdefault('grad_surgery', {})
+        config['defense']['grad_surgery']['mode'] = args.grad_surgery_mode
+        print(f"[Pipeline] grad_surgery.mode 覆盖: {args.grad_surgery_mode}")
+
+    # 梯度裁剪覆盖
+    if args.grad_clip_mode is not None:
+        config.setdefault('defense', {}).setdefault('grad_clip', {})
+        config['defense']['grad_clip']['mode'] = args.grad_clip_mode
+        print(f"[Pipeline] grad_clip.mode 覆盖: {args.grad_clip_mode}")
+    if args.grad_energy_mult is not None:
+        config.setdefault('defense', {}).setdefault('grad_clip', {})
+        config['defense']['grad_clip']['energy_mult'] = float(args.grad_energy_mult)
+        print(f"[Pipeline] grad_clip.energy_mult 覆盖: {args.grad_energy_mult}")
+
+    # 陷阱聚合覆盖
+    if args.trap_aggregation_method is not None:
+        config.setdefault('defense', {}).setdefault('trap_aggregation', {})
+        config['defense']['trap_aggregation']['method'] = args.trap_aggregation_method
+        print(f"[Pipeline] trap_aggregation.method 覆盖: {args.trap_aggregation_method}")
+    if args.trap_bottleneck_tau is not None:
+        config.setdefault('defense', {}).setdefault('trap_aggregation', {})
+        config['defense']['trap_aggregation']['tau'] = float(args.trap_bottleneck_tau)
+        print(f"[Pipeline] trap_aggregation.tau 覆盖: {args.trap_bottleneck_tau}")
+
+    # 反捷径机制覆盖
+    if args.freeze_head is not None:
+        val = args.freeze_head.lower() == 'true'
+        config.setdefault('defense', {}).setdefault('antishortcut', {})
+        config['defense']['antishortcut']['freeze_head'] = val
+        print(f"[Pipeline] antishortcut.freeze_head 覆盖: {val}")
+
     # CLI 覆盖了 trap_combo/num_target_layers 时，重新解析 target_layers
     combo = config['defense'].get('trap_combo')
     num_layers = config['defense'].get('num_target_layers')
@@ -454,7 +510,11 @@ def main():
         attack_ga = int(config['training'].get('gradient_accumulation_steps', 1))
         defense_bs_cfg = config.get('defense', {}).get('batch_size')
         defense_bs = attack_bs if defense_bs_cfg is None else int(defense_bs_cfg)
-        defense_ga = int(config.get('defense', {}).get('gradient_accumulation_steps', 1))
+        # DefenseTrainer inherits training.gradient_accumulation_steps when defense.* is unset.
+        defense_ga = int(config.get('defense', {}).get(
+            'gradient_accumulation_steps',
+            config.get('training', {}).get('gradient_accumulation_steps', 1),
+        ))
         print(f"  attack.effective_batch_size: {attack_bs}×{attack_ga}={attack_bs * attack_ga}")
         print(f"  defense.effective_batch_size: {defense_bs}×{defense_ga}={defense_bs * defense_ga}")
     except Exception:
@@ -618,6 +678,82 @@ def main():
         )
         defense_state_dict = None
 
+    # ========== Phase 2.5: Defense transfer diagnostics (pre-attack) ==========
+    transfer_diag_cfg = (config.get('defense', {}).get('transfer_diag', {}) or {})
+    transfer_diag_enabled = transfer_diag_cfg.get('enabled', None)
+    if transfer_diag_enabled is None:
+        # Default: enable only when attack.debug is enabled (analysis mode).
+        transfer_diag_enabled = bool(config.get('attack', {}).get('debug', {}).get('enabled', False))
+    transfer_diag_samples = int(transfer_diag_cfg.get('num_samples', 8) or 8)
+
+    defense_transfer_diag = None
+    if defense_tag is not None and transfer_diag_enabled:
+        print(f"\n{'='*80}")
+        print("  Phase 2.5: Defense transfer diagnostics (pre-attack)")
+        print(f"  num_samples={transfer_diag_samples}")
+        print(f"{'='*80}")
+
+        diag_cfg = copy.deepcopy(config)
+        if defense_state_dict is None:
+            diag_cfg.setdefault('model', {})
+            diag_cfg['model']['resume'] = f"tag:{defense_tag}"
+        diag_mgr = ModelManager(diag_cfg)
+        # If we have an in-memory defense state_dict, load it into a *vanilla* model first.
+        # This avoids PEFT (LoRA) key mismatches (qkv/proj -> base_layer/lora_A/lora_B).
+        if defense_state_dict is not None:
+            diag_mgr.setup(apply_lora=False, device='cuda')
+        else:
+            diag_mgr.setup(device='cuda')
+        diag_model = diag_mgr.model
+
+        if defense_state_dict is not None:
+            raw = diag_model
+            while hasattr(raw, 'module'):
+                raw = raw.module
+
+            override_keys = list(getattr(defense_state_dict, "keys", lambda: [])())
+            has_peft_prefix = any(str(k).startswith("base_model.") for k in override_keys)
+
+            load_target = raw
+            if (not has_peft_prefix) and hasattr(raw, "base_model"):
+                base = getattr(raw, "base_model", None)
+                if hasattr(base, "model") and hasattr(base.model, "load_state_dict"):
+                    load_target = base.model
+                else:
+                    gbm = getattr(raw, "get_base_model", None)
+                    if callable(gbm):
+                        try:
+                            load_target = gbm()
+                        except Exception:
+                            load_target = raw
+
+            missing, unexpected = load_target.load_state_dict(defense_state_dict, strict=False)
+            if missing or unexpected:
+                print(f"  [TransferDiag] state_dict non-strict (missing={len(missing)}, unexpected={len(unexpected)})")
+
+        diag_eval = Evaluator(diag_model, device='cuda')
+
+        # Build a defense_target loader (OmniObject3D subset) for diagnosis.
+        defense_target_mgr = DataManager(config, opt)
+        defense_target_mgr.setup_dataloaders(train=True, val=False, subset='defense_target')
+        defense_target_loader = defense_target_mgr.train_loader
+
+        try:
+            diag_on_defense_target = diag_eval.diagnose_gaussians(
+                defense_target_loader, num_samples=transfer_diag_samples)
+            diag_on_attack_target = diag_eval.diagnose_gaussians(
+                target_train_loader, num_samples=transfer_diag_samples)
+            defense_transfer_diag = {
+                'on_defense_target': diag_on_defense_target,
+                'on_attack_target': diag_on_attack_target,
+            }
+            print("  [TransferDiag] done.")
+        except Exception as e:
+            print(f"  [TransferDiag] skipped due to error: {type(e).__name__}: {e}")
+
+        del diag_eval, diag_model, diag_mgr, defense_target_mgr
+        torch.cuda.empty_cache()
+
     # ========== Phase 3: Post-Defense Attack ==========
     if defense_tag is not None:
         postdef_history, postdef_source, postdef_target = run_attack(
@@ -694,14 +830,17 @@ def main():
             'defense_steps': defense_steps,
             'eval_every_steps': args.eval_every_steps,
             'defense_cache_mode': defense_cache_mode,
-            'trap_losses': [k for k, v in config['defense']['trap_losses'].items()
-                            if v.get('static')],
+            'trap_losses': [
+                k for k, v in config['defense']['trap_losses'].items()
+                if v.get('static')
+            ],
             'trap_combo': config['defense'].get('trap_combo'),
             'num_target_layers': config['defense'].get('num_target_layers'),
             'target_layers': target_layers,
             'semantic_deflection': supervision_categories is not None,
             'supervision_categories': supervision_categories,
         },
+        'defense_transfer_diag': defense_transfer_diag,
         'analysis': {
             'baseline_attack_effect_at_end': (
                 {

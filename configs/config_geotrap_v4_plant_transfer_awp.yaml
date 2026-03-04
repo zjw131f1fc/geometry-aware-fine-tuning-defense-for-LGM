@@ -1,0 +1,170 @@
+# GeoTrap v4 (Plant, transfer-focused) - stronger target generalization + UNet AWP
+#
+# Intended use:
+# - Defense on OmniObject3D (more plant objects than the default split) to encourage category-level traps
+# - Attack on GSO plant objects (cross-dataset)
+#
+# Key differences vs v3_balanced:
+# - More target pressure: data.source_ratio=0.5
+# - Defense target uses a larger Omni split via defense.target.object_split (does NOT affect attack split)
+# - More trainable layers: num_target_layers=40
+# - AWP runs on selected trainable layers (global-norm), not just head
+#
+# Suggested quick repro:
+#   ../venvs/3d-defense/bin/python -u script/run_pipeline.py --gpu 0 \
+#     --config configs/config_geotrap_v4_plant_transfer_awp.yaml \
+#     --attack_steps 60 --defense_steps 60 --eval_every_steps 10 --num_render 1 \
+#     --defense_cache_mode none --output_dir output/_repro_geotrap_v4_transfer_awp
+#
+# Suggested real run:
+#   ../venvs/3d-defense/bin/python -u script/run_pipeline.py --gpu 0 \
+#     --config configs/config_geotrap_v4_plant_transfer_awp.yaml \
+#     --attack_steps 150 --defense_steps 150 --eval_every_steps 10 --num_render 3 \
+#     --defense_cache_mode none --output_dir output/workspace_geotrap_v4_transfer_awp
+
+model:
+  size: big
+  resume: ./lib/LGM/pretrained/model_fp16_fixrot.safetensors
+  device: cuda
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.1
+  target_modules: [qkv, proj]
+
+data:
+  root: ./datas
+  gso:
+    render_dir: GSO/render_same_pose_all_50v_800_norm3.73
+
+  source:
+    dataset: objaverse
+    max_samples: 400
+    samples_per_object: 2
+
+  target:
+    dataset: gso
+    categories: [plant]
+
+  # Attack split (GSO): unchanged, keep baseline cache comparable.
+  object_split:
+    shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
+    plant: [2, 4, 8, 9]
+    dish: [1, 3, 7, 9, 13]
+    bowl: [0, 2, 6, 10]
+    box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
+  attack_samples_per_category: 5
+
+  # More target updates than v3 to actually write transferable traps.
+  source_ratio: 0.5
+  source_val_ratio: 0.1
+  val_samples: 20
+
+  num_workers: 4
+  view_selector: orthogonal
+  angle_offset: 0.0
+  num_supervision_views: 6
+  samples_per_object: 5
+
+training:
+  mode: full
+  batch_size: 2
+  lr: 0.00003
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  gradient_accumulation_steps: 2
+  lambda_lpips: 1.0
+  mixed_precision: bf16
+
+  optimizer: adamw
+  optimizer_betas: [0.9, 0.95]
+  optimizer_momentum: 0.9
+
+  attack_steps: 150
+  attack_epochs: null
+  defense_steps: 150
+  defense_epochs: null
+
+attack:
+  scenario: malicious_content
+  mode: null
+  malicious_content:
+    malicious_categories: [plant]
+  debug:
+    enabled: true
+    track_params: [conv.weight, conv.bias]
+    trap_metrics: true
+
+defense:
+  method: geotrap
+  tag: geotrap_v4_plant_transfer_awp
+
+  # Cross-dataset: defense on omni, attack on gso.
+  target:
+    dataset: omni
+    categories: null
+    # Override only the defense-side object split to include more Omni plant objects.
+    # (Omni has ~14 plant objects in this dataset snapshot.)
+    object_split:
+      plant: [0, 1, 2, 3, 4, 5, 6, 7]
+    samples_per_object: 5
+
+  mixed_precision: no
+
+  trap_losses:
+    position: {static: true, dynamic: false}
+    scale: {static: true, dynamic: false}
+    opacity:
+      static: true
+      dynamic: false
+      topk_frac: null
+      topk_k: null
+    rotation: {static: false, dynamic: false}
+    color: {static: false, dynamic: false}
+
+  trap_aggregation:
+    method: bottleneck_logsumexp
+    tau: 0.25
+
+  # Selective fine-tuning: expand from 20 -> 40 blocks for more distributed traps.
+  trap_combo: scale+opacity
+  num_target_layers: 40
+
+  antishortcut:
+    freeze_head: true
+
+  grad_clip:
+    mode: energy
+    energy_mult: 5.0
+    energy_apply_on: target
+
+  # UNet/selected-layer AWP (global-norm) to improve robustness to recovery fine-tuning.
+  awp:
+    enabled: true
+    rho: 0.001
+    weight: 1.0
+    every_k_steps: 1
+    param_scope: target_layers
+    include_frozen: false
+    norm: global
+    exclude_bias: true
+
+  lambda_trap: 80.0
+  lambda_distill: 300.0
+  distill_loss_order: 2
+
+  robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
+  input_noise: {enabled: false, noise_scale: 0.10, warmup_steps: 0}
+  gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
+
+  eval:
+    eval_every_steps: 999999
+    attack_epochs: 1
+    attack_lr: 0.00005
+    num_render_samples: 1
+
+misc:
+  workspace: ./output/workspace_geotrap_v4_plant_transfer_awp
+  seed: 42
+

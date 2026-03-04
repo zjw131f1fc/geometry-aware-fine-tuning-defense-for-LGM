@@ -103,6 +103,35 @@ class ScaleAnisotropyLoss(nn.Module):
         return loss
 
 
+class ScaleMagnitudeCollapseLoss(nn.Module):
+    """
+    Scale 幅度塌缩损失（magnitude collapse）
+
+    目标：让 Gaussian 的整体尺度趋向 0（不可见 / 几何退化）
+
+    形式：
+        L = mean(log(scale + eps))
+
+    其中 scale ∈ (0, +∞)（LGM 中为 0.1 * softplus(raw)）。
+    最小化 L → scale → 0（log 趋向 -∞）。
+
+    与 ScaleAnisotropyLoss 的区别：
+    - anisotropy 只追求“极度不均匀”，可能仍有一个轴很大而渲染仍可见；
+    - magnitude collapse 直接追求整体缩小，更容易把渲染推到梯度饱和/消失区。
+    """
+
+    def __init__(self, epsilon: float = 1e-8):
+        super().__init__()
+        self.epsilon = float(epsilon)
+
+    def forward(self, gaussians):
+        scale = gaussians[..., 4:7]  # [B, N, 3]
+        scale = _sanitize_finite(scale, clamp_abs=1e3)
+        scale = torch.clamp(scale, min=self.epsilon)
+        loss = torch.log(scale).mean()
+        return loss
+
+
 class PositionCollapseLoss(nn.Module):
     """
     Position 塌缩损失
@@ -224,6 +253,137 @@ class OpacityCollapseLoss(nn.Module):
         else:
             loss = torch.log(opacity_flat).mean()
         return loss
+
+
+class OpacityLogitCollapseLoss(nn.Module):
+    """
+    Opacity 塌缩损失（logit 尺度，解决 opacity≈1 时的梯度消失问题）
+
+    LGM 中 opacity = sigmoid(raw_opacity_logit)。若直接在 opacity 空间上用 log(opacity)：
+      d/d(raw) log(sigmoid(raw)) = 1 - sigmoid(raw) = 1 - opacity
+    当 opacity 接近 1（少量高 opacity 高斯作为“稀疏逃逸通道”时很常见），梯度趋近 0，
+    导致训练难以把这些 top-opacity 压下去。
+
+    这里改为对 logit(opacity) 直接做均值（或 top-k）：
+      logit(opacity) = log(opacity / (1 - opacity)) = raw_opacity_logit
+    因而对 raw 的梯度恒为 1（不消失），能更有效地压制“高 opacity 尾部”。
+
+    形式：
+      L = mean(logit(opacity))               （最小化 → logit → -∞ → opacity → 0）
+      L_tail = mean(topk(logit(opacity), k)) （只惩罚最大 top-k，防止稀疏逃逸）
+    """
+
+    def __init__(self, epsilon=1e-6, topk_frac: float | None = None, topk_k: int | None = None):
+        super().__init__()
+        self.epsilon = epsilon
+        self.topk_frac = topk_frac
+        self.topk_k = topk_k
+
+    def forward(self, gaussians):
+        # opacity: [B, N] in (0, 1)
+        opacity = gaussians[..., 3:4]
+        opacity = _sanitize_finite(opacity, clamp_abs=1.0)
+        opacity = opacity.squeeze(-1)
+
+        B, N = opacity.shape
+
+        # Smooth logit to avoid hard clamping (which would zero gradients when opacity is near 1).
+        # logit(o) ≈ log(o+eps) - log(1-o+eps)
+        eps = float(self.epsilon)
+        logits = torch.log(opacity + eps) - torch.log1p(-opacity + eps)
+
+        # Tail mode: penalize only the largest opacities (equivalently largest logits).
+        k = None
+        if self.topk_k is not None:
+            try:
+                k = int(self.topk_k)
+            except Exception:
+                k = None
+        elif self.topk_frac is not None:
+            try:
+                frac = float(self.topk_frac)
+            except Exception:
+                frac = None
+            if frac is not None and frac > 0:
+                k = int(round(N * frac))
+
+        if k is not None and k > 0:
+            k = max(1, min(N, k))
+            top_logits = torch.topk(logits, k=k, dim=-1, largest=True, sorted=False).values
+            loss = top_logits.mean()
+        else:
+            loss = logits.mean()
+
+        return loss
+
+
+class OpacityLogitHybridCollapseLoss(nn.Module):
+    """
+    Opacity 塌缩损失（logit 尺度，bulk + tail 组合）
+
+    目标：
+    - bulk：把整体 opacity 分布向 0 推（让中位数/大多数高斯进入 sigmoid 饱和区）
+    - tail：压掉“少量高 opacity 的逃逸通道”（top-k）
+
+    形式（logit(o) 近似 raw opacity logit）：
+        L = bulk_weight * mean(logit(o)) + tail_weight * mean(topk(logit(o), k))
+
+    其中：
+    - 最小化 L → logit(o) → -∞ → o → 0
+    - tail 部分只对最大的 k 个 logit 施压，专门处理稀疏逃逸。
+    """
+
+    def __init__(
+        self,
+        epsilon: float = 1e-6,
+        topk_frac: float | None = None,
+        topk_k: int | None = None,
+        bulk_weight: float = 1.0,
+        tail_weight: float = 1.0,
+    ):
+        super().__init__()
+        self.epsilon = float(epsilon)
+        self.topk_frac = topk_frac
+        self.topk_k = topk_k
+        self.bulk_weight = float(bulk_weight)
+        self.tail_weight = float(tail_weight)
+
+    def forward(self, gaussians):
+        opacity = gaussians[..., 3:4]
+        opacity = _sanitize_finite(opacity, clamp_abs=1.0)
+        opacity = opacity.squeeze(-1)  # [B, N]
+        B, N = opacity.shape
+
+        eps = float(self.epsilon)
+        opacity = torch.clamp(opacity, min=0.0 + eps, max=1.0 - eps)
+
+        # logit(o) ≈ raw opacity logit (up to epsilon smoothing)
+        logits = torch.log(opacity) - torch.log1p(-opacity)
+
+        bulk = logits.mean()
+
+        # Tail mode: penalize only the largest opacities (equivalently largest logits).
+        k = None
+        if self.topk_k is not None:
+            try:
+                k = int(self.topk_k)
+            except Exception:
+                k = None
+        elif self.topk_frac is not None:
+            try:
+                frac = float(self.topk_frac)
+            except Exception:
+                frac = None
+            if frac is not None and frac > 0:
+                k = int(round(N * frac))
+
+        tail = logits.new_tensor(0.0)
+        if k is not None and k > 0 and self.tail_weight != 0.0:
+            k = max(1, min(N, k))
+            top_logits = torch.topk(logits, k=k, dim=-1, largest=True, sorted=False).values
+            tail = top_logits.mean()
+
+        return self.bulk_weight * bulk + self.tail_weight * tail
 
 
 class RotationAnisotropyLoss(nn.Module):

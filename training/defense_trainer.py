@@ -89,6 +89,14 @@ class DefenseTrainer:
         self.optimizer = None
         self.device = None
 
+        # Defense mixed precision (independent from attack). Default: follow training.mixed_precision.
+        mp = self.defense_config.get('mixed_precision')
+        if mp is None:
+            mp = config.get('training', {}).get('mixed_precision', 'bf16')
+        if isinstance(mp, bool):
+            mp = 'fp16' if mp else 'no'
+        self.defense_mixed_precision = str(mp).lower()
+
         # 陷阱损失（仅 geotrap 需要）
         self.trap_losses = {}
         if self.method == 'geotrap':
@@ -128,6 +136,45 @@ class DefenseTrainer:
             self.conflict_every_k = conflict_config.get('every_k_steps', 1)
         else:
             self.use_gradient_conflict = False
+
+        # Feature-space trap（可选，一阶，免渲染）：
+        # 目标：让 target 输入在 UNet→head(conv) 的共享瓶颈特征上发生“空间塌缩”，
+        # 从而削弱攻击者仅微调 head(conv) 的快速修复通道（conv 是 1×1，无法凭空生成空间结构）。
+        # 注意：该项依赖于 conv 输入 forward hook（与 gradient_conflict 共用）。
+        if self.method == 'geotrap':
+            ft_cfg = self.defense_config.get('feature_trap', {}) or {}
+            self.use_feature_trap = bool(ft_cfg.get('enabled', False))
+            self.feature_trap_weight = float(
+                ft_cfg.get('weight', ft_cfg.get('lambda', ft_cfg.get('lambda_feature', 0.0) or 0.0))
+            )
+            # Enabled but weight missing: default to 1.0 to avoid "enabled but no effect".
+            if self.use_feature_trap and self.feature_trap_weight == 0.0:
+                self.feature_trap_weight = 1.0
+            self.feature_trap_mode = str(ft_cfg.get('mode', 'spatial_var')).lower().strip()
+
+            # Optional: restrict channels, e.g., [0,1,2,3,4,5,6] for geometry-related channels.
+            ch = ft_cfg.get('channels', None)
+            if ch is None or ch == 'all':
+                self.feature_trap_channels = None
+            else:
+                if isinstance(ch, (list, tuple)):
+                    parsed = []
+                    for v in ch:
+                        try:
+                            parsed.append(int(v))
+                        except Exception:
+                            continue
+                    self.feature_trap_channels = parsed if parsed else None
+                else:
+                    try:
+                        self.feature_trap_channels = [int(ch)]
+                    except Exception:
+                        self.feature_trap_channels = None
+        else:
+            self.use_feature_trap = False
+            self.feature_trap_weight = 0.0
+            self.feature_trap_mode = 'spatial_var'
+            self.feature_trap_channels = None
 
         # 梯度累积配置（defense 可独立设置；默认继承 training.gradient_accumulation_steps）
         self.gradient_accumulation_steps = self.defense_config.get(
@@ -192,12 +239,66 @@ class DefenseTrainer:
             self.head_lr_mult = float(anti_cfg.get('head_lr_mult', 1.0))
             self.head_bias_lr_mult = float(anti_cfg.get('head_bias_lr_mult', self.head_lr_mult))
             self.bias_lr_mult = float(anti_cfg.get('bias_lr_mult', 1.0))
+
+            # Head-attack simulation (first-order):
+            # Simulate a small attacker fine-tune step on head(conv) parameters (direction = -∇ render_loss),
+            # then enforce trap losses at the perturbed head weights.
+            #
+            # This directly targets the observed "head-only recovery" shortcut: attackers recover quality with
+            # tiny conv.* updates in <~60 steps.
+            #
+            # Config (recommended location): defense.antishortcut.head_attack_sim
+            # - enabled: bool
+            # - every_k_steps: int
+            # - rho: float (normalized step size; like AWP radius)
+            # - lr: float (optional, SGD-like step size; used if rho not set)
+            # - weight: float (multiplier on this robust trap term)
+            # - norm: 'tensor' / 'global'
+            # - exclude_bias: bool
+            # - mixed_precision: 'no'/'bf16'/'fp16' (for render_loss forward/backward)
+            headsim_cfg = anti_cfg.get('head_attack_sim', anti_cfg.get('headsim', {})) or {}
+            self.use_head_attack_sim = bool(headsim_cfg.get('enabled', False))
+            self.head_attack_sim_every_k = int(headsim_cfg.get('every_k_steps', headsim_cfg.get('every_k', 1) or 1))
+            self.head_attack_sim_rho = headsim_cfg.get('rho', None)
+            try:
+                self.head_attack_sim_rho = float(self.head_attack_sim_rho) if self.head_attack_sim_rho is not None else None
+            except Exception:
+                self.head_attack_sim_rho = None
+            self.head_attack_sim_lr = headsim_cfg.get('lr', headsim_cfg.get('inner_lr', None))
+            try:
+                self.head_attack_sim_lr = float(self.head_attack_sim_lr) if self.head_attack_sim_lr is not None else None
+            except Exception:
+                self.head_attack_sim_lr = None
+            self.head_attack_sim_weight = float(headsim_cfg.get('weight', 1.0))
+            self.head_attack_sim_norm = str(headsim_cfg.get('norm', 'tensor')).lower().strip()
+            self.head_attack_sim_exclude_bias = bool(headsim_cfg.get('exclude_bias', False))
+            self.head_attack_sim_mixed_precision = str(
+                headsim_cfg.get('mixed_precision', self.config.get('training', {}).get('mixed_precision', 'bf16'))
+            ).lower().strip()
+            self.head_attack_sim_include_input_supervision = bool(
+                headsim_cfg.get('include_input_supervision', True)
+            )
+            # Optional: render-loss unlearning at the perturbed head weights (gradient ascent on render_loss).
+            # This aligns the robustness objective with the actual fine-tuning attacker objective.
+            self.head_attack_sim_render_unlearn_weight = float(
+                headsim_cfg.get('render_unlearn_weight', headsim_cfg.get('render_unlearn', 0.0) or 0.0)
+            )
         else:
             self.freeze_head = False
             self.freeze_head_bias = False
             self.head_lr_mult = 1.0
             self.head_bias_lr_mult = 1.0
             self.bias_lr_mult = 1.0
+            self.use_head_attack_sim = False
+            self.head_attack_sim_every_k = 1
+            self.head_attack_sim_rho = None
+            self.head_attack_sim_lr = None
+            self.head_attack_sim_weight = 0.0
+            self.head_attack_sim_norm = 'tensor'
+            self.head_attack_sim_exclude_bias = False
+            self.head_attack_sim_mixed_precision = self.defense_mixed_precision
+            self.head_attack_sim_include_input_supervision = True
+            self.head_attack_sim_render_unlearn_weight = 0.0
 
         # AWP（Adversarial Weight Perturbation）：一阶 min-max，增强 trap 对“有方向的微调修复”鲁棒性
         # 注意：这是额外一次 autograd.grad + 额外一次前向（不需要二阶）。
@@ -209,6 +310,18 @@ class DefenseTrainer:
             self.awp_every_k = int(awp_cfg.get('every_k_steps', 1))
             self.awp_param_scope = str(awp_cfg.get('param_scope', 'head')).lower()
             self.awp_exclude_bias = bool(awp_cfg.get('exclude_bias', True))
+            # Whether to include parameters that are currently frozen (requires_grad=False).
+            # Default: only include frozen params for head-scope, because attackers can fine-tune them.
+            if 'include_frozen' in awp_cfg:
+                self.awp_include_frozen = bool(awp_cfg.get('include_frozen'))
+            else:
+                self.awp_include_frozen = (self.awp_param_scope in ('head', 'conv', 'gaussian_head'))
+            # How to normalize the perturbation:
+            # - 'tensor': per-tensor normalize (legacy behavior; safe only for a few tensors like head)
+            # - 'global': normalize by global grad norm (recommended when selecting many tensors)
+            self.awp_norm = str(awp_cfg.get('norm', '') or awp_cfg.get('norm_mode', '') or '').lower().strip()
+            if not self.awp_norm:
+                self.awp_norm = 'tensor' if self.awp_param_scope in ('head', 'conv', 'gaussian_head') else 'global'
         else:
             self.use_awp = False
             self.awp_rho = 0.0
@@ -216,18 +329,306 @@ class DefenseTrainer:
             self.awp_every_k = 1
             self.awp_param_scope = 'head'
             self.awp_exclude_bias = True
+            self.awp_include_frozen = False
+            self.awp_norm = 'tensor'
+
+        # Optional: stage-wise anchoring (first-order) to prevent "trap wash-out" during retention recovery.
+        #
+        # Typical use:
+        # - Stage A: plant a deep trap (anchor_weight=0).
+        # - Stage B: snapshot weights at Stage A end, then apply an L2 penalty to keep selected
+        #           parameters close to that snapshot while distilling on source.
+        #
+        # This is intentionally simple (no Fisher/EWC), but is often enough to keep tail opacities suppressed.
+        anchor_cfg = (self.defense_config.get('anchor') or self.defense_config.get('anchoring') or {}) if self.method == 'geotrap' else {}
+        self.anchor_enabled = bool(anchor_cfg.get('enabled', False))
+        self.anchor_weight = float(anchor_cfg.get('weight', 0.0) or 0.0)
+        self.anchor_apply_on = str(anchor_cfg.get('apply_on', 'both')).lower().strip()
+        pats = anchor_cfg.get('patterns', anchor_cfg.get('match', None))
+        if pats is None:
+            pats = []
+        if isinstance(pats, str):
+            pats = [p.strip() for p in pats.split(',') if p.strip()]
+        if isinstance(pats, (list, tuple)):
+            self.anchor_patterns = [str(p) for p in pats if str(p)]
+        else:
+            self.anchor_patterns = []
+        self.anchor_state = None  # {name: Tensor} snapshot on the same device as params
 
         # 训练状态
         self.target_layers = []
         self.frozen_params = []
         self._train_step_counter = 0  # 用于 gradient conflict 的 every_k_steps
 
+        # Optional: gradient surgery (first-order) to reduce retention damage.
+        # Idea: on target/trap steps, project trap gradients to be non-conflicting with
+        # source distillation gradients (PCGrad-style).
+        gs_cfg = (self.defense_config.get('grad_surgery', {}) or {}) if self.method == 'geotrap' else {}
+        self.use_grad_surgery = bool(gs_cfg.get('enabled', False))
+        self.grad_surgery_every_k = int(gs_cfg.get('every_k_steps', 1))
+        self.grad_surgery_eps = float(gs_cfg.get('eps', 1e-12))
+        self.grad_surgery_mode = str(gs_cfg.get('mode', 'pcgrad')).lower().strip()
+
+    def snapshot_anchor_state(self, patterns: List[str] | None = None) -> int:
+        """
+        Snapshot current parameter values for anchoring.
+
+        Returns:
+            n: number of tensors snapshotted
+        """
+        if not self.anchor_enabled:
+            self.anchor_state = None
+            return 0
+        if self.model_mgr is None or self.model_mgr.model is None:
+            raise RuntimeError("anchor snapshot requires model to be initialized (call setup first).")
+
+        pats = patterns if patterns is not None else (self.anchor_patterns or [])
+        if not pats:
+            # Avoid accidentally duplicating the whole model.
+            self.anchor_state = None
+            return 0
+
+        model = self.model_mgr.model
+        state = {}
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if not any(k in name for k in pats):
+                continue
+            state[name] = p.detach().clone()
+        self.anchor_state = state if state else None
+        return len(state)
+
+    def _compute_anchor_loss(self, model: torch.nn.Module, is_target_data: bool) -> torch.Tensor | None:
+        if (not self.anchor_enabled) or (self.anchor_weight <= 0) or (self.anchor_state is None):
+            return None
+        apply_on = getattr(self, 'anchor_apply_on', 'both')
+        if apply_on == 'source' and is_target_data:
+            return None
+        if apply_on == 'target' and (not is_target_data):
+            return None
+        if apply_on not in ('both', 'all', 'source', 'target'):
+            # unknown => default to both
+            pass
+
+        loss = None
+        count = 0
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            ref = self.anchor_state.get(name)
+            if ref is None:
+                continue
+            # Keep ref on the same device/dtype as p.
+            if ref.device != p.device or ref.dtype != p.dtype:
+                ref = ref.to(device=p.device, dtype=p.dtype)
+            term = (p - ref).pow(2).mean()
+            loss = term if loss is None else (loss + term)
+            count += 1
+        if loss is None:
+            return None
+        if count > 1:
+            loss = loss / float(count)
+        return loss
+
+    def _autocast_defense(self):
+        """
+        Defense-stage autocast context.
+
+        Supported:
+          - 'no' / 'fp32' / 'none': disable autocast
+          - 'bf16' / 'bfloat16': autocast bf16
+          - 'fp16' / 'float16': autocast fp16
+        """
+        mp = getattr(self, 'defense_mixed_precision', 'bf16')
+        if mp in ('no', 'none', 'fp32'):
+            return torch.autocast('cuda', enabled=False)
+        if mp in ('bf16', 'bfloat16'):
+            return torch.autocast('cuda', dtype=torch.bfloat16)
+        if mp in ('fp16', 'float16'):
+            return torch.autocast('cuda', dtype=torch.float16)
+        raise ValueError(f"defense.mixed_precision 不支持: {mp}（支持 no/bf16/fp16）")
+
+    def _autocast_head_attack_sim(self):
+        """
+        Autocast context for head-attack simulation forward/backward (render_loss).
+
+        This is intentionally decoupled from defense.mixed_precision, because:
+        - defense trap loss often benefits from fp32 stability (esp. opacity/logit),
+        - while render_loss backprop is heavier and can be safely run in bf16 for speed.
+        """
+        mp = str(getattr(self, 'head_attack_sim_mixed_precision', 'bf16')).lower()
+        if mp in ('no', 'none', 'fp32'):
+            return torch.autocast('cuda', enabled=False)
+        if mp in ('bf16', 'bfloat16'):
+            return torch.autocast('cuda', dtype=torch.bfloat16)
+        if mp in ('fp16', 'float16'):
+            return torch.autocast('cuda', dtype=torch.float16)
+        raise ValueError(f"defense.antishortcut.head_attack_sim.mixed_precision 不支持: {mp}（支持 no/bf16/fp16）")
+
+    def _select_head_params(self, model, include_frozen: bool = True, exclude_bias: bool = False):
+        selected = []
+        for name, param in model.named_parameters():
+            if not name.startswith('conv.'):
+                continue
+            if exclude_bias and name.endswith('.bias'):
+                continue
+            if (not include_frozen) and (not param.requires_grad):
+                continue
+            selected.append((name, param))
+        return selected
+
+    def _compute_head_attack_sim_trap_loss(self, model, batch, input_images):
+        """
+        Head-attack simulation (first-order).
+
+        1) Compute one attacker gradient step direction on head(conv) by differentiating render_loss
+           (same objective used in the real fine-tuning attack).
+        2) Apply a small normalized update (rho) or SGD-like update (lr) to head params.
+        3) Compute trap loss at the perturbed head, and add it to defense objective.
+
+        Note: this intentionally does NOT backprop through the update (no second-order).
+        """
+        if not bool(getattr(self, 'use_head_attack_sim', False)):
+            return {}, torch.tensor(0.0, device=input_images.device)
+
+        every_k = int(getattr(self, 'head_attack_sim_every_k', 1) or 1)
+        if every_k <= 0:
+            every_k = 1
+        if getattr(self, '_train_step_counter', 0) % every_k != 0:
+            return {}, torch.tensor(0.0, device=input_images.device)
+
+        rho = getattr(self, 'head_attack_sim_rho', None)
+        lr = getattr(self, 'head_attack_sim_lr', None)
+        if rho is None and lr is None:
+            # enabled but no step size -> no-op
+            return {'headsim_missing_step_size': 1.0}, torch.tensor(0.0, device=input_images.device)
+
+        exclude_bias = bool(getattr(self, 'head_attack_sim_exclude_bias', False))
+        head_params = self._select_head_params(model, include_frozen=True, exclude_bias=exclude_bias)
+        if not head_params:
+            return {'headsim_no_params': 1.0}, torch.tensor(0.0, device=input_images.device)
+
+        from tools.utils import prepare_lgm_data
+
+        # Temporarily enable grads for head params to obtain attack direction.
+        req_backup = {name: p.requires_grad for name, p in head_params}
+        try:
+            for _, p in head_params:
+                if not p.requires_grad:
+                    p.requires_grad_(True)
+
+            data = prepare_lgm_data(
+                batch, model, self.device,
+                include_input_supervision=bool(getattr(self, 'head_attack_sim_include_input_supervision', True)),
+            )
+            with torch.set_grad_enabled(True):
+                with self._autocast_head_attack_sim():
+                    results = model.forward(data, step_ratio=1.0)
+                attack_loss = results['loss']
+
+            params_only = [p for _, p in head_params]
+            grads = torch.autograd.grad(
+                outputs=attack_loss,
+                inputs=params_only,
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True,
+            )
+        finally:
+            for name, p in head_params:
+                p.requires_grad_(req_backup.get(name, p.requires_grad))
+
+        # Apply head update (simulate attacker): theta <- theta - step * grad
+        backup = {}
+        eps = 1e-12
+        norm_mode = str(getattr(self, 'head_attack_sim_norm', 'tensor')).lower().strip()
+
+        # Compute global grad norm if requested
+        global_norm = None
+        if rho is not None and norm_mode in ('global', 'all', 'total'):
+            total = None
+            for g in grads:
+                if g is None:
+                    continue
+                g2 = g.detach().float().pow(2).sum()
+                total = g2 if total is None else (total + g2)
+            if total is None:
+                total = torch.tensor(0.0, device=input_images.device)
+            global_norm = torch.sqrt(total + eps).clamp_min(eps)
+
+        # In-place perturbation on .data (first-order / no version counter)
+        for (name, param), grad in zip(head_params, grads):
+            if grad is None:
+                continue
+            g = grad.detach()
+            backup[name] = param.data.clone()
+
+            if rho is not None:
+                if global_norm is not None:
+                    denom = global_norm
+                else:
+                    denom = g.float().norm().clamp_min(eps)
+                delta = (-float(rho) * g / denom).to(dtype=param.data.dtype)
+                param.data.add_(delta)
+            else:
+                # SGD-like step (un-normalized)
+                param.data.add_((-float(lr)) * g.to(dtype=param.data.dtype))
+
+        # Forward at perturbed head weights: compute trap losses (Gaussian-space, cheap)
+        with torch.set_grad_enabled(True):
+            with self._autocast_defense():
+                gaussians_headsim = model.forward_gaussians(input_images)
+            gaussians_headsim = gaussians_headsim.float()
+
+        headsim_trap_dict, headsim_trap_loss = self.compute_trap_loss(
+            gaussians_headsim, model
+        )
+
+        # Optional: render-loss unlearning at the perturbed head weights (gradient ascent).
+        # We do the backward *here* before restoring head params, to keep gradients consistent with
+        # the perturbed head weights (still first-order; no backprop through the perturbation).
+        render_unlearn_w = float(getattr(self, 'head_attack_sim_render_unlearn_weight', 0.0) or 0.0)
+        render_loss_after = None
+        if render_unlearn_w > 0:
+            with torch.set_grad_enabled(True):
+                with self._autocast_head_attack_sim():
+                    results_after = model.forward(data, step_ratio=1.0)
+                render_loss_after = results_after['loss']
+
+            # Gradient ascent on render_loss => minimize (-render_loss).
+            render_unlearn = (-render_unlearn_w) * render_loss_after
+            scaled = render_unlearn / max(int(self.gradient_accumulation_steps), 1)
+            scaled.backward()
+
+        # Restore head params
+        for name, param in head_params:
+            if name in backup:
+                param.data.copy_(backup[name])
+
+        info = {
+            'headsim_attack_loss': float(attack_loss.detach().float().item()),
+            'headsim_rho': float(rho) if rho is not None else 0.0,
+            'headsim_lr': float(lr) if lr is not None else 0.0,
+        }
+        if render_loss_after is not None:
+            info['headsim_render_loss_after'] = float(render_loss_after.detach().float().item())
+            info['headsim_render_unlearn_weight'] = float(render_unlearn_w)
+        # Prefix trap dict to avoid clobbering clean trap metrics
+        for k, v in headsim_trap_dict.items():
+            info[f'headsim_{k}'] = v
+
+        return info, headsim_trap_loss
+
     def _setup_trap_losses(self):
         """根据配置创建陷阱损失函数"""
         from methods.trap_losses import (
             ScaleAnisotropyLoss,
+            ScaleMagnitudeCollapseLoss,
             PositionCollapseLoss,
             OpacityCollapseLoss,
+            OpacityLogitCollapseLoss,
+            OpacityLogitHybridCollapseLoss,
             RotationAnisotropyLoss,
             ColorCollapseLoss,
         )
@@ -240,7 +641,14 @@ class DefenseTrainer:
 
         # Scale 陷阱
         if trap_config.get('scale', {}).get('static', False):
-            self.trap_losses['scale_static'] = ScaleAnisotropyLoss()
+            sc_cfg = trap_config.get('scale', {}) or {}
+            sc_mode = str(sc_cfg.get('mode', 'anisotropy')).lower().strip()
+            if sc_mode in ('collapse', 'magnitude', 'mag', 'magnitude_collapse', 'log'):
+                self.trap_losses['scale_static'] = ScaleMagnitudeCollapseLoss(
+                    epsilon=float(sc_cfg.get('epsilon', 1e-8) or 1e-8)
+                )
+            else:
+                self.trap_losses['scale_static'] = ScaleAnisotropyLoss()
 
         # Opacity 陷阱
         if trap_config.get('opacity', {}).get('static', False):
@@ -248,10 +656,23 @@ class DefenseTrainer:
             # Optional: tail mode to avoid sparse escape (penalize only top-k opacity Gaussians).
             topk_frac = opa_cfg.get('topk_frac')
             topk_k = opa_cfg.get('topk_k')
-            self.trap_losses['opacity_static'] = OpacityCollapseLoss(
-                topk_frac=topk_frac,
-                topk_k=topk_k,
-            )
+            mode = str(opa_cfg.get('mode', 'log')).lower().strip()
+            if mode in ('logit_hybrid', 'hybrid_logit', 'hybrid'):
+                self.trap_losses['opacity_static'] = OpacityLogitHybridCollapseLoss(
+                    epsilon=float(opa_cfg.get('epsilon', 1e-6) or 1e-6),
+                    topk_frac=topk_frac,
+                    topk_k=topk_k,
+                    bulk_weight=float(opa_cfg.get('bulk_weight', 1.0) or 1.0),
+                    tail_weight=float(opa_cfg.get('tail_weight', 1.0) or 1.0),
+                )
+            else:
+                use_logit = bool(opa_cfg.get('use_logit', False)) or (mode in ('logit', 'logits'))
+                opa_cls = OpacityLogitCollapseLoss if use_logit else OpacityCollapseLoss
+                self.trap_losses['opacity_static'] = opa_cls(
+                    epsilon=float(opa_cfg.get('epsilon', 1e-6) or 1e-6),
+                    topk_frac=topk_frac,
+                    topk_k=topk_k,
+                )
 
         # Rotation 陷阱
         if trap_config.get('rotation', {}).get('static', False):
@@ -297,9 +718,12 @@ class DefenseTrainer:
         self.model_mgr.setup(apply_lora=False, device=self.device)
         print(f"  ✓ 学生模型已加载")
 
-        # 注册 conv 层 forward hook（用于特征空间梯度冲突）
+        # 注册 conv 层 forward hook（用于特征空间梯度冲突 / feature trap）
         self._conflict_hook_handle = None
-        if self.use_gradient_conflict and len(self.trap_losses) >= 2:
+        need_hook = bool(getattr(self, "use_feature_trap", False)) or (
+            self.use_gradient_conflict and len(self.trap_losses) >= 2
+        )
+        if need_hook:
             model = self.model_mgr.model
             model._conflict_features = None
 
@@ -308,7 +732,12 @@ class DefenseTrainer:
                 model._conflict_features = input[0]
 
             self._conflict_hook_handle = model.conv.register_forward_hook(_capture_conv_input)
-            print(f"  ✓ 梯度冲突: 已注册 conv 层 hook (weight={self.conflict_weight})")
+            if self.use_gradient_conflict and len(self.trap_losses) >= 2:
+                print(f"  ✓ 梯度冲突: 已注册 conv 层 hook (weight={self.conflict_weight})")
+            if getattr(self, "use_feature_trap", False) and getattr(self, "feature_trap_weight", 0.0) > 0:
+                print(f"  ✓ Feature trap: 已注册 conv 层 hook "
+                      f"(mode={getattr(self, 'feature_trap_mode', 'spatial_var')}, "
+                      f"weight={getattr(self, 'feature_trap_weight', 0.0)})")
 
         # 2. 设置敏感层微调
         if target_layers is not None:
@@ -434,6 +863,11 @@ class DefenseTrainer:
             print(f"  输入加噪: σ={self.input_noise_scale_target} (warmup_steps={self.input_noise_warmup_steps})")
         if self.use_gradient_conflict:
             print(f"  梯度冲突: weight={self.conflict_weight}, every_k={self.conflict_every_k}")
+        if getattr(self, "use_feature_trap", False) and getattr(self, "feature_trap_weight", 0.0) > 0:
+            ch = getattr(self, "feature_trap_channels", None)
+            ch_str = "all" if not ch else str(ch)
+            print(f"  Feature trap: mode={getattr(self, 'feature_trap_mode', 'spatial_var')}, "
+                  f"weight={getattr(self, 'feature_trap_weight', 0.0)}, channels={ch_str}")
         if self.method == 'geotrap':
             if self.grad_clip_mode != 'norm' or self.grad_energy_cap_mult > 0:
                 print(f"  Grad clip: mode={self.grad_clip_mode}, norm={self.grad_norm_clip}, "
@@ -445,7 +879,21 @@ class DefenseTrainer:
                 print(f"  乘法耦合: temperature={self.coupling_temperature}, use_log={self.coupling_use_log}")
             if self.use_awp:
                 print(f"  AWP: rho={self.awp_rho}, weight={self.awp_weight}, every_k={self.awp_every_k}, "
-                      f"param_scope={self.awp_param_scope}, exclude_bias={self.awp_exclude_bias}")
+                      f"param_scope={self.awp_param_scope}, exclude_bias={self.awp_exclude_bias}, "
+                      f"include_frozen={getattr(self, 'awp_include_frozen', False)}, "
+                      f"norm={getattr(self, 'awp_norm', 'tensor')}")
+            if bool(getattr(self, 'use_head_attack_sim', False)):
+                print(f"  Head-attack-sim: every_k={getattr(self, 'head_attack_sim_every_k', 1)}, "
+                      f"rho={getattr(self, 'head_attack_sim_rho', None)}, "
+                      f"lr={getattr(self, 'head_attack_sim_lr', None)}, "
+                      f"weight={getattr(self, 'head_attack_sim_weight', 1.0)}, "
+                      f"norm={getattr(self, 'head_attack_sim_norm', 'tensor')}, "
+                      f"exclude_bias={getattr(self, 'head_attack_sim_exclude_bias', False)}, "
+                      f"mp={getattr(self, 'head_attack_sim_mixed_precision', 'bf16')}, "
+                      f"render_unlearn_w={getattr(self, 'head_attack_sim_render_unlearn_weight', 0.0)}")
+            if getattr(self, "use_grad_surgery", False):
+                print(f"  Grad surgery: mode={getattr(self, 'grad_surgery_mode', 'pcgrad')}, "
+                      f"every_k={getattr(self, 'grad_surgery_every_k', 1)}")
 
         # Anti-shortcut 打印（支持 geotrap 和 naive_unlearning）
         if (self.freeze_head or self.freeze_head_bias) or (self.head_lr_mult != 1.0 or self.bias_lr_mult != 1.0):
@@ -655,7 +1103,19 @@ class DefenseTrainer:
         key_str = json.dumps(key_dict, sort_keys=True, default=str)
         digest = hashlib.sha256(key_str.encode()).hexdigest()[:12]
 
-        cache_dir = Path(self.config.get('misc', {}).get('workspace', 'output/workspace')) / 'cache'
+        # Teacher-gaussian cache can be multi-GB. Avoid duplicating it across experiments by
+        # defaulting to a shared cache directory under project output/workspace/cache.
+        #
+        # You can override this via:
+        #   misc:
+        #     teacher_cache_dir: /path/to/cache
+        misc_cfg = self.config.get('misc', {}) or {}
+        override_dir = misc_cfg.get('teacher_cache_dir') or misc_cfg.get('cache_dir')
+        if override_dir:
+            cache_dir = Path(str(override_dir))
+        else:
+            project_root = Path(__file__).resolve().parent.parent
+            cache_dir = project_root / 'output' / 'workspace' / 'cache'
         return cache_dir / f"teacher_gaussians_{digest}.pt"
 
     def compute_distillation_loss(self, student_gaussians, teacher_gaussians):
@@ -671,7 +1131,38 @@ class DefenseTrainer:
         """
         order = self.defense_config.get('distill_loss_order', 2)
         diff = student_gaussians - teacher_gaussians
-        return torch.mean(diff.abs() ** order)
+        abs_diff = diff.abs()
+
+        # Optional: per-attribute weighting (leverages the physical meaning of Gaussian vectors).
+        # Useful when the trap focuses on one attribute (e.g., opacity collapse) and we want to
+        # preserve source rendering quality by enforcing stronger distillation on that channel.
+        w_cfg = (self.defense_config.get('distill_channel_weights') or
+                 self.defense_config.get('distill_attribute_weights') or {})
+        weights = None
+        if isinstance(w_cfg, dict) and w_cfg:
+            # group-wise weights (default 1.0)
+            w_pos = float(w_cfg.get('position', 1.0))
+            w_opacity = float(w_cfg.get('opacity', 1.0))
+            w_scale = float(w_cfg.get('scale', 1.0))
+            w_rot = float(w_cfg.get('rotation', 1.0))
+            w_color = float(w_cfg.get('color', 1.0))
+
+            w = torch.ones((14,), device=abs_diff.device, dtype=abs_diff.dtype)
+            w[0:3] *= w_pos
+            w[3:4] *= w_opacity
+            w[4:7] *= w_scale
+            w[7:11] *= w_rot
+            w[11:14] *= w_color
+            weights = w.view(1, 1, 14)
+        elif isinstance(w_cfg, (list, tuple)) and len(w_cfg) == 14:
+            w = torch.tensor([float(x) for x in w_cfg], device=abs_diff.device, dtype=abs_diff.dtype)
+            weights = w.view(1, 1, 14)
+
+        if weights is None:
+            return torch.mean(abs_diff ** order)
+
+        # Weight the per-dimension contribution.
+        return torch.mean((abs_diff ** order) * weights)
 
     def compute_trap_loss(self, gaussians, model, input_images=None):
         """
@@ -902,7 +1393,97 @@ class DefenseTrainer:
 
         return conflict_loss.squeeze(), conflict_info
 
-    def _select_awp_params(self, model) -> List[tuple[str, torch.nn.Parameter]]:
+    def _compute_feature_trap_loss(self, model):
+        """
+        Feature-space trap loss (first-order, render-free).
+
+        Operates on the conv input features (UNet output) captured by the forward hook:
+          model._conflict_features: [B*V, C=14, H, W]
+
+        Intuition:
+          - The Gaussian head (conv) is a 1×1 conv; it cannot create spatial structure if
+            UNet outputs are spatially collapsed.
+          - Collapsing spatial variability for target inputs reduces the effectiveness of
+            head-only recovery fine-tuning (a common quick-attack shortcut).
+
+        Returns:
+            (loss_tensor, info_dict)
+        """
+        features = getattr(model, "_conflict_features", None)
+        if features is None:
+            loss = torch.tensor(0.0, device=self.device)
+            return loss, {"feature_trap_missing": 1.0}
+
+        f = features.float()
+
+        ch = getattr(self, "feature_trap_channels", None)
+        if ch:
+            try:
+                f = f[:, ch]
+            except Exception:
+                # Best-effort only; fall back to all channels.
+                pass
+
+        mode_raw = str(getattr(self, "feature_trap_mode", "spatial_var")).lower().strip()
+        modes = [m.strip() for m in mode_raw.split("+") if m.strip()]
+        if not modes:
+            loss = torch.tensor(0.0, device=self.device)
+            return loss, {"feature_trap_missing_mode": 1.0}
+
+        eps = 1e-8
+        total_loss = None
+        info = {}
+
+        for mode in modes:
+            if mode in ("spatial_var", "var", "variance"):
+                var_hw = f.var(dim=(-2, -1), unbiased=False)
+                loss = var_hw.mean()
+                info["feature_spatial_var"] = float(loss.detach().item())
+
+            elif mode in ("spatial_var_rel", "spatial_var_norm", "spatial_var_normalized", "spatial_var_normalize"):
+                # Scale-invariant spatial collapse:
+                #   E[ Var_hw(f) / (E_hw|f|^2 + eps) ]
+                # Avoids the trivial "just shrink amplitudes" workaround.
+                var_hw = f.var(dim=(-2, -1), unbiased=False)
+                mean_abs = f.abs().mean(dim=(-2, -1)).clamp_min(eps)
+                loss = (var_hw / (mean_abs * mean_abs + eps)).mean()
+                info["feature_spatial_var_rel"] = float(loss.detach().item())
+
+            elif mode in ("channel_var", "channel_variance"):
+                var_c = f.var(dim=1, unbiased=False)  # [B*V, H, W]
+                loss = var_c.mean()
+                info["feature_channel_var"] = float(loss.detach().item())
+
+            elif mode in ("channel_var_rel", "channel_var_norm", "channel_var_normalized", "channel_var_normalize"):
+                # Scale-invariant channel collapse:
+                #   E[ Var_c(f) / (E_c|f|^2 + eps) ]
+                var_c = f.var(dim=1, unbiased=False)
+                mean_abs_c = f.abs().mean(dim=1).clamp_min(eps)
+                loss = (var_c / (mean_abs_c * mean_abs_c + eps)).mean()
+                info["feature_channel_var_rel"] = float(loss.detach().item())
+
+            elif mode in ("spatial_mse", "demeaned_l2", "centered_l2", "spatial_l2"):
+                mean_hw = f.mean(dim=(-2, -1), keepdim=True)
+                loss = ((f - mean_hw) ** 2).mean()
+                info["feature_spatial_mse"] = float(loss.detach().item())
+
+            elif mode in ("l2", "energy", "mse"):
+                loss = (f ** 2).mean()
+                info["feature_l2"] = float(loss.detach().item())
+
+            else:
+                raise ValueError(
+                    f"feature_trap.mode 不支持: {mode}（支持 spatial_var / spatial_var_rel / "
+                    f"channel_var / channel_var_rel / spatial_mse / l2；也支持用 '+' 组合）"
+                )
+
+            total_loss = loss if total_loss is None else (total_loss + loss)
+
+        if total_loss is None:
+            total_loss = torch.tensor(0.0, device=self.device)
+        return total_loss, info
+
+    def _select_awp_params(self, model, include_frozen: bool = False) -> List[tuple[str, torch.nn.Parameter]]:
         """
         选择 AWP 要扰动的参数集合（默认 head: conv.*）。
         """
@@ -910,8 +1491,9 @@ class DefenseTrainer:
         exclude_bias = bool(getattr(self, "awp_exclude_bias", True))
 
         selected: List[tuple[str, torch.nn.Parameter]] = []
+        target_layers = getattr(self, "target_layers", None) or []
         for name, param in model.named_parameters():
-            if not param.requires_grad:
+            if (not include_frozen) and (not param.requires_grad):
                 continue
             if exclude_bias and name.endswith(".bias"):
                 continue
@@ -919,17 +1501,26 @@ class DefenseTrainer:
             ok = False
             if scope == "trainable":
                 ok = True
+            elif scope in ("target_layers", "target_layer", "selected_layers", "selected"):
+                # Match the same substring semantics as selective fine-tuning.
+                # This keeps AWP perturbation aligned with what we actually update.
+                for layer_key in target_layers:
+                    if layer_key and (layer_key in name):
+                        ok = True
+                        break
             elif scope == "unet":
                 ok = name.startswith("unet.")
+            elif scope in ("head", "conv", "gaussian_head"):
+                ok = name.startswith("conv.")
             else:
-                # default: head
+                # default: head (backward compatible)
                 ok = name.startswith("conv.")
 
             if ok:
                 selected.append((name, param))
         return selected
 
-    def _compute_awp_trap_loss(self, model, input_images, base_trap_loss):
+    def _compute_awp_trap_loss(self, model, input_images):
         """
         一阶 AWP：在参数空间做一次“最大化 trap loss”的扰动，再最小化扰动点的 trap loss。
 
@@ -937,35 +1528,75 @@ class DefenseTrainer:
             min_θ  [ L_trap(θ) + weight * L_trap(θ + ε*(θ)) ]
         其中 ε 沿着 +∇_θ L_trap 的方向（使 trap 变浅），从而增强对修复微调的鲁棒性。
         """
-        awp_params = self._select_awp_params(model)
+        include_frozen = bool(getattr(self, "awp_include_frozen", False))
+        awp_params = self._select_awp_params(model, include_frozen=include_frozen)
         if not awp_params:
             return {}, torch.tensor(0.0, device=input_images.device)
 
-        params_only = [p for _, p in awp_params]
-        grads = torch.autograd.grad(
-            outputs=base_trap_loss,
-            inputs=params_only,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-        )
+        # Temporarily enable gradients for selected params (e.g., frozen head) to obtain
+        # the perturbation direction. We do a fresh forward to guarantee the graph includes them.
+        req_backup = {name: p.requires_grad for name, p in awp_params}
+        try:
+            for _, p in awp_params:
+                if not p.requires_grad:
+                    p.requires_grad_(True)
 
-        # Apply perturbation: theta <- theta + rho * g / ||g||
+            with torch.set_grad_enabled(True):
+                with self._autocast_defense():
+                    gaussians_base = model.forward_gaussians(input_images)
+                gaussians_base = gaussians_base.float()
+            _, base_trap_loss = self.compute_trap_loss(gaussians_base, model)
+
+            params_only = [p for _, p in awp_params]
+            grads = torch.autograd.grad(
+                outputs=base_trap_loss,
+                inputs=params_only,
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True,
+            )
+        finally:
+            for name, p in awp_params:
+                p.requires_grad_(req_backup.get(name, p.requires_grad))
+
+        # Apply perturbation (first-order):
+        #   theta <- theta + rho * g / ||g||   (norm can be per-tensor or global)
         backup = {}
         rho = float(getattr(self, "awp_rho", 0.0))
         eps = 1e-12
-        for (name, param), grad in zip(awp_params, grads):
-            if grad is None:
-                continue
-            g = grad.detach()
-            norm = g.float().norm().clamp_min(eps)
-            delta = (rho * g / norm).to(dtype=param.data.dtype)
-            backup[name] = param.data.clone()
-            param.data.add_(delta)
+        norm_mode = str(getattr(self, "awp_norm", "tensor")).lower()
+        if norm_mode in ("global", "all", "total"):
+            total = None
+            for grad in grads:
+                if grad is None:
+                    continue
+                g2 = grad.detach().float().pow(2).sum()
+                total = g2 if total is None else (total + g2)
+            if total is None:
+                total = torch.tensor(0.0, device=input_images.device)
+            global_norm = torch.sqrt(total + eps).clamp_min(eps)
+
+            for (name, param), grad in zip(awp_params, grads):
+                if grad is None:
+                    continue
+                g = grad.detach()
+                delta = (rho * g / global_norm).to(dtype=param.data.dtype)
+                backup[name] = param.data.clone()
+                param.data.add_(delta)
+        else:
+            # Legacy: per-tensor normalize (safe only when selecting few tensors)
+            for (name, param), grad in zip(awp_params, grads):
+                if grad is None:
+                    continue
+                g = grad.detach()
+                norm = g.float().norm().clamp_min(eps)
+                delta = (rho * g / norm).to(dtype=param.data.dtype)
+                backup[name] = param.data.clone()
+                param.data.add_(delta)
 
         # Forward at perturbed weights
         with torch.set_grad_enabled(True):
-            with torch.autocast('cuda', dtype=torch.bfloat16):
+            with self._autocast_defense():
                 gaussians_awp = model.forward_gaussians(input_images)
             gaussians_awp = gaussians_awp.float()
 
@@ -1068,7 +1699,7 @@ class DefenseTrainer:
         if is_target_data:
             if self.method == 'naive_unlearning':
                 # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升（干净权重）
-                with torch.autocast('cuda', dtype=torch.bfloat16):
+                with self._autocast_defense():
                     student_gaussians = model.forward_gaussians(input_images)
                 student_gaussians = student_gaussians.float()
                 total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
@@ -1078,7 +1709,7 @@ class DefenseTrainer:
 
                 # (a) 干净权重前向 → trap loss
                 with torch.set_grad_enabled(True):
-                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                    with self._autocast_defense():
                         gaussians_clean = model.forward_gaussians(input_images)
                     gaussians_clean = gaussians_clean.float()
 
@@ -1087,6 +1718,13 @@ class DefenseTrainer:
                 loss_dict.update(trap_dict_clean)
 
                 total_loss = lambda_trap * trap_loss_clean
+
+                # (a.1) Feature-space trap（可选）：在 UNet→head 的共享瓶颈特征上制造空间塌缩
+                # 目标：让 head-only 的恢复微调不再能快速修复结构（conv 是 1×1）。
+                if getattr(self, "use_feature_trap", False) and getattr(self, "feature_trap_weight", 0.0) > 0:
+                    ft_loss, ft_info = self._compute_feature_trap_loss(model)
+                    loss_dict.update(ft_info)
+                    total_loss = total_loss + self.feature_trap_weight * ft_loss
 
                 # (a.2) 特征空间梯度冲突（在干净前向的计算图上）
                 self._train_step_counter += 1
@@ -1103,18 +1741,30 @@ class DefenseTrainer:
                         and self.awp_every_k > 0
                         and self._train_step_counter % self.awp_every_k == 0):
                     awp_dict, awp_loss = self._compute_awp_trap_loss(
-                        model, input_images, trap_loss_clean
+                        model, input_images
                     )
                     for k, v in awp_dict.items():
                         loss_dict[f'awp_{k}'] = v
                     total_loss = total_loss + lambda_trap * self.awp_weight * awp_loss
+
+                # (a.4) Head-attack simulation（可选）：
+                # 通过 render_loss 的梯度方向模拟攻击者对 head(conv) 的一步更新，
+                # 然后要求在该 perturbed head 上 trap 仍然成立，压制 "head-only recovery" shortcut。
+                if bool(getattr(self, 'use_head_attack_sim', False)):
+                    hs_dict, hs_loss = self._compute_head_attack_sim_trap_loss(
+                        model, batch, input_images
+                    )
+                    if hs_dict:
+                        loss_dict.update(hs_dict)
+                    if isinstance(hs_loss, torch.Tensor):
+                        total_loss = total_loss + lambda_trap * float(getattr(self, 'head_attack_sim_weight', 1.0)) * hs_loss
 
                 # (b) 加噪权重前向 → trap loss（参数鲁棒性）
                 if self.use_param_noise:
                     original_state = self._add_param_noise(model)
 
                     with torch.set_grad_enabled(True):
-                        with torch.autocast('cuda', dtype=torch.bfloat16):
+                        with self._autocast_defense():
                             gaussians_noisy = model.forward_gaussians(input_images)
                         gaussians_noisy = gaussians_noisy.float()
 
@@ -1134,7 +1784,7 @@ class DefenseTrainer:
                     input_images_noisy = self._add_input_noise(input_images)
 
                     with torch.set_grad_enabled(True):
-                        with torch.autocast('cuda', dtype=torch.bfloat16):
+                        with self._autocast_defense():
                             gaussians_input_noisy = model.forward_gaussians(input_images_noisy)
                         gaussians_input_noisy = gaussians_input_noisy.float()
 
@@ -1149,7 +1799,7 @@ class DefenseTrainer:
         else:
             # Source Data: 干净权重上前向 → 蒸馏损失
             with torch.set_grad_enabled(True):
-                with torch.autocast('cuda', dtype=torch.bfloat16):
+                with self._autocast_defense():
                     student_gaussians = model.forward_gaussians(input_images)
                 student_gaussians = student_gaussians.float()
 
@@ -1159,6 +1809,12 @@ class DefenseTrainer:
 
             lambda_distill = self.defense_config.get('lambda_distill', 1.0)
             total_loss = lambda_distill * distill_loss
+
+        # Optional: anchoring regularizer (stage-wise)
+        anchor_loss = self._compute_anchor_loss(model, is_target_data=is_target_data)
+        if anchor_loss is not None:
+            loss_dict['anchor'] = float(anchor_loss.detach().float().item())
+            total_loss = total_loss + float(self.anchor_weight) * anchor_loss
 
         loss_dict['loss'] = total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss
 
@@ -1187,7 +1843,7 @@ class DefenseTrainer:
 
         data = prepare_lgm_data(batch, self.model_mgr.model, self.device)
 
-        with torch.autocast('cuda', dtype=torch.bfloat16):
+        with self._autocast_defense():
             results = self.model_mgr.model.forward(data, step_ratio=1.0)
 
         render_loss = results['loss']
@@ -1260,6 +1916,8 @@ class DefenseTrainer:
                     batch = next(target_iter)
                     loss_dict = self.train_step(batch, is_target_data=True)
                     accum_has_target = True
+                    if getattr(self, "use_grad_surgery", False):
+                        self._maybe_apply_grad_surgery_(source_iter)
 
             except StopIteration:
                 if use_source:
@@ -1272,6 +1930,8 @@ class DefenseTrainer:
                     batch = next(target_iter)
                     loss_dict = self.train_step(batch, is_target_data=True)
                     accum_has_target = True
+                    if getattr(self, "use_grad_surgery", False):
+                        self._maybe_apply_grad_surgery_(source_iter)
 
             # 累积损失
             for key, value in loss_dict.items():
@@ -1371,6 +2031,95 @@ class DefenseTrainer:
 
         return avg_metrics, global_step
 
+    def _maybe_apply_grad_surgery_(self, source_iter) -> None:
+        """
+        Optionally apply first-order gradient surgery on current gradients (target step),
+        using a fresh source batch to compute the distillation gradient direction.
+
+        This modifies model parameter .grad in-place.
+        """
+        if not getattr(self, "use_grad_surgery", False):
+            return
+        if getattr(self, "grad_surgery_every_k", 1) <= 0:
+            return
+
+        # Reuse the existing step counter to keep schedules consistent with other components.
+        step = int(getattr(self, "_train_step_counter", 0))
+        if step <= 0:
+            step = 1
+        if step % int(getattr(self, "grad_surgery_every_k", 1)) != 0:
+            return
+
+        if str(getattr(self, "grad_surgery_mode", "pcgrad")).lower() not in ("pcgrad", "projection"):
+            return
+
+        # Sample one source batch for distillation gradient direction.
+        try:
+            src_batch = next(source_iter)
+        except StopIteration:
+            source_iter = iter(self.source_loader)
+            src_batch = next(source_iter)
+
+        self._apply_pcgrad_against_source_(src_batch)
+
+    def _apply_pcgrad_against_source_(self, source_batch) -> None:
+        """
+        PCGrad-style projection:
+          If dot(g_trap, g_distill) < 0, project g_trap to be orthogonal to g_distill.
+
+        This reduces first-order increase of the distillation loss caused by target/trap updates,
+        improving retention at similar trap strength.
+        """
+        model = self.model_mgr.model
+        device = self.device
+        eps = float(getattr(self, "grad_surgery_eps", 1e-12))
+
+        # Only consider currently trainable params (selective fine-tuning friendly).
+        params = [p for p in model.parameters() if p.requires_grad]
+        if not params:
+            return
+
+        # Compute distillation gradient direction on a single source batch (no grad accumulation here).
+        input_images = source_batch.get('input_images')
+        teacher_gaussians = source_batch.get('teacher_gaussians')
+        if input_images is None or teacher_gaussians is None:
+            return
+
+        input_images = input_images.to(device)
+        teacher_gaussians = teacher_gaussians.to(device)
+
+        with torch.set_grad_enabled(True):
+            with self._autocast_defense():
+                student_gaussians = model.forward_gaussians(input_images)
+            student_gaussians = student_gaussians.float()
+            distill_loss = self.compute_distillation_loss(student_gaussians, teacher_gaussians)
+
+        grads_s = torch.autograd.grad(
+            outputs=distill_loss,
+            inputs=params,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        # Project current grads (trap) against distill grads.
+        for p, gs in zip(params, grads_s):
+            gt = p.grad
+            if gt is None or gs is None:
+                continue
+            # Use fp32 for dot/norm computations, but apply in original dtype.
+            gt_f = gt.detach().float()
+            gs_f = gs.detach().float()
+            dot = (gt_f * gs_f).sum()
+            if not torch.isfinite(dot):
+                continue
+            # Conflict if gradients point in opposite directions (dot < 0).
+            if dot >= 0:
+                continue
+            denom = gs_f.pow(2).sum().clamp_min(eps)
+            scale = (dot / denom).to(dtype=gt.dtype)
+            p.grad.add_((-scale) * gs.to(dtype=gt.dtype))
+
     def validate(self):
         """
         验证模型
@@ -1393,7 +2142,7 @@ class DefenseTrainer:
             with torch.no_grad():
                 for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
                     data = prepare_lgm_data(batch, self.model_mgr.model, self.device)
-                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                    with self._autocast_defense():
                         results = self.model_mgr.model.forward(data, step_ratio=1.0)
                     total_losses.setdefault('render_loss', 0.0)
                     total_losses['render_loss'] += results['loss'].item()
@@ -1403,12 +2152,21 @@ class DefenseTrainer:
             with torch.no_grad():
                 for batch in tqdm(self.target_val_loader, desc="Val [Target]"):
                     input_images = batch['input_images'].to(self.device)
-                    student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
+                    with self._autocast_defense():
+                        student_gaussians = self.model_mgr.model.forward_gaussians(input_images)
 
-                    loss_dict = {}
-                    for name, trap_loss_fn in self.trap_losses.items():
-                        loss = trap_loss_fn(student_gaussians)
-                        loss_dict[name] = loss.item()
+                    # Use the same aggregation semantics as training (static_combined/total).
+                    loss_dict, _ = self.compute_trap_loss(
+                        student_gaussians.float(), self.model_mgr.model
+                    )
+
+                    # Optional: feature trap stats (does not require grad; hook works in no_grad too).
+                    if getattr(self, "use_feature_trap", False) and getattr(self, "feature_trap_weight", 0.0) > 0:
+                        try:
+                            _, ft_info = self._compute_feature_trap_loss(self.model_mgr.model)
+                            loss_dict.update(ft_info)
+                        except Exception:
+                            pass
 
                     for key, value in loss_dict.items():
                         if key not in total_losses:
@@ -1459,7 +2217,7 @@ class DefenseTrainer:
                 val_batch = next(iter(self.target_val_loader))
                 input_images = val_batch['input_images'].to(self.device)
                 with torch.enable_grad():
-                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                    with self._autocast_defense():
                         gaussians = model.forward_gaussians(input_images)
                     gaussians = gaussians.float()
                     _, conflict_info = self._compute_gradient_conflict(gaussians, model)
@@ -1620,6 +2378,21 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
     global_step = 0
     validate_every = 5
 
+    # Optional: multi-stage step schedule (curriculum).
+    #
+    # This is useful for the retention-vs-trap tradeoff:
+    # - Stage A: plant a deep trap with target-heavy mixing / lower distill.
+    # - Stage B: keep trap active but increase distill + source mixing to recover retention.
+    schedule_cfg = (config.get('defense', {}).get('schedule') or
+                    config.get('defense', {}).get('curriculum') or
+                    config.get('defense', {}).get('stages') or {})
+    if isinstance(schedule_cfg, list):
+        schedule_stages = schedule_cfg
+    else:
+        schedule_stages = schedule_cfg.get('stages') if isinstance(schedule_cfg, dict) else None
+    if not schedule_stages:
+        schedule_stages = None
+
     # 优先使用 defense_steps（显式检查 None，避免 0 被误判为 epoch-based）
     if defense_steps is not None:
         use_steps = True
@@ -1629,58 +2402,239 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
         use_steps = False
         print(f"[Defense] 训练模式: epoch-based, defense_epochs={defense_epochs}")
 
+    def _apply_stage_overrides(stage_cfg: dict) -> None:
+        if not isinstance(stage_cfg, dict):
+            return
+        if 'source_ratio' in stage_cfg:
+            try:
+                trainer.source_ratio = float(stage_cfg['source_ratio'])
+            except Exception:
+                pass
+        if 'lambda_trap' in stage_cfg:
+            try:
+                trainer.defense_config['lambda_trap'] = float(stage_cfg['lambda_trap'])
+            except Exception:
+                pass
+        if 'lambda_distill' in stage_cfg:
+            try:
+                trainer.defense_config['lambda_distill'] = float(stage_cfg['lambda_distill'])
+            except Exception:
+                pass
+        # Stage-wise anchoring controls (first-order).
+        if 'anchor_enabled' in stage_cfg:
+            try:
+                trainer.anchor_enabled = bool(stage_cfg['anchor_enabled'])
+            except Exception:
+                pass
+        if 'anchor_weight' in stage_cfg:
+            try:
+                trainer.anchor_weight = float(stage_cfg['anchor_weight'])
+            except Exception:
+                pass
+        if 'anchor_apply_on' in stage_cfg:
+            try:
+                trainer.anchor_apply_on = str(stage_cfg['anchor_apply_on']).lower().strip()
+            except Exception:
+                pass
+        if 'anchor_patterns' in stage_cfg:
+            pats = stage_cfg.get('anchor_patterns')
+            if isinstance(pats, str):
+                pats = [p.strip() for p in pats.split(',') if p.strip()]
+            if isinstance(pats, (list, tuple)):
+                trainer.anchor_patterns = [str(p) for p in pats if str(p)]
+
     epoch = 0
-    while True:
-        if use_steps and global_step >= total_steps:
-            # 防止在恢复/异常情况下重复多跑一步
-            break
-        epoch += 1
-        train_metrics, global_step = trainer.train_epoch(
-            epoch,
-            global_step,
-            max_steps=total_steps if use_steps else None,
-        )
-        combined = {f"train_{k}": v for k, v in train_metrics.items()}
-        combined['epoch'] = epoch
-
-        do_val = (epoch % validate_every == 0) or (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
-        if do_val:
-            val_metrics = trainer.validate()
-            combined.update({f"val_{k}": v for k, v in val_metrics.items()})
-            if use_steps:
-                print(f"  [Defense] Epoch {epoch} (Optimizer Step {global_step}/{total_steps}) - "
-                      f"Loss: {train_metrics['loss']:.4f}, "
-                      f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+    use_schedule = (schedule_stages is not None) and use_steps
+    if use_schedule:
+        # Validate schedule sums to total_steps (best-effort; allow mismatch but warn).
+        try:
+            planned = sum(int(s.get('steps', 0) or 0) for s in schedule_stages)
+        except Exception:
+            planned = None
+        if planned is not None and planned != int(total_steps):
+            # Prefer the explicit `training.defense_steps` (often overridden via CLI) and
+            # scale the stage steps proportionally, to keep the schedule usable at
+            # different total budgets.
+            print(f"[Defense][Schedule] 警告: stages 总步数={planned} 与 training.defense_steps={total_steps} 不一致。"
+                  f"将按比例缩放 stages 以匹配 defense_steps。")
+            if planned <= 0:
+                print("[Defense][Schedule] stages 总步数无效（<=0），已忽略 schedule。")
+                schedule_stages = None
             else:
-                print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-                      f"Loss: {train_metrics['loss']:.4f}, "
-                      f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
-            for k in ('position_static', 'scale_static', 'opacity_static',
-                      'rotation_static', 'color_static', 'coupling_value',
-                      'conflict_mean_cos'):
-                if k in val_metrics:
-                    print(f"    {k}: {val_metrics[k]:.4f}")
-        else:
-            if use_steps:
-                print(f"  [Defense] Epoch {epoch} (Optimizer Step {global_step}/{total_steps}) - "
-                      f"Loss: {train_metrics['loss']:.4f}")
+                # Collect non-zero stages to keep the schedule shape.
+                nonzero = []
+                for idx, stage in enumerate(schedule_stages):
+                    try:
+                        s = int(stage.get('steps', 0) or 0)
+                    except Exception:
+                        s = 0
+                    if s > 0:
+                        nonzero.append((idx, s))
+
+                if not nonzero:
+                    print("[Defense][Schedule] stages 中无有效 steps（全部<=0），已忽略 schedule。")
+                    schedule_stages = None
+                else:
+                    tgt = int(total_steps)
+                    if tgt <= 0:
+                        print("[Defense][Schedule] defense_steps<=0，已忽略 schedule。")
+                        schedule_stages = None
+                    elif tgt < len(nonzero):
+                        print(f"[Defense][Schedule] 警告: defense_steps={tgt} 小于非零 stage 数={len(nonzero)}，"
+                              f"将仅保留前 {tgt} 个 stage，每个 1 step。")
+                        for j, (idx, _s) in enumerate(nonzero):
+                            schedule_stages[idx]['steps'] = 1 if j < tgt else 0
+                    else:
+                        scale = float(tgt) / float(planned)
+                        new_steps = []
+                        for idx, s in nonzero:
+                            scaled = int(round(float(s) * scale))
+                            scaled = max(1, scaled)
+                            new_steps.append([idx, scaled])
+
+                        # Fix rounding drift to make sum exactly `tgt`.
+                        current = sum(s for _idx, s in new_steps)
+                        diff = tgt - current
+                        if diff != 0:
+                            # First, add all positive diff to the last stage.
+                            if diff > 0:
+                                new_steps[-1][1] += diff
+                            else:
+                                # Subtract from stages with steps>1, from the end.
+                                need = -diff
+                                for k in range(len(new_steps) - 1, -1, -1):
+                                    if need <= 0:
+                                        break
+                                    can = max(0, new_steps[k][1] - 1)
+                                    take = min(can, need)
+                                    new_steps[k][1] -= take
+                                    need -= take
+                                if need > 0:
+                                    # As a last resort, force the last stage to absorb the remainder.
+                                    new_steps[-1][1] = max(1, new_steps[-1][1] - need)
+
+                        # Apply scaled steps back.
+                        for idx, scaled in new_steps:
+                            schedule_stages[idx]['steps'] = int(scaled)
+
+        use_schedule = schedule_stages is not None
+
+    if use_schedule:
+        stage_idx = 0
+        for stage in schedule_stages:
+            stage_idx += 1
+            stage_steps = int(stage.get('steps', 0) or 0)
+            if stage_steps <= 0:
+                continue
+            stage_name = str(stage.get('name', f'stage{stage_idx}'))
+            # Optional: snapshot anchor state at the *start* of this stage (typically stage B).
+            if bool(stage.get('anchor_snapshot', False)):
+                pats = stage.get('anchor_patterns', None)
+                if isinstance(pats, str):
+                    pats = [p.strip() for p in pats.split(',') if p.strip()]
+                if pats is None:
+                    pats = getattr(trainer, 'anchor_patterns', None)
+                try:
+                    n = trainer.snapshot_anchor_state(patterns=pats)
+                    print(f"[Defense][Schedule] Anchor snapshot taken: tensors={n}")
+                except Exception as e:
+                    print(f"[Defense][Schedule] Anchor snapshot failed: {type(e).__name__}: {e}")
+            _apply_stage_overrides(stage)
+            stage_end = global_step + stage_steps
+            print(f"[Defense][Schedule] Stage {stage_idx}/{len(schedule_stages)} '{stage_name}': "
+                  f"steps={stage_steps}, source_ratio={getattr(trainer, 'source_ratio', None)}, "
+                  f"lambda_trap={trainer.defense_config.get('lambda_trap')}, "
+                  f"lambda_distill={trainer.defense_config.get('lambda_distill')}, "
+                  f"anchor_w={getattr(trainer, 'anchor_weight', 0.0)}")
+
+            while global_step < stage_end:
+                epoch += 1
+                train_metrics, global_step = trainer.train_epoch(
+                    epoch,
+                    global_step,
+                    max_steps=stage_end,
+                )
+                combined = {f"train_{k}": v for k, v in train_metrics.items()}
+                combined['epoch'] = epoch
+                combined['schedule_stage'] = stage_name
+                combined['schedule_stage_idx'] = stage_idx
+                combined['schedule_stage_end'] = stage_end
+
+                do_val = (epoch % validate_every == 0) or (global_step >= stage_end)
+                if do_val:
+                    val_metrics = trainer.validate()
+                    combined.update({f"val_{k}": v for k, v in val_metrics.items()})
+                    print(f"  [Defense] Epoch {epoch} (Stage {stage_idx}, Optimizer Step {global_step}/{stage_end}) - "
+                          f"Loss: {train_metrics['loss']:.4f}, "
+                          f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+                    for k in ('position_static', 'scale_static', 'opacity_static',
+                              'rotation_static', 'color_static', 'coupling_value',
+                              'conflict_mean_cos'):
+                        if k in val_metrics:
+                            print(f"    {k}: {val_metrics[k]:.4f}")
+                else:
+                    print(f"  [Defense] Epoch {epoch} (Stage {stage_idx}, Optimizer Step {global_step}/{stage_end}) - "
+                          f"Loss: {train_metrics['loss']:.4f}")
+
+                epoch_history.append(combined)
+
+        # Final checkpoint after all stages
+        if cache_mode == "registry":
+            trainer.save_checkpoint(save_dir, epoch, is_final=True)
+
+    else:
+        # Legacy single-stage training loop
+        while True:
+            if use_steps and global_step >= total_steps:
+                # 防止在恢复/异常情况下重复多跑一步
+                break
+            epoch += 1
+            train_metrics, global_step = trainer.train_epoch(
+                epoch,
+                global_step,
+                max_steps=total_steps if use_steps else None,
+            )
+            combined = {f"train_{k}": v for k, v in train_metrics.items()}
+            combined['epoch'] = epoch
+
+            do_val = (epoch % validate_every == 0) or (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
+            if do_val:
+                val_metrics = trainer.validate()
+                combined.update({f"val_{k}": v for k, v in val_metrics.items()})
+                if use_steps:
+                    print(f"  [Defense] Epoch {epoch} (Optimizer Step {global_step}/{total_steps}) - "
+                          f"Loss: {train_metrics['loss']:.4f}, "
+                          f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+                else:
+                    print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                          f"Loss: {train_metrics['loss']:.4f}, "
+                          f"DistillMSE: {val_metrics.get('source_distill_mse', 0):.6f}")
+                for k in ('position_static', 'scale_static', 'opacity_static',
+                          'rotation_static', 'color_static', 'coupling_value',
+                          'conflict_mean_cos'):
+                    if k in val_metrics:
+                        print(f"    {k}: {val_metrics[k]:.4f}")
             else:
-                print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
-                      f"Loss: {train_metrics['loss']:.4f}")
+                if use_steps:
+                    print(f"  [Defense] Epoch {epoch} (Optimizer Step {global_step}/{total_steps}) - "
+                          f"Loss: {train_metrics['loss']:.4f}")
+                else:
+                    print(f"  [Defense] Epoch {epoch}/{defense_epochs} - "
+                          f"Loss: {train_metrics['loss']:.4f}")
 
-        epoch_history.append(combined)
+            epoch_history.append(combined)
 
-        # 保存 checkpoint
-        is_final = (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
-        if is_final:
-            if cache_mode == "registry":
-                trainer.save_checkpoint(save_dir, epoch, is_final=True)
+            # 保存 checkpoint
+            is_final = (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
+            if is_final:
+                if cache_mode == "registry":
+                    trainer.save_checkpoint(save_dir, epoch, is_final=True)
 
-        # 退出条件
-        if use_steps and global_step >= total_steps:
-            break
-        if not use_steps and epoch >= defense_epochs:
-            break
+            # 退出条件
+            if use_steps and global_step >= total_steps:
+                break
+            if not use_steps and epoch >= defense_epochs:
+                break
 
     state_dict = None
     if return_state_dict or cache_mode != "registry":
