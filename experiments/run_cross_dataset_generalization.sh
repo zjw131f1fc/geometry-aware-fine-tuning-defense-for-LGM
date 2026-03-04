@@ -36,8 +36,8 @@ mkdir -p "${MPLCONFIGDIR}"
 GPU_LIST="${1:-0}"
 echo "GPU列表: ${GPU_LIST}"
 
-CATEGORIES=(shoe dish bowl box)
-METHODS=(geotrap naive_unlearning)
+CATEGORIES=(shoe plant dish bowl box)
+METHODS=(naive_unlearning geotrap)
 
 ATTACK_TARGET_DATASET="gso"
 DEFENSE_TARGET_DATASET="omni"

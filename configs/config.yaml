@@ -89,8 +89,8 @@ defense:
   method: geotrap
   tag: geotrap_v34_plant_fusehead_lora_retention
 
-  batch_size: 4
-  gradient_accumulation_steps: 1
+  batch_size: 2
+  gradient_accumulation_steps: 2
 
   target:
     dataset: omni
