@@ -254,6 +254,13 @@ class OmniObject3DDataset(Dataset):
         self.category_parse_mode = category_parse_mode
         self.dataset_name = dataset_name
 
+        # DEBUG模式：GSO物体缩放（通过环境变量 DEBUG_GSO_SCALE 控制）
+        # 用法：export DEBUG_GSO_SCALE=0.66  # 缩小到66%
+        import os
+        self.gso_scale_factor = float(os.environ.get('DEBUG_GSO_SCALE', '1.0'))
+        if self.gso_scale_factor != 1.0 and 'GSO' in self.dataset_name.upper():
+            print(f"[DEBUG] GSO物体缩放已启用: scale_factor={self.gso_scale_factor:.2f}")
+
         # 创建视角选择器
         if view_selector == 'orthogonal':
             self.view_selector = OrthogonalViewSelector(angle_offset=angle_offset)
@@ -459,7 +466,31 @@ class OmniObject3DDataset(Dataset):
             img_raw = Image.open(img_path)
             original_mode = img_raw.mode
             img = img_raw.convert('RGBA')
-            img = img.resize((self.input_size, self.input_size), Image.BILINEAR)
+
+            # DEBUG模式：GSO物体缩放（缩小物体并添加透明边距）
+            if self.gso_scale_factor != 1.0:
+                import numpy as np
+                # 先resize到目标尺寸
+                img_resized = img.resize((self.input_size, self.input_size), Image.BILINEAR)
+                img_array = np.array(img_resized)
+
+                # 计算缩放后的尺寸
+                new_size = int(self.input_size * self.gso_scale_factor)
+
+                # 缩小物体
+                img_small = img.resize((new_size, new_size), Image.LANCZOS)
+
+                # 创建新的透明背景图像
+                img_new = Image.new('RGBA', (self.input_size, self.input_size), (0, 0, 0, 0))
+
+                # 将缩小的物体粘贴到中心
+                offset = (self.input_size - new_size) // 2
+                img_new.paste(img_small, (offset, offset), img_small)
+
+                img = img_new
+            else:
+                img = img.resize((self.input_size, self.input_size), Image.BILINEAR)
+
             img_tensor = TF.to_tensor(img)  # [4, H, W], 值域[0, 1]
 
             # 对 RGB 黑底图片（无 alpha 通道），从黑色背景推断 alpha mask
