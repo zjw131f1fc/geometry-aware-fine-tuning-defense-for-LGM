@@ -236,6 +236,9 @@ class DefenseTrainer:
             anti_cfg = self.defense_config.get('antishortcut', {}) or {}
             self.freeze_head = bool(anti_cfg.get('freeze_head', False))
             self.freeze_head_bias = bool(anti_cfg.get('freeze_head_bias', False))
+            # freeze_lora_targets: 冻结 LoRA 可触及的层（qkv/proj），迫使 trap 写入上游 conv 层
+            self.freeze_lora_targets = bool(anti_cfg.get('freeze_lora_targets', False))
+            self.lora_target_modules = list(anti_cfg.get('lora_target_modules', ['qkv', 'proj']))
             self.head_lr_mult = float(anti_cfg.get('head_lr_mult', 1.0))
             self.head_bias_lr_mult = float(anti_cfg.get('head_bias_lr_mult', self.head_lr_mult))
             self.bias_lr_mult = float(anti_cfg.get('bias_lr_mult', 1.0))
@@ -286,6 +289,8 @@ class DefenseTrainer:
         else:
             self.freeze_head = False
             self.freeze_head_bias = False
+            self.freeze_lora_targets = False
+            self.lora_target_modules = ['qkv', 'proj']
             self.head_lr_mult = 1.0
             self.head_bias_lr_mult = 1.0
             self.bias_lr_mult = 1.0
@@ -750,6 +755,10 @@ class DefenseTrainer:
         if self.method in ('geotrap', 'naive_unlearning') and (self.freeze_head or self.freeze_head_bias):
             self._apply_antishortcut_freeze(self.model_mgr.model)
 
+        # 2.2 Anti-shortcut：冻结 LoRA 目标层（qkv/proj），迫使 trap 写入上游 conv 层
+        if self.method in ('geotrap', 'naive_unlearning') and self.freeze_lora_targets:
+            self._apply_lora_target_freeze(self.model_mgr.model)
+
         # 3. 设置数据加载器（双数据加载器模式）
         print("\n[3/5] 设置数据加载器...")
 
@@ -896,8 +905,9 @@ class DefenseTrainer:
                       f"every_k={getattr(self, 'grad_surgery_every_k', 1)}")
 
         # Anti-shortcut 打印（支持 geotrap 和 naive_unlearning）
-        if (self.freeze_head or self.freeze_head_bias) or (self.head_lr_mult != 1.0 or self.bias_lr_mult != 1.0):
+        if (self.freeze_head or self.freeze_head_bias or self.freeze_lora_targets) or (self.head_lr_mult != 1.0 or self.bias_lr_mult != 1.0):
             print(f"  Anti-shortcut: freeze_head={self.freeze_head}, freeze_head_bias={self.freeze_head_bias}, "
+                  f"freeze_lora_targets={self.freeze_lora_targets}, "
                   f"head_lr_mult={self.head_lr_mult}, head_bias_lr_mult={self.head_bias_lr_mult}, bias_lr_mult={self.bias_lr_mult}")
 
         print("\n" + "=" * 80)
@@ -960,6 +970,34 @@ class DefenseTrainer:
 
         if frozen == 0:
             print("  ⚠ Anti-shortcut: 未冻结任何参数（可能 head 已被冻结或名称不匹配）")
+
+    def _apply_lora_target_freeze(self, model):
+        """
+        Anti-shortcut: 冻结 LoRA 可触及的层（qkv/proj），迫使 trap 写入上游 conv 层。
+
+        说明：
+        - 当 freeze_lora_targets=True 时，冻结所有名字包含 lora_target_modules 的参数
+        - 默认 lora_target_modules=['qkv', 'proj']，对应 attention 的输入/输出投影
+        - 这样 LoRA 攻击者无法直接修改被防御的层，需要通过上游 conv 层绕过
+        """
+        frozen = 0
+        if self.freeze_lora_targets:
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    # 检查参数名是否包含任何 LoRA 目标模块
+                    # 匹配模式：attn.qkv.weight, attn.proj.bias 等
+                    for target_module in self.lora_target_modules:
+                        if f'.{target_module}.' in name or name.endswith(f'.{target_module}'):
+                            param.requires_grad = False
+                            frozen += 1
+                            print(f"  ✓ 冻结 LoRA 目标层: {name}")
+                            break
+
+        if self.freeze_lora_targets and frozen == 0:
+            print(f"  ⚠ Anti-shortcut (LoRA targets): 未冻结任何参数（可能名称不匹配）")
+            print(f"  目标模块: {self.lora_target_modules}")
+        elif frozen > 0:
+            print(f"  ✓ 共冻结 {frozen} 个 LoRA 目标层参数")
 
     def _build_optimizer_param_groups(self, model, training_config: Dict[str, Any]):
         """
@@ -2643,6 +2681,16 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
         while hasattr(raw, 'module'):
             raw = raw.module
         state_dict = {k: v.detach().cpu() for k, v in raw.state_dict().items()}
+
+    # 显式清理 trainer 内部的显存占用对象
+    if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+        del trainer.optimizer
+    if hasattr(trainer, 'model_mgr') and trainer.model_mgr is not None:
+        if hasattr(trainer.model_mgr, 'model') and trainer.model_mgr.model is not None:
+            del trainer.model_mgr.model
+        del trainer.model_mgr
+    if hasattr(trainer, 'data_mgr') and trainer.data_mgr is not None:
+        del trainer.data_mgr
 
     del trainer
     torch.cuda.empty_cache()

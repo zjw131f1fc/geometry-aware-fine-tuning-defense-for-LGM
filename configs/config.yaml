@@ -25,10 +25,10 @@ data:
   source:
     dataset: objaverse
     max_samples: 400
-    samples_per_object: 2
+    samples_per_object: 4
 
   target:
-    dataset: gso
+    dataset: omni
     categories: [plant]
 
   object_split:
@@ -37,10 +37,10 @@ data:
     dish: [1, 3, 7, 9, 13]
     bowl: [0, 2, 6, 10]
     box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
-  attack_samples_per_category: 5
+  attack_samples_per_category: 15
 
   # Retention-heavy mixing
-  source_ratio: 0.8
+  source_ratio: 0.9
   source_val_ratio: 0.1
   val_samples: 20
 
@@ -53,11 +53,11 @@ data:
 training:
   # Attack uses LoRA; defense remains full fine-tune by design.
   mode: lora
-  batch_size: 2
+  batch_size: 4
   lr: 0.00003
   weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   lambda_lpips: 1.0
   mixed_precision: bf16
 
@@ -65,9 +65,9 @@ training:
   optimizer_betas: [0.9, 0.95]
   optimizer_momentum: 0.9
 
-  attack_steps: 150
+  attack_steps: 400
   attack_epochs: null
-  defense_steps: 70
+  defense_steps: 200
   defense_epochs: null
 
 attack:
@@ -89,6 +89,9 @@ defense:
   method: geotrap
   tag: geotrap_v34_plant_fusehead_lora_retention
 
+  batch_size: 4
+  gradient_accumulation_steps: 1
+
   target:
     dataset: omni
     categories: null
@@ -107,18 +110,22 @@ defense:
       mode: logit
       topk_frac: 0.02
       topk_k: null
-    rotation: {static: false, dynamic: false}
-    color: {static: false, dynamic: false}
+    rotation: {static: true, dynamic: false}
+    color: {static: true, dynamic: false}
 
   trap_aggregation:
     method: bottleneck_logsumexp
     tau: 0.25
 
-  trap_combo: position+opacity
-  num_target_layers: 80
+  # trap_combo: position+opacity
+  # num_target_layers: 80
 
   antishortcut:
     freeze_head: true
+    # freeze_lora_targets: 冻结 LoRA 可触及的层（qkv/proj），迫使 trap 写入上游 ResnetBlock conv 层
+    # 理论上可提升对 LoRA 攻击的鲁棒性，因为攻击者无法直接修改被防御的层
+    freeze_lora_targets: false
+    # lora_target_modules: ['qkv', 'proj']  # 可选：自定义 LoRA 目标模块（默认与 lora.target_modules 一致）
 
   grad_clip:
     mode: energy
@@ -126,7 +133,7 @@ defense:
     energy_apply_on: target
 
   grad_surgery:
-    enabled: true
+    enabled: false
     mode: pcgrad
     every_k_steps: 1
     eps: 1.0e-12
@@ -138,9 +145,9 @@ defense:
     enabled: false
 
   # Weaken trap a bit; strengthen distill a lot.
-  lambda_trap: 30.0
-  lambda_distill: 3000.0
-  distill_loss_order: 2
+  lambda_trap: 10.0
+  lambda_distill: 400.0
+  distill_loss_order: 1
 
   robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
   input_noise: {enabled: false, noise_scale: 0.05, warmup_steps: 0}
@@ -177,13 +184,13 @@ misc:
 # # -----------------------------------------------------------------------------
 # # LoRA 配置（attack.mode=lora 时使用，可被 CLI 覆盖）
 # # -----------------------------------------------------------------------------
-# lora:
-#   r: 8
-#   alpha: 16
-#   dropout: 0.1
-#   target_modules:
-#     - qkv
-#     - proj
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0.1
+  target_modules:
+    - qkv
+    - proj
 
 # # -----------------------------------------------------------------------------
 # # 数据配置（默认轻量：单类别 + 少量样本）
@@ -225,11 +232,7 @@ misc:
 #     box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
 #   attack_samples_per_category: 5  # 从非 defense 物体中随机取多少个做 attack
 
-#   # Source/Target 混合比例（防御训练时 source 数据的比例）
-#   # 建议范围：0.25~0.45（越小越“写 trap”、越难修复；越大越保 source）
-#   source_ratio: 0.7
-#   # Source 数据 train/val 划分中 val 的比例（样本级别划分）
-#   source_val_ratio: 0.1
+#   # Source/Target 混合比例（防御训练时 source 数据的比例
 #   # Val loader 的样本数（用于每次评估 masked_psnr/lpips 的固定小集合）
 #   val_samples: 20
 

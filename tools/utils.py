@@ -255,6 +255,7 @@ def compute_defense_hash(config):
             'trap_losses': defense_cfg.get('trap_losses', {}),
             # 影响梯度写入分布/稳定性的关键项：必须进 hash，避免缓存错用
             'grad_clip': defense_cfg.get('grad_clip', {}),
+            'grad_surgery': defense_cfg.get('grad_surgery', {}),  # PCGrad等梯度手术
             'trap_aggregation': defense_cfg.get('trap_aggregation', {}),
             'trap_weights': defense_cfg.get('trap_weights', {}),
             'antishortcut': defense_cfg.get('antishortcut', {}),
@@ -262,6 +263,7 @@ def compute_defense_hash(config):
             'robustness': defense_cfg.get('robustness', {}),
             'input_noise': defense_cfg.get('input_noise', {}),
             'coupling': defense_cfg.get('coupling', {}),
+            'feature_trap': defense_cfg.get('feature_trap', {}),  # 特征陷阱
             'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
             'lambda_distill': defense_cfg.get('lambda_distill', 1.0),
             'distill_loss_order': defense_cfg.get('distill_loss_order', 2),

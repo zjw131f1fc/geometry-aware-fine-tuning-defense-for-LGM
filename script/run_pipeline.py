@@ -127,6 +127,8 @@ def parse_args():
     # 反捷径机制参数
     parser.add_argument('--freeze_head', type=str, default=None,
                         help='冻结头部卷积层：true / false（覆盖 config.defense.antishortcut.freeze_head）')
+    parser.add_argument('--freeze_lora_targets', type=str, default=None,
+                        help='冻结 LoRA 目标层（qkv/proj）：true / false（覆盖 config.defense.antishortcut.freeze_lora_targets）')
     return parser.parse_args()
 
 
@@ -348,6 +350,12 @@ def main():
         config.setdefault('defense', {}).setdefault('antishortcut', {})
         config['defense']['antishortcut']['freeze_head'] = val
         print(f"[Pipeline] antishortcut.freeze_head 覆盖: {val}")
+
+    if args.freeze_lora_targets is not None:
+        val = args.freeze_lora_targets.lower() == 'true'
+        config.setdefault('defense', {}).setdefault('antishortcut', {})
+        config['defense']['antishortcut']['freeze_lora_targets'] = val
+        print(f"[Pipeline] antishortcut.freeze_lora_targets 覆盖: {val}")
 
     # CLI 覆盖了 trap_combo/num_target_layers 时，重新解析 target_layers
     combo = config['defense'].get('trap_combo')
@@ -660,6 +668,11 @@ def main():
                 torch.save(baseline_gaussians, gaussians_cache_path)
                 print(f"[Cache] baseline Gaussians 已缓存: {len(baseline_gaussians)} 个样本")
 
+    # ========== Phase 1.9: 清理 Phase 1 残留的显存 ==========
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # ========== Phase 2: Defense Training ==========
     need_defense_state = (defense_cache_mode != "registry")
     if need_defense_state:
@@ -753,6 +766,14 @@ def main():
 
         del diag_eval, diag_model, diag_mgr, defense_target_mgr
         torch.cuda.empty_cache()
+
+    # ========== Phase 2.9: 显式清理 defense 阶段残留的显存 ==========
+    # 在 Phase 3 开始前，确保所有 defense 相关的对象都被释放
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
     # ========== Phase 3: Post-Defense Attack ==========
     if defense_tag is not None:
