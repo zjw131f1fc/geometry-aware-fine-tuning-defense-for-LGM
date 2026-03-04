@@ -21,8 +21,6 @@
 #   DEFENSE_CACHE_MODE=registry
 #   DEFENSE_BATCH_SIZE=2
 #   DEFENSE_GRAD_ACCUM=2
-#   ATTACK_STEPS=200
-#   DEFENSE_STEPS=200
 #   EVAL_EVERY_STEPS=10
 #   NUM_RENDER=1
 
@@ -43,9 +41,17 @@ if [[ -z "${PYTHON:-}" ]]; then
     fi
 fi
 
-# Avoid OpenMP env issues + make matplotlib cache writable (important for multiprocessing)
+# Avoid OpenMP env issues + keep caches/tmp off system disk when possible
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+if [[ -d "/root/autodl-tmp" ]]; then
+    export TMPDIR="${TMPDIR:-/root/autodl-tmp/tmp}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/root/autodl-tmp/.cache}"
+    export TORCH_HOME="${TORCH_HOME:-/root/autodl-tmp/.cache/torch}"
+    export HF_HOME="${HF_HOME:-/root/autodl-tmp/.cache/huggingface}"
+    export WANDB_DIR="${WANDB_DIR:-/root/autodl-tmp/.cache/wandb}"
+    mkdir -p "${TMPDIR}" "${XDG_CACHE_HOME}" "${TORCH_HOME}" "${HF_HOME}" "${WANDB_DIR}"
+fi
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
 # 解析GPU列表
@@ -68,8 +74,6 @@ DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 
-ATTACK_STEPS="${ATTACK_STEPS:-}"
-DEFENSE_STEPS="${DEFENSE_STEPS:-}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 NUM_RENDER="${NUM_RENDER:-1}"
 
@@ -117,12 +121,6 @@ launch_on_gpu() {
     fi
     if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
         extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
-    fi
-    if [[ -n "${ATTACK_STEPS}" ]]; then
-        extra_args+=(--attack_steps "${ATTACK_STEPS}")
-    fi
-    if [[ -n "${DEFENSE_STEPS}" ]]; then
-        extra_args+=(--defense_steps "${DEFENSE_STEPS}")
     fi
 
     echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats}, method=${method})"

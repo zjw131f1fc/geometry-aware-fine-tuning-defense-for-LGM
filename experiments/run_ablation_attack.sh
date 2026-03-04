@@ -23,9 +23,17 @@ if [[ -z "${PYTHON:-}" ]]; then
     fi
 fi
 
-# Avoid OpenMP env issues + make matplotlib cache writable (important for multiprocessing)
+# Avoid OpenMP env issues + keep caches/tmp off system disk when possible
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+if [[ -d "/root/autodl-tmp" ]]; then
+    export TMPDIR="${TMPDIR:-/root/autodl-tmp/tmp}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/root/autodl-tmp/.cache}"
+    export TORCH_HOME="${TORCH_HOME:-/root/autodl-tmp/.cache/torch}"
+    export HF_HOME="${HF_HOME:-/root/autodl-tmp/.cache/huggingface}"
+    export WANDB_DIR="${WANDB_DIR:-/root/autodl-tmp/.cache/wandb}"
+    mkdir -p "${TMPDIR}" "${XDG_CACHE_HOME}" "${TORCH_HOME}" "${HF_HOME}" "${WANDB_DIR}"
+fi
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
 # 解析GPU列表
@@ -55,10 +63,13 @@ echo "=========================================="
 TEST_CAT="bowl"
 
 # ============================================================================
-# 任务列表（全部跳过baseline）
+# 任务列表（稳健性口径：跑完整 pipeline，使用默认 steps）
 # ============================================================================
 
 TASKS=()
+
+# 0. 默认配置（用于稳健性最终指标，attack_steps/defense_steps 使用 config 默认值）
+TASKS+=("robust:default:--categories ${TEST_CAT} --defense_method geotrap")
 
 # 1. LoRA rank=8, alpha=8 (已跑过，保留注释不再启用)
 # TASKS+=("lora:r8a8:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 8 --lora_alpha 8 --skip_baseline")
@@ -81,19 +92,10 @@ TASKS=()
 # 7. SGD lr=3e-3 (已跑过，保留注释不再启用)
 # TASKS+=("optimizer:sgd_3e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-3 --skip_baseline")
 
-# 8. Attack 200 steps
-TASKS+=("duration:attack_200steps:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 200 --skip_baseline")
-
-# 9. Attack 800 steps
-TASKS+=("duration:attack_800steps:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 800 --skip_baseline")
-
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  - LoRA 配置: 0 个任务 (已跑过，保留注释不再启用)"
-echo "  - 优化器配置: 0 个任务 (已跑过，保留注释不再启用)"
-echo "  - 攻击时长: 2 个任务 (200 steps, 800 steps)"
-echo "  - 全部跳过 baseline"
+echo "  - 稳健性: ${TOTAL_TASKS} 个任务（完整 pipeline；默认 steps）"
 echo ""
 
 # ============================================================================
@@ -174,20 +176,14 @@ echo "攻击实验消融结果汇总"
 echo "=========================================="
 echo ""
 
-# ========== LoRA 配置 ==========
-echo "=== LoRA 配置 ==="
-echo ""
+printf "%-30s %-15s %-15s %-15s %-15s\n" \
+    "实验配置" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
+echo "----------------------------------------------------------------------------------------------------"
 
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
 
-    if [ "$section" != "lora" ]; then
-        continue
-    fi
-
     metrics="${OUTPUT_ROOT}/${section}_${tag}/metrics.json"
-
-    echo "--- ${tag} ---"
 
     if [ -f "$metrics" ]; then
         "${PYTHON}" -c "
@@ -195,76 +191,15 @@ import json
 with open('${metrics}') as f:
     m = json.load(f)
 
-target = m.get('postdefense_target', {})
-print(f'  Target LPIPS: {target.get(\"lpips\", 0):.4f}')
-print(f'  Target PSNR:  {target.get(\"psnr\", 0):.2f}')
+pt = m.get('postdefense_target') or {}
+ps = m.get('postdefense_source') or {}
+
+name = '${section}_${tag}'
+print(f'{name:<30s} {pt.get(\"lpips\", 0):>13.4f}   {pt.get(\"psnr\", 0):>13.2f}   {ps.get(\"psnr\", 0):>13.2f}   {ps.get(\"lpips\", 0):>13.4f}')
 "
     else
-        echo "  (未完成或失败)"
+        printf "%-30s (未完成或失败)\n" "${section}_${tag}"
     fi
-    echo ""
-done
-
-# ========== 优化器配置 ==========
-echo "=== 优化器配置 ==="
-echo ""
-
-for task in "${TASKS[@]}"; do
-    IFS=':' read -r section tag params <<< "$task"
-
-    if [ "$section" != "optimizer" ]; then
-        continue
-    fi
-
-    metrics="${OUTPUT_ROOT}/${section}_${tag}/metrics.json"
-
-    echo "--- ${tag} ---"
-
-    if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-target = m.get('postdefense_target', {})
-print(f'  Target LPIPS: {target.get(\"lpips\", 0):.4f}')
-print(f'  Target PSNR:  {target.get(\"psnr\", 0):.2f}')
-"
-    else
-        echo "  (未完成或失败)"
-    fi
-    echo ""
-done
-
-# ========== 攻击时长 ==========
-echo "=== 攻击时长 ==="
-echo ""
-
-for task in "${TASKS[@]}"; do
-    IFS=':' read -r section tag params <<< "$task"
-
-    if [ "$section" != "duration" ]; then
-        continue
-    fi
-
-    metrics="${OUTPUT_ROOT}/${section}_${tag}/metrics.json"
-
-    echo "--- ${tag} ---"
-
-    if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-target = m.get('postdefense_target', {})
-print(f'  Target LPIPS: {target.get(\"lpips\", 0):.4f}')
-print(f'  Target PSNR:  {target.get(\"psnr\", 0):.2f}')
-"
-    else
-        echo "  (未完成或失败)"
-    fi
-    echo ""
 done
 
 echo "=========================================="

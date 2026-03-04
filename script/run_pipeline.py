@@ -24,10 +24,21 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 # Make common caches writable / stable (important for headless + multiprocessing)
 if not os.environ.get('OMP_NUM_THREADS', '').isdigit():
     os.environ['OMP_NUM_THREADS'] = '1'
-os.environ.setdefault('MPLCONFIGDIR', '/tmp/mpl')
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Prefer data-disk tmp when available (avoid filling system disk).
+_tmp_base = os.environ.get('TMPDIR')
+if not _tmp_base:
+    _tmp_base = '/root/autodl-tmp/tmp' if os.path.isdir('/root/autodl-tmp') else '/tmp'
+os.environ.setdefault('MPLCONFIGDIR', os.path.join(_tmp_base, 'mpl'))
 os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure local CUDA extensions (e.g. diff_gaussian_rasterization) are importable without pip install.
+_dgr_path = os.path.join(_repo_root, 'lib', 'diff-gaussian-rasterization')
+if os.path.isdir(_dgr_path):
+    sys.path.insert(0, _dgr_path)
+
+sys.path.insert(0, _repo_root)
 
 import json
 import copy

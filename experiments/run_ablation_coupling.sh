@@ -22,9 +22,17 @@ if [[ -z "${PYTHON:-}" ]]; then
     fi
 fi
 
-# Avoid OpenMP env issues + make matplotlib cache writable (important for multiprocessing)
+# Avoid OpenMP env issues + keep caches/tmp off system disk when possible
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+if [[ -d "/root/autodl-tmp" ]]; then
+    export TMPDIR="${TMPDIR:-/root/autodl-tmp/tmp}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/root/autodl-tmp/.cache}"
+    export TORCH_HOME="${TORCH_HOME:-/root/autodl-tmp/.cache/torch}"
+    export HF_HOME="${HF_HOME:-/root/autodl-tmp/.cache/huggingface}"
+    export WANDB_DIR="${WANDB_DIR:-/root/autodl-tmp/.cache/wandb}"
+    mkdir -p "${TMPDIR}" "${XDG_CACHE_HOME}" "${TORCH_HOME}" "${HF_HOME}" "${WANDB_DIR}"
+fi
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
 # 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
@@ -71,8 +79,8 @@ echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
 TEST_CAT="coconut"
-ATTACK_EPOCHS=3
-DEFENSE_EPOCHS=10
+# 精细指标口径：Defense 仅训练 50 step（不看最终 LPIPS/PSNR）
+DEFENSE_STEPS=50
 
 # 固定最优trap组合（从5.1实验结果确定，这里假设是scale+opacity）
 TRAP_LOSSES="scale,opacity"
@@ -135,8 +143,7 @@ run_task() {
             --gpu "${GPU}" \
             --config "${CONFIG}" \
             ${params} \
-            --defense_epochs "${DEFENSE_EPOCHS}" \
-            --attack_epochs "${ATTACK_EPOCHS}" \
+            --defense_steps "${DEFENSE_STEPS}" \
             --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
             --eval_every_steps "${EVAL_EVERY_STEPS}" \
             --tag "${section}_${tag}" \
@@ -184,9 +191,9 @@ echo "互锁机制消融结果汇总 (Section 5.2)"
 echo "=========================================="
 echo ""
 
-printf "%-30s %-15s %-15s %-15s %-15s\n" \
-    "实验配置" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "----------------------------------------------------------------------------------------------------"
+printf "%-30s %-12s %-8s %-10s %-10s\n" \
+    "实验配置" "达标步数" "阈值step" "阈值PSNR" "阈值LPIPS"
+echo "--------------------------------------------------------------------------"
 
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
@@ -199,10 +206,20 @@ import json
 with open('${metrics}') as f:
     m = json.load(f)
 
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
+analysis = m.get('analysis') or {}
+steps = analysis.get('postdefense_attack_steps_to_baseline_effect')
+baseline = analysis.get('baseline_attack_effect_at_end') or {}
+b_step = baseline.get('step')
+b_psnr = baseline.get('masked_psnr')
+b_lpips = baseline.get('masked_lpips')
 
-print(f'${tag:<30s} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
+name = '${tag}'
+def fmt(v, nd=2):
+    return 'NA' if v is None else f'{v:.{nd}f}'
+
+steps_s = 'NA' if steps is None else str(int(steps))
+b_step_s = 'NA' if b_step is None else str(int(b_step))
+print(f'{name:<30s} {steps_s:>12s} {b_step_s:>8s} {fmt(b_psnr,2):>10s} {fmt(b_lpips,4):>10s}')
 "
     else
         printf "%-30s (未完成或失败)\n" "${tag}"

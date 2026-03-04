@@ -30,7 +30,15 @@ fi
 
 # Avoid OpenMP env issues + make matplotlib cache writable
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+if [[ -d "/root/autodl-tmp" ]]; then
+    export TMPDIR="${TMPDIR:-/root/autodl-tmp/tmp}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/root/autodl-tmp/.cache}"
+    export TORCH_HOME="${TORCH_HOME:-/root/autodl-tmp/.cache/torch}"
+    export HF_HOME="${HF_HOME:-/root/autodl-tmp/.cache/huggingface}"
+    export WANDB_DIR="${WANDB_DIR:-/root/autodl-tmp/.cache/wandb}"
+    mkdir -p "${TMPDIR}" "${XDG_CACHE_HOME}" "${TORCH_HOME}" "${HF_HOME}" "${WANDB_DIR}"
+fi
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
 # 解析GPU列表
@@ -55,26 +63,29 @@ echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
+# 精细指标口径：Defense 仅训练 50 step（用于达标步数分析）
+DEFENSE_STEPS=50
+
 # ============================================================================
-# 任务列表：测试5种高斯属性的 w/o（全部跳过 baseline）
+# 任务列表：测试5种高斯属性的 w/o（不跳过 baseline，以便计算达标步数）
 # ============================================================================
 
 TASKS=()
 
 # 1. w/o position (关闭 position trap)
-TASKS+=("wo_position:--defense_method geotrap --trap_position_static false --skip_baseline")
+TASKS+=("wo_position:--defense_method geotrap --trap_position_static false")
 
 # 2. w/o scale (关闭 scale trap)
-TASKS+=("wo_scale:--defense_method geotrap --trap_scale_static false --skip_baseline")
+TASKS+=("wo_scale:--defense_method geotrap --trap_scale_static false")
 
 # 3. w/o opacity (关闭 opacity trap)
-TASKS+=("wo_opacity:--defense_method geotrap --trap_opacity_static false --skip_baseline")
+TASKS+=("wo_opacity:--defense_method geotrap --trap_opacity_static false")
 
 # 4. w/o rotation (关闭 rotation trap)
-TASKS+=("wo_rotation:--defense_method geotrap --trap_rotation_static false --skip_baseline")
+TASKS+=("wo_rotation:--defense_method geotrap --trap_rotation_static false")
 
 # 5. w/o color (关闭 color trap)
-TASKS+=("wo_color:--defense_method geotrap --trap_color_static false --skip_baseline")
+TASKS+=("wo_color:--defense_method geotrap --trap_color_static false")
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
@@ -84,7 +95,7 @@ echo "  - w/o scale"
 echo "  - w/o opacity"
 echo "  - w/o rotation"
 echo "  - w/o color"
-echo "  - 全部跳过 baseline"
+echo "  - 不跳过 baseline（用于 analysis.postdefense_attack_steps_to_baseline_effect）"
 echo ""
 
 # ============================================================================
@@ -115,6 +126,7 @@ run_task() {
             ${params} \
             ${DEFENSE_CACHE_MODE:+--defense_cache_mode "${DEFENSE_CACHE_MODE}"} \
             ${EVAL_EVERY_STEPS:+--eval_every_steps "${EVAL_EVERY_STEPS}"} \
+            --defense_steps "${DEFENSE_STEPS}" \
             --tag "${tag}" \
             --output_dir "${output_dir}"
     } > "${log}" 2>&1; then
@@ -167,12 +179,14 @@ echo "高斯属性消融结果汇总"
 echo "=========================================="
 echo ""
 
+printf "%-20s %-12s %-8s %-10s %-10s\n" \
+    "实验配置" "达标步数" "阈值step" "阈值PSNR" "阈值LPIPS"
+echo "--------------------------------------------------------------"
+
 for task in "${TASKS[@]}"; do
     IFS=':' read -r tag params <<< "$task"
 
     metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
-
-    echo "--- ${tag} ---"
 
     if [ -f "$metrics" ]; then
         "${PYTHON}" -c "
@@ -180,14 +194,24 @@ import json
 with open('${metrics}') as f:
     m = json.load(f)
 
-target = m.get('postdefense_target', {})
-print(f'  Target LPIPS: {target.get(\"lpips\", 0):.4f}')
-print(f'  Target PSNR:  {target.get(\"psnr\", 0):.2f}')
+analysis = m.get('analysis') or {}
+steps = analysis.get('postdefense_attack_steps_to_baseline_effect')
+baseline = analysis.get('baseline_attack_effect_at_end') or {}
+b_step = baseline.get('step')
+b_psnr = baseline.get('masked_psnr')
+b_lpips = baseline.get('masked_lpips')
+
+name = '${tag}'
+def fmt(v, nd=2):
+    return 'NA' if v is None else f'{v:.{nd}f}'
+
+steps_s = 'NA' if steps is None else str(int(steps))
+b_step_s = 'NA' if b_step is None else str(int(b_step))
+print(f'{name:<20s} {steps_s:>12s} {b_step_s:>8s} {fmt(b_psnr,2):>10s} {fmt(b_lpips,4):>10s}')
 "
     else
-        echo "  (未完成或失败)"
+        printf "%-20s (未完成或失败)\n" "${tag}"
     fi
-    echo ""
 done
 
 echo "=========================================="
@@ -198,5 +222,4 @@ echo "=========================================="
 
 echo ""
 echo "全部完成！"
-
 
