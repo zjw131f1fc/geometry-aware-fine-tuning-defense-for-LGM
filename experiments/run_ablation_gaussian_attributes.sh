@@ -10,6 +10,7 @@
 # 环境变量:
 #   DEFENSE_CACHE_MODE               # 防御缓存模式（可选，不设置则使用程序默认值）
 #   EVAL_EVERY_STEPS                 # 评估间隔步数（可选，不设置则使用程序默认值）
+#   TRAP_TASK_SET                    # 任务集选择: wo_attrs(默认) / single_combo(Trap单开&组合补全)
 
 set -e
 
@@ -48,7 +49,12 @@ echo "GPU列表: ${GPU_LIST}"
 CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
-OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_gaussian_attrs_${TIMESTAMP}"
+TRAP_TASK_SET="${TRAP_TASK_SET:-wo_attrs}"
+if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
+    OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_trap_single_combo_${TIMESTAMP}"
+else
+    OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_gaussian_attrs_${TIMESTAMP}"
+fi
 
 mkdir -p "${OUTPUT_ROOT}"
 # 复制配置文件到输出目录，避免后续修改影响实验参数
@@ -61,40 +67,67 @@ echo "高斯属性消融实验"
 echo "测试类别: 使用 config.yaml 中的配置"
 echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
+echo "TRAP_TASK_SET: ${TRAP_TASK_SET}"
 echo "=========================================="
 
 # 精细指标口径：Defense 仅训练 50 step（用于达标步数分析）
 DEFENSE_STEPS=50
 
 # ============================================================================
-# 任务列表：测试5种高斯属性的 w/o（不跳过 baseline，以便计算达标步数）
+# 任务列表
 # ============================================================================
 
 TASKS=()
 
-# 1. w/o position (关闭 position trap)
-TASKS+=("wo_position:--defense_method geotrap --trap_position_static false")
+if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
+    # Trap 消融补全：单 trap + trap 组合（>=3 traps）
+    # 说明：使用 --trap_losses 精确控制启用的 traps；不跳过 baseline 以便计算达标步数。
 
-# 2. w/o scale (关闭 scale trap)
-TASKS+=("wo_scale:--defense_method geotrap --trap_scale_static false")
+    # 单 trap
+    TASKS+=("single_position:--defense_method geotrap --trap_losses position")
+    TASKS+=("single_scale:--defense_method geotrap --trap_losses scale")
+    TASKS+=("single_opacity:--defense_method geotrap --trap_losses opacity")
+    TASKS+=("single_rotation:--defense_method geotrap --trap_losses rotation")
+    TASKS+=("single_color:--defense_method geotrap --trap_losses color")
 
-# 3. w/o opacity (关闭 opacity trap)
-TASKS+=("wo_opacity:--defense_method geotrap --trap_opacity_static false")
+    # trap 组合（覆盖 >=3 traps 的组合）
+    TASKS+=("combo_pos_scale_opacity:--defense_method geotrap --trap_losses position,scale,opacity")
+    TASKS+=("combo_scale_opacity_color:--defense_method geotrap --trap_losses scale,opacity,color")
+    TASKS+=("combo_pos_rotation_color:--defense_method geotrap --trap_losses position,rotation,color")
+    TASKS+=("combo_all5:--defense_method geotrap --trap_losses position,scale,opacity,rotation,color")
+else
+    # 高斯属性消融：测试5种高斯属性的 w/o
+    # 说明：不跳过 baseline，以便计算达标步数。
 
-# 4. w/o rotation (关闭 rotation trap)
-TASKS+=("wo_rotation:--defense_method geotrap --trap_rotation_static false")
+    # 1. w/o position (关闭 position trap)
+    TASKS+=("wo_position:--defense_method geotrap --trap_position_static false")
 
-# 5. w/o color (关闭 color trap)
-TASKS+=("wo_color:--defense_method geotrap --trap_color_static false")
+    # 2. w/o scale (关闭 scale trap)
+    TASKS+=("wo_scale:--defense_method geotrap --trap_scale_static false")
+
+    # 3. w/o opacity (关闭 opacity trap)
+    TASKS+=("wo_opacity:--defense_method geotrap --trap_opacity_static false")
+
+    # 4. w/o rotation (关闭 rotation trap)
+    TASKS+=("wo_rotation:--defense_method geotrap --trap_rotation_static false")
+
+    # 5. w/o color (关闭 color trap)
+    TASKS+=("wo_color:--defense_method geotrap --trap_color_static false")
+fi
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  - w/o position"
-echo "  - w/o scale"
-echo "  - w/o opacity"
-echo "  - w/o rotation"
-echo "  - w/o color"
+if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
+    echo "  - 单 trap: position/scale/opacity/rotation/color"
+    echo "  - trap 组合: pos+scale+opacity / scale+opacity+color / pos+rotation+color / all5"
+else
+    echo "  - w/o position"
+    echo "  - w/o scale"
+    echo "  - w/o opacity"
+    echo "  - w/o rotation"
+    echo "  - w/o color"
+fi
 echo "  - 不跳过 baseline（用于 analysis.postdefense_attack_steps_to_baseline_effect）"
 echo ""
 
@@ -177,6 +210,7 @@ echo ""
 echo "=========================================="
 echo "高斯属性消融结果汇总"
 echo "=========================================="
+echo "任务集: ${TRAP_TASK_SET}"
 echo ""
 
 printf "%-20s %-12s %-8s %-10s %-10s\n" \
@@ -222,4 +256,3 @@ echo "=========================================="
 
 echo ""
 echo "全部完成！"
-
