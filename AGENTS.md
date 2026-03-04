@@ -1,5 +1,20 @@
 # 3D-Defense 实验跑法（给 Codex/Agent）
 
+## 最重要：严禁写系统盘（否则 SSH 可能断连）
+
+系统盘 `/` 空间很小，写满会导致我无法连接 SSH。**任何大文件/实验输出/缓存/临时文件都不允许写到系统盘**（包括但不限于 `/tmp`、`/root`、`~/.cache` 等路径）。
+
+要求：
+
+- 所有输出目录必须在数据盘挂载点：`/root/autodl-tmp/`（本仓库位于该路径下，默认相对路径输出一般是安全的；但缓存/临时目录仍需注意）
+- 跑实验前建议显式设置缓存与临时目录到数据盘（示例）：
+  - `export XDG_CACHE_HOME=/root/autodl-tmp/.cache`
+  - `export TORCH_HOME=/root/autodl-tmp/.cache/torch`
+  - `export HF_HOME=/root/autodl-tmp/.cache/huggingface`
+  - `export WANDB_DIR=/root/autodl-tmp/.cache/wandb`
+  - `export TMPDIR=/root/autodl-tmp/tmp`
+- 跑前/跑中用 `df -h / /root/autodl-tmp` 监控磁盘，确保系统盘使用率不再上涨
+
 ## 核心任务（必须跑）
 
 本项目当前需要跑的核心实验任务 **仅限以下 4 个脚本**（不要自行扩展到其它脚本/命令）：
