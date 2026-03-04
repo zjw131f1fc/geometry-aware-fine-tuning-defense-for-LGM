@@ -1,5 +1,5 @@
 #!/bin/bash
-# 互锁机制消融实验（Section 5.2）：coconut
+# 互锁机制消融实验（Section 5.2）
 # Baseline 全启用，然后 w/o 形式去掉每个机制
 #
 # 单卡顺序执行（不做 GPU 空闲检查）
@@ -73,12 +73,12 @@ cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
 echo "=========================================="
 echo "互锁机制消融实验 (Section 5.2)"
-echo "测试类别: coconut"
+echo "测试类别: bowl"
 echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
-TEST_CAT="coconut"
+TEST_CAT="bowl"
 # 精细指标口径：Defense 仅训练 50 step（不看最终 LPIPS/PSNR）
 DEFENSE_STEPS=50
 
@@ -152,11 +152,11 @@ run_task() {
     } > "${log}" 2>&1; then
         echo "[GPU ${GPU}] 完成: ${section} - ${tag}"
         return 0
+    else
+        exit_code=$?
+        echo "[GPU ${GPU}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
+        return "${exit_code}"
     fi
-
-    exit_code=$?
-    echo "[GPU ${GPU}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
-    return "${exit_code}"
 }
 
 # ============================================================================
