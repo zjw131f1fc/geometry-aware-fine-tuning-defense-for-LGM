@@ -48,9 +48,14 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_mechanisms_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "防御机制消融实验"
-echo "测试配置: ${CONFIG}"
+echo "测试配置: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 if [[ "${SKIP_BASELINE}" == "1" ]]; then
     echo "模式: 跳过 Baseline Attack"

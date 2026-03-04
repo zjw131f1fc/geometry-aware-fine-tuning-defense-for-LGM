@@ -109,6 +109,10 @@ def parse_args():
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
     parser.add_argument('--noise_scale', type=float, default=None,
                         help='参数加噪 σ（覆盖 config.defense.robustness.noise_scale）')
+    parser.add_argument('--input_noise_enabled', type=str, default=None,
+                        help='输入加噪开关：true / false（覆盖 config.defense.input_noise.enabled）')
+    parser.add_argument('--input_noise_scale', type=float, default=None,
+                        help='输入加噪 σ（覆盖 config.defense.input_noise.noise_scale）')
     # 梯度手术参数
     parser.add_argument('--grad_surgery_enabled', type=str, default=None,
                         help='梯度手术开关：true / false（覆盖 config.defense.grad_surgery.enabled）')
@@ -121,7 +125,7 @@ def parse_args():
                         help='能量梯度裁剪倍数（覆盖 config.defense.grad_clip.energy_mult）')
     # 陷阱聚合参数
     parser.add_argument('--trap_aggregation_method', type=str, default=None,
-                        help='陷阱聚合方法：sum / mean / bottleneck_logsumexp（覆盖 config.defense.trap_aggregation.method）')
+                        help='陷阱聚合方法：sum / mean / max / bottleneck_logsumexp（覆盖 config.defense.trap_aggregation.method）')
     parser.add_argument('--trap_bottleneck_tau', type=float, default=None,
                         help='Bottleneck聚合温度参数（覆盖 config.defense.trap_aggregation.tau）')
     # 反捷径机制参数
@@ -337,6 +341,17 @@ def main():
         config.setdefault('defense', {}).setdefault('robustness', {})
         config['defense']['robustness']['noise_scale'] = float(args.noise_scale)
         print(f"[Pipeline] noise_scale 覆盖: {args.noise_scale}")
+
+    # 输入加噪覆盖
+    if args.input_noise_enabled is not None:
+        val = args.input_noise_enabled.lower() == 'true'
+        config.setdefault('defense', {}).setdefault('input_noise', {})
+        config['defense']['input_noise']['enabled'] = val
+        print(f"[Pipeline] 输入加噪覆盖: {val}")
+    if args.input_noise_scale is not None:
+        config.setdefault('defense', {}).setdefault('input_noise', {})
+        config['defense']['input_noise']['noise_scale'] = float(args.input_noise_scale)
+        print(f"[Pipeline] input_noise_scale 覆盖: {args.input_noise_scale}")
 
     # 梯度手术覆盖
     if args.grad_surgery_enabled is not None:

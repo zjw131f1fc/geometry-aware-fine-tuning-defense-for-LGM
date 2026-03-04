@@ -1,5 +1,5 @@
 #!/bin/bash
-# 攻击实验消融（Section 5.3）：测试类别=coconut
+# 攻击实验消融（Section 5.3）：测试类别=bowl
 #
 # 用法:
 #   bash experiments/run_ablation_attack.sh            # 默认 GPU=0 (单卡顺序执行)
@@ -39,9 +39,15 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_attack_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "攻击实验消融"
 echo "测试类别: bowl"
+echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
@@ -54,26 +60,26 @@ TEST_CAT="bowl"
 
 TASKS=()
 
-# 1. LoRA rank=8, alpha=8 (临时跳过)
+# 1. LoRA rank=8, alpha=8 (已跑过，保留注释不再启用)
 # TASKS+=("lora:r8a8:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 8 --lora_alpha 8 --skip_baseline")
 
-# 2. LoRA rank=32, alpha=32 (临时跳过)
+# 2. LoRA rank=32, alpha=32 (已跑过，保留注释不再启用)
 # TASKS+=("lora:r32a32:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 32 --lora_alpha 32 --skip_baseline")
 
-# 3. AdamW lr=3e-6 (临时关闭)
+# 3. AdamW lr=3e-6 (已跑过，保留注释不再启用)
 # TASKS+=("optimizer:adamw_3e6:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-6 --skip_baseline")
 
-# 4. AdamW lr=3e-4
-TASKS+=("optimizer:adamw_3e4:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-4 --skip_baseline")
+# 4. AdamW lr=3e-4 (已跑过，保留注释不再启用)
+# TASKS+=("optimizer:adamw_3e4:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-4 --skip_baseline")
 
-# 5. SGD lr=3e-5
-TASKS+=("optimizer:sgd_3e5:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-5 --skip_baseline")
+# 5. SGD lr=3e-5 (已跑过，保留注释不再启用)
+# TASKS+=("optimizer:sgd_3e5:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-5 --skip_baseline")
 
-# 6. SGD lr=3e-4
-TASKS+=("optimizer:sgd_3e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-4 --skip_baseline")
+# 6. SGD lr=3e-4 (已跑过，保留注释不再启用)
+# TASKS+=("optimizer:sgd_3e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-4 --skip_baseline")
 
-# 7. SGD lr=3e-3
-TASKS+=("optimizer:sgd_3e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-3 --skip_baseline")
+# 7. SGD lr=3e-3 (已跑过，保留注释不再启用)
+# TASKS+=("optimizer:sgd_3e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-3 --skip_baseline")
 
 # 8. Attack 200 steps
 TASKS+=("duration:attack_200steps:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 200 --skip_baseline")
@@ -84,9 +90,9 @@ TASKS+=("duration:attack_800steps:--categories ${TEST_CAT} --defense_method geot
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  - LoRA 配置: 0 个任务 (已临时跳过)"
-echo "  - 优化器配置: 4 个任务 (AdamW 3e-6 已临时关闭)"
-echo "  - 攻击时长: 2 个任务"
+echo "  - LoRA 配置: 0 个任务 (已跑过，保留注释不再启用)"
+echo "  - 优化器配置: 0 个任务 (已跑过，保留注释不再启用)"
+echo "  - 攻击时长: 2 个任务 (200 steps, 800 steps)"
 echo "  - 全部跳过 baseline"
 echo ""
 

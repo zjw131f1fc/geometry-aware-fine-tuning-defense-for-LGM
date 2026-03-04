@@ -53,10 +53,16 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_omni_defense_gso_attack_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "跨数据集泛化实验: 5类别 × 2方法 = 10个pipeline"
 echo "Attack target dataset:  ${ATTACK_TARGET_DATASET}"
 echo "Defense target dataset: ${DEFENSE_TARGET_DATASET}"
+echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 

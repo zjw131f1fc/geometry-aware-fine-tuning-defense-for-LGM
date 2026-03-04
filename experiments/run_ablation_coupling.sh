@@ -58,9 +58,15 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_coupling_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "互锁机制消融实验 (Section 5.2)"
 echo "测试类别: coconut"
+echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
@@ -77,17 +83,25 @@ TRAP_LOSSES="scale,opacity"
 
 TASKS=()
 
-# Baseline：乘法耦合 + 参数加噪
-TASKS+=("5.2:baseline_all:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness true")
+# Baseline：输入加噪 + 冻结head + logsumexp聚合
+TASKS+=("5.2:baseline_all:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES}")
 
-# w/o 参数加噪鲁棒性
-TASKS+=("5.2:wo_robustness:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness false")
+# w/o 输入加噪
+TASKS+=("5.2:wo_input_noise:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --input_noise_enabled false")
+
+# w/o 冻结head
+TASKS+=("5.2:wo_freeze_head:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --freeze_head false")
+
+# logsumexp 换成 mean（平均，保持数值范围）
+TASKS+=("5.2:mean_aggregation:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --trap_aggregation_method mean")
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  1. Baseline (乘法耦合 + 参数加噪)"
-echo "  2. w/o 参数加噪鲁棒性"
+echo "  1. Baseline (输入加噪 + 冻结head + logsumexp聚合)"
+echo "  2. w/o 输入加噪"
+echo "  3. w/o 冻结head"
+echo "  4. mean聚合（替代logsumexp，保持数值范围）"
 echo ""
 
 # ============================================================================

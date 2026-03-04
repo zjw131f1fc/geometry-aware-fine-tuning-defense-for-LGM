@@ -1240,14 +1240,16 @@ class DefenseTrainer:
         elif len(loss_list) == 1:
             static_combined = loss_list[0]
         else:
-            method = getattr(self, "trap_aggregation_method", "pairwise_multiplicative")
+            method = getattr(self, “trap_aggregation_method”, “pairwise_multiplicative”)
             if method == 'sum':
                 static_combined = torch.stack(loss_list).sum()
+            elif method == 'mean':
+                static_combined = torch.stack(loss_list).mean()
             elif method in ('bottleneck', 'bottleneck_logsumexp', 'logsumexp'):
-                tau = float(getattr(self, "trap_bottleneck_tau", 0.25))
+                tau = float(getattr(self, “trap_bottleneck_tau”, 0.25))
                 tau = max(tau, 1e-6)
                 stacked = torch.stack(loss_list)
-                # tau * logsumexp(L/tau) 近似 max(L)，最小化它会持续推深“最弱 trap”
+                # tau * logsumexp(L/tau) 近似 max(L)，最小化它会持续推深”最弱 trap”
                 static_combined = tau * torch.logsumexp(stacked / tau, dim=0)
             elif method == 'max':
                 static_combined = torch.stack(loss_list).max()

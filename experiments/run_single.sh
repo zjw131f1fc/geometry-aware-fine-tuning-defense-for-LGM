@@ -38,11 +38,17 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_DIR="${OUTPUT_DIR:-${EXPERIMENTS_BASE}/single_${TIMESTAMP}}"
 SKIP_BASELINE="${SKIP_BASELINE:-0}"
 
+# 创建输出目录并复制配置文件
+mkdir -p "${OUTPUT_DIR}"
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_DIR}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "单任务快速运行"
 echo "=========================================="
 echo "GPU: ${GPU}"
-echo "Config: ${CONFIG}"
+echo "Config: ${CONFIG} (已复制)"
 echo "Tag: ${TAG}"
 echo "Output: ${OUTPUT_DIR}"
 if [[ "${SKIP_BASELINE}" == "1" ]]; then

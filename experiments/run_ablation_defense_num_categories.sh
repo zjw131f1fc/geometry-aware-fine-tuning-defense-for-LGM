@@ -3,22 +3,21 @@
 #
 # 目的：
 #   在同一 target 数据集 OmniObject3D 上（attack/defense 都是 omni），
-#   分别用 1 / 3 / 5 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
+#   分别用 2 / 4 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
+#   同时测试 naive_unlearning 和 geotrap 两种防御方法。
 #
 # 用法:
 #   bash experiments/run_ablation_defense_num_categories.sh            # 默认 GPU=0 (单卡顺序执行)
 #   bash experiments/run_ablation_defense_num_categories.sh 0          # 指定 GPU=0 (单卡顺序执行)
-#   bash experiments/run_ablation_defense_num_categories.sh 0,1        # 多卡并行: 2张卡动态调度任务
+#   bash experiments/run_ablation_defense_num_categories.sh 0,1,2,3    # 多卡并行: 4张卡动态调度任务
 #
 # 默认类别集合（可按需改）：
-#   K=1: shoe
-#   K=3: shoe,plant,dish
-#   K=5: shoe,plant,dish,bowl,box
+#   K=2: shoe,plant
+#   K=4: shoe,plant,dish,bowl
 #
 # 可选环境变量：
 #   CONFIG=configs/config.yaml
 #   EXPERIMENTS_BASE=output/experiments_output
-#   DEFENSE_METHOD=geotrap
 #   DEFENSE_CACHE_MODE=registry
 #   DEFENSE_BATCH_SIZE=2
 #   DEFENSE_GRAD_ACCUM=2
@@ -58,8 +57,13 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_defense_num_categories_${TIMESTAMP}"
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
-DEFENSE_METHOD="${DEFENSE_METHOD:-geotrap}"
+# 两种防御方法
+METHODS=(naive_unlearning geotrap)
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
@@ -69,28 +73,41 @@ DEFENSE_STEPS="${DEFENSE_STEPS:-}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 NUM_RENDER="${NUM_RENDER:-1}"
 
-# 三组类别集合（防御类别数 1/3/5）
-SETS_NAME=(k1 k3 k5)
-SETS_CATS=("shoe" "shoe,plant,dish" "shoe,plant,dish,bowl,box")
+# 两组类别集合（防御类别数 2/4）
+SETS_NAME=(k2 k4)
+SETS_CATS=("shoe,plant" "shoe,plant,dish,bowl")
 
-TOTAL_TASKS=${#SETS_NAME[@]}
+# 生成任务列表：2个类别集合 × 2个方法 = 4个任务
+TASKS=()
+for method in "${METHODS[@]}"; do
+    for i in "${!SETS_NAME[@]}"; do
+        TASKS+=("${i}:${method}")
+    done
+done
+
+TOTAL_TASKS=${#TASKS[@]}
 
 echo "=========================================="
 echo "防御类别数消融（target=omni，attack/defense 同 dataset）"
 echo "Config: ${CONFIG}"
-echo "Defense method: ${DEFENSE_METHOD}"
+echo "Defense methods: ${METHODS[*]}"
 echo "Defense cache mode: ${DEFENSE_CACHE_MODE}"
 echo "Output: ${OUTPUT_ROOT}"
-echo "Tasks: ${TOTAL_TASKS} (1/3/5 categories)"
+echo "Tasks: ${TOTAL_TASKS} (2/4 categories × 2 methods)"
 echo "=========================================="
 
+# 任务执行函数
+# 参数: $1=GPU_ID, $2=task_idx
 launch_on_gpu() {
     local gpu=$1
-    local idx=$2
+    local task_idx=$2
+    local task=${TASKS[$task_idx]}
+
+    IFS=':' read -r idx method <<< "$task"
     local name=${SETS_NAME[$idx]}
     local cats=${SETS_CATS[$idx]}
 
-    local tag="defcats_${name}_${DEFENSE_METHOD}_omni"
+    local tag="defcats_${name}_${method}_omni"
     local log="${OUTPUT_ROOT}/${tag}.log"
     local out_dir="${OUTPUT_ROOT}/${tag}"
 
@@ -108,7 +125,7 @@ launch_on_gpu() {
         extra_args+=(--defense_steps "${DEFENSE_STEPS}")
     fi
 
-    echo "[GPU ${gpu}] 任务 $((idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats})"
+    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats}, method=${method})"
 
     if {
         echo "=== GPU ${gpu}: ${tag} ==="
@@ -118,7 +135,7 @@ launch_on_gpu() {
         --attack_target_dataset omni \
         --defense_target_dataset omni \
         --categories "${cats}" \
-        --defense_method "${DEFENSE_METHOD}" \
+        --defense_method "${method}" \
         --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
         --eval_every_steps "${EVAL_EVERY_STEPS}" \
         --num_render "${NUM_RENDER}" \
