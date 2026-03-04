@@ -1,6 +1,5 @@
 #!/bin/bash
 # 攻击实验消融（Section 5.3）：测试类别=coconut
-# 包含所有消融实验，优先分配语义偏转攻击
 #
 # 用法:
 #   bash experiments/run_ablation_attack.sh            # 默认 GPU=0 (单卡顺序执行)
@@ -41,61 +40,54 @@ OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_attack_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
 echo "=========================================="
-echo "攻击实验消融 (Section 5.3)"
-echo "测试类别: coconut"
+echo "攻击实验消融"
+echo "测试类别: bowl"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
 # 实验配置
-TEST_CAT="coconut"
-ATTACK_EPOCHS=5
-DEFENSE_EPOCHS=60
-DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
-DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
-DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
-EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
+TEST_CAT="bowl"
 
 # ============================================================================
-# 任务列表（优先级排序：语义偏转 > 其他）
+# 任务列表（全部跳过baseline）
 # ============================================================================
 
 TASKS=()
 
-# ========== 优先级1: Section 5.3.1 微调方式 ==========
-# 全量微调 (baseline): 已有结果 (LPIPS=0.4655, PSNR=13.5424)，跳过
-# LoRA r=8, alpha=16
-TASKS+=("5.3.1:finetune_lora_r8:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 8 --lora_alpha 16 --attack_epochs ${ATTACK_EPOCHS}")
-# LoRA r=16, alpha=32
-TASKS+=("5.3.1:finetune_lora_r16:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 16 --lora_alpha 32 --attack_epochs ${ATTACK_EPOCHS}")
+# 1. LoRA rank=8, alpha=8 (临时跳过)
+# TASKS+=("lora:r8a8:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 8 --lora_alpha 8 --skip_baseline")
 
-# ========== 优先级3: Section 5.3.2 优化器与学习率 (成对: AdamW vs SGD, 小/中/大) ==========
-# AdamW lr=1e-5 (小)
-TASKS+=("5.3.2:optimizer_adamw_1e5:--categories ${TEST_CAT} --defense_method geotrap --lr 1e-5 --attack_epochs ${ATTACK_EPOCHS}")
-# SGD+momentum(0.9) lr=1e-4 (小)
-TASKS+=("5.3.2:optimizer_sgd_1e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 1e-4 --attack_epochs ${ATTACK_EPOCHS}")
-# AdamW lr=5e-5 (中, baseline): 已有结果 (LPIPS=0.4655, PSNR=13.5424)，跳过
-# SGD+momentum(0.9) lr=1e-3 (中)
-TASKS+=("5.3.2:optimizer_sgd_1e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 1e-3 --attack_epochs ${ATTACK_EPOCHS}")
-# AdamW lr=2e-4 (大)
-TASKS+=("5.3.2:optimizer_adamw_2e4:--categories ${TEST_CAT} --defense_method geotrap --lr 2e-4 --attack_epochs ${ATTACK_EPOCHS}")
-# SGD+momentum(0.9) lr=1e-2 (大)
-TASKS+=("5.3.2:optimizer_sgd_1e2:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 1e-2 --attack_epochs ${ATTACK_EPOCHS}")
+# 2. LoRA rank=32, alpha=32 (临时跳过)
+# TASKS+=("lora:r32a32:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 32 --lora_alpha 32 --skip_baseline")
 
-# ========== 优先级4: Section 5.3.3 攻击时长 ==========
-# 2 epochs
-TASKS+=("5.3.3:duration_2ep:--categories ${TEST_CAT} --defense_method geotrap --attack_epochs 2")
-# 5 epochs (baseline): 已有结果 (LPIPS=0.4655, PSNR=13.5424)，跳过
-# 10 epochs
-TASKS+=("5.3.3:duration_10ep:--categories ${TEST_CAT} --defense_method geotrap --attack_epochs 10")
-# 20 epochs
-TASKS+=("5.3.3:duration_20ep:--categories ${TEST_CAT} --defense_method geotrap --attack_epochs 20")
+# 3. AdamW lr=3e-6 (临时关闭)
+# TASKS+=("optimizer:adamw_3e6:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-6 --skip_baseline")
+
+# 4. AdamW lr=3e-4
+TASKS+=("optimizer:adamw_3e4:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-4 --skip_baseline")
+
+# 5. SGD lr=3e-5
+TASKS+=("optimizer:sgd_3e5:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-5 --skip_baseline")
+
+# 6. SGD lr=3e-4
+TASKS+=("optimizer:sgd_3e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-4 --skip_baseline")
+
+# 7. SGD lr=3e-3
+TASKS+=("optimizer:sgd_3e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-3 --skip_baseline")
+
+# 8. Attack 200 steps
+TASKS+=("duration:attack_200steps:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 200 --skip_baseline")
+
+# 9. Attack 800 steps
+TASKS+=("duration:attack_800steps:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 800 --skip_baseline")
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  - Section 5.3.1 (微调方式): 2 个任务 (baseline已有结果)"
-echo "  - Section 5.3.2 (优化器): 5 个任务"
-echo "  - Section 5.3.3 (攻击时长): 3 个任务"
+echo "  - LoRA 配置: 0 个任务 (已临时跳过)"
+echo "  - 优化器配置: 4 个任务 (AdamW 3e-6 已临时关闭)"
+echo "  - 攻击时长: 2 个任务"
+echo "  - 全部跳过 baseline"
 echo ""
 
 # ============================================================================
@@ -120,23 +112,12 @@ run_task() {
         echo ""
 
         # 执行 pipeline
-        extra_args=()
-        if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
-            extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
-        fi
-        if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
-            extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
-        fi
         "${PYTHON}" script/run_pipeline.py \
             --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
-            --defense_epochs "${DEFENSE_EPOCHS}" \
-            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
-            --eval_every_steps "${EVAL_EVERY_STEPS}" \
             --tag "${section}_${tag}" \
-            --output_dir "${output_dir}" \
-            "${extra_args[@]}"
+            --output_dir "${output_dir}"
     } > "${log}" 2>&1; then
         echo "[GPU ${gpu}] 完成: ${section} - ${tag}"
         return 0
@@ -183,18 +164,18 @@ SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
 {
 echo ""
 echo "=========================================="
-echo "攻击实验消融结果汇总 (Section 5.3)"
+echo "攻击实验消融结果汇总"
 echo "=========================================="
 echo ""
 
-# ========== Section 5.3.1: 微调方式 ==========
-echo "=== Section 5.3.1: 微调方式 ==="
+# ========== LoRA 配置 ==========
+echo "=== LoRA 配置 ==="
 echo ""
 
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
 
-    if [ "$section" != "5.3.1" ]; then
+    if [ "$section" != "lora" ]; then
         continue
     fi
 
@@ -218,14 +199,14 @@ print(f'  Target PSNR:  {target.get(\"psnr\", 0):.2f}')
     echo ""
 done
 
-# ========== Section 5.3.2: 优化器与学习率 ==========
-echo "=== Section 5.3.2: 优化器与学习率 ==="
+# ========== 优化器配置 ==========
+echo "=== 优化器配置 ==="
 echo ""
 
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
 
-    if [ "$section" != "5.3.2" ]; then
+    if [ "$section" != "optimizer" ]; then
         continue
     fi
 
@@ -249,14 +230,14 @@ print(f'  Target PSNR:  {target.get(\"psnr\", 0):.2f}')
     echo ""
 done
 
-# ========== Section 5.3.3: 攻击时长 ==========
-echo "=== Section 5.3.3: 攻击时长 ==="
+# ========== 攻击时长 ==========
+echo "=== 攻击时长 ==="
 echo ""
 
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
 
-    if [ "$section" != "5.3.3" ]; then
+    if [ "$section" != "duration" ]; then
         continue
     fi
 

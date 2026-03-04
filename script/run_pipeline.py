@@ -103,7 +103,7 @@ def parse_args():
     parser.add_argument('--defense_grad_accumulation_steps', type=int, default=None,
                         help="防御梯度累计步数（覆盖 config.defense.gradient_accumulation_steps；不影响攻击）")
     parser.add_argument('--defense_cache_mode', type=str, default='registry',
-                        help="防御模型缓存策略：registry(读写) / readonly(只读不写) / none(不读不写，最省磁盘)")
+                        help="防御模型缓存策略：registry(读写) / readonly(只读不写) / writeonly(只写不读) / none(不读不写，最省磁盘)")
     # 互锁机制参数
     parser.add_argument('--robustness', type=str, default=None,
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
@@ -129,6 +129,17 @@ def parse_args():
                         help='冻结头部卷积层：true / false（覆盖 config.defense.antishortcut.freeze_head）')
     parser.add_argument('--freeze_lora_targets', type=str, default=None,
                         help='冻结 LoRA 目标层（qkv/proj）：true / false（覆盖 config.defense.antishortcut.freeze_lora_targets）')
+    # 单独控制每个高斯属性的 trap
+    parser.add_argument('--trap_position_static', type=str, default=None,
+                        help='Position trap 开关：true / false（覆盖 config.defense.trap_losses.position.static）')
+    parser.add_argument('--trap_scale_static', type=str, default=None,
+                        help='Scale trap 开关：true / false（覆盖 config.defense.trap_losses.scale.static）')
+    parser.add_argument('--trap_opacity_static', type=str, default=None,
+                        help='Opacity trap 开关：true / false（覆盖 config.defense.trap_losses.opacity.static）')
+    parser.add_argument('--trap_rotation_static', type=str, default=None,
+                        help='Rotation trap 开关：true / false（覆盖 config.defense.trap_losses.rotation.static）')
+    parser.add_argument('--trap_color_static', type=str, default=None,
+                        help='Color trap 开关：true / false（覆盖 config.defense.trap_losses.color.static）')
     return parser.parse_args()
 
 
@@ -192,7 +203,7 @@ def main():
 
     # Defense cache mode（需要在打印 Summary 前就解析出来）
     defense_cache_mode = (args.defense_cache_mode or "registry").lower()
-    if defense_cache_mode not in ("registry", "readonly", "none"):
+    if defense_cache_mode not in ("registry", "readonly", "none", "writeonly"):
         raise ValueError(f"--defense_cache_mode 不支持: {args.defense_cache_mode}")
 
     # CLI 覆盖
@@ -302,6 +313,20 @@ def main():
         config['defense']['trap_combo'] = args.trap_combo
     if args.num_target_layers is not None:
         config['defense']['num_target_layers'] = args.num_target_layers
+
+    # 单独控制每个高斯属性的 trap
+    trap_attr_map = {
+        'position': args.trap_position_static,
+        'scale': args.trap_scale_static,
+        'opacity': args.trap_opacity_static,
+        'rotation': args.trap_rotation_static,
+        'color': args.trap_color_static,
+    }
+    for attr_name, attr_value in trap_attr_map.items():
+        if attr_value is not None:
+            bool_value = attr_value.lower() in ('true', '1', 'yes')
+            config['defense']['trap_losses'][attr_name]['static'] = bool_value
+            print(f"[Pipeline] trap_losses.{attr_name}.static 覆盖: {bool_value}")
 
     # 互锁机制覆盖
     if args.robustness is not None:

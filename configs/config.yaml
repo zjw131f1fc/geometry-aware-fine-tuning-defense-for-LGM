@@ -29,7 +29,7 @@ data:
 
   target:
     dataset: omni
-    categories: [plant]
+    categories: [box]
 
   object_split:
     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
@@ -74,13 +74,13 @@ attack:
   scenario: malicious_content
   mode: null
   malicious_content:
-    malicious_categories: [plant]
+    malicious_categories: [box]
   pre_eval:
     enabled: true
     render_metrics: true
     num_samples: 10
   debug:
-    enabled: true
+    enabled: false
     track_params: [unet.conv_out.weight, unet.conv_out.bias, unet.conv_in.weight]
     trap_metrics: true
     feature_stats: true
@@ -93,8 +93,8 @@ defense:
   gradient_accumulation_steps: 2
 
   target:
-    dataset: omni
-    categories: null
+    dataset: gso
+    categories: [box]
     # object_split:
     #   plant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     samples_per_object: 5
@@ -210,26 +210,8 @@ lora:
 #     max_samples: 400
 #     samples_per_object: 2
 
-#   # Attack/Eval 的 target 数据（跨数据集默认用 GSO）
-#   target:
-#     dataset: gso                      # omni / objaverse / gso
-#     categories:
-#       - plant
-#       # - shoe
-#       # - dish
-#       # - bowl
-#       # - box
 
-#   # 物体分配：每个类别中哪些物体用于 defense（按名称排序后的索引）
-#   # 剩余物体自动分配给 attack，随机抽样 attack_samples_per_category 个
-#   # 注意：这些索引是按 OmniObject3D 的目录顺序定义的（跨数据集时 GSO attack 只是随机取子集）
-#   object_split:
-#     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
-#     plant: [2, 4, 8, 9]
-#     dish: [1, 3, 7, 9, 13]
-#     bowl: [0, 2, 6, 10]
-#     # box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 29, 36, 37, 38, 42, 53, 54, 67, 72, 75, 76, 78, 81, 82, 84, 86, 87, 93, 94, 100, 102, 104, 109, 111, 113, 115, 116, 119, 122, 126, 128]
-#     box: [1, 3, 5, 6, 10, 17, 21, 25, 26, 87, 126, 128]
+#   # 物体分配：每个类别中哪些物体用于 defense（按名称排序后的索引）28]
 #   attack_samples_per_category: 5  # 从非 defense 物体中随机取多少个做 attack
 
 #   # Source/Target 混合比例（防御训练时 source 数据的比例
