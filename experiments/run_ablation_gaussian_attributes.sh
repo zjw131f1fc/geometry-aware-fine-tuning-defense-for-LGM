@@ -10,6 +10,7 @@
 # 环境变量:
 #   DEFENSE_CACHE_MODE               # 防御缓存模式（可选，不设置则使用程序默认值）
 #   EVAL_EVERY_STEPS                 # 评估间隔步数（可选，不设置则使用程序默认值）
+#   NUM_RENDER                       # 每阶段渲染样本数（可选；减小可缓解显存压力）
 #   TRAP_TASK_SET                    # 任务集选择: wo_attrs(默认) / single_combo(Trap单开&组合补全)
 
 set -e
@@ -159,6 +160,7 @@ run_task() {
             ${params} \
             ${DEFENSE_CACHE_MODE:+--defense_cache_mode "${DEFENSE_CACHE_MODE}"} \
             ${EVAL_EVERY_STEPS:+--eval_every_steps "${EVAL_EVERY_STEPS}"} \
+            ${NUM_RENDER:+--num_render "${NUM_RENDER}"} \
             --defense_steps "${DEFENSE_STEPS}" \
             --tag "${tag}" \
             --output_dir "${output_dir}"
