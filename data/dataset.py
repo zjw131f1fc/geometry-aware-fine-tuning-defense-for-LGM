@@ -254,12 +254,11 @@ class OmniObject3DDataset(Dataset):
         self.category_parse_mode = category_parse_mode
         self.dataset_name = dataset_name
 
-        # DEBUG模式：GSO物体缩放（通过环境变量 DEBUG_GSO_SCALE 控制）
-        # 用法：export DEBUG_GSO_SCALE=0.66  # 缩小到66%
-        import os
-        self.gso_scale_factor = float(os.environ.get('DEBUG_GSO_SCALE', '1.0'))
-        if self.gso_scale_factor != 1.0 and 'GSO' in self.dataset_name.upper():
-            print(f"[DEBUG] GSO物体缩放已启用: scale_factor={self.gso_scale_factor:.2f}")
+        # GSO物体缩放：GSO物体比Omni大约2.3倍，缩小到0.66匹配Omni尺度
+        # 基于诊断分析：GSO median bbox_ratio=0.632 vs Omni=0.272，建议scale=0.657x
+        self.gso_scale_factor = 0.66 if 'GSO' in self.dataset_name.upper() else 1.0
+        if self.gso_scale_factor != 1.0:
+            print(f"[Dataset] GSO物体缩放已启用: scale_factor={self.gso_scale_factor:.2f}")
 
         # 创建视角选择器
         if view_selector == 'orthogonal':
@@ -467,13 +466,8 @@ class OmniObject3DDataset(Dataset):
             original_mode = img_raw.mode
             img = img_raw.convert('RGBA')
 
-            # DEBUG模式：GSO物体缩放（缩小物体并添加透明边距）
+            # GSO物体缩放（缩小物体并添加透明边距）
             if self.gso_scale_factor != 1.0:
-                import numpy as np
-                # 先resize到目标尺寸
-                img_resized = img.resize((self.input_size, self.input_size), Image.BILINEAR)
-                img_array = np.array(img_resized)
-
                 # 计算缩放后的尺寸
                 new_size = int(self.input_size * self.gso_scale_factor)
 
