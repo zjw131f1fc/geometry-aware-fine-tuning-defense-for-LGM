@@ -165,11 +165,11 @@ run_task() {
     } > "${log}" 2>&1; then
         echo "[GPU ${gpu}] 完成: ${tag}"
         return 0
+    else
+        exit_code=$?
+        echo "[GPU ${gpu}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
+        return "${exit_code}"
     fi
-
-    exit_code=$?
-    echo "[GPU ${gpu}] 失败: ${tag} (exit=${exit_code}), log: ${log}"
-    return "${exit_code}"
 }
 
 # ============================================================================
