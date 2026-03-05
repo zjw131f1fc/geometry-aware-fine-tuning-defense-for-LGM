@@ -1167,7 +1167,8 @@ def run_attack(config, target_train_loader, source_val_loader,
                           f"Loss: {metrics['loss']:.4f}, "
                           f"LPIPS: {metrics['masked_lpips']:.4f}, "
                           f"PSNR: {metrics['masked_psnr']:.2f}, "
-                          f"SourcePSNR: {metrics['source_psnr']:.2f}{eta_str}")
+                          f"SourcePSNR: {metrics['source_psnr']:.2f}, "
+                          f"SourceLPIPS: {metrics['source_lpips']:.4f}{eta_str}")
 
                     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
                     interval_count = 0

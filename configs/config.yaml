@@ -40,7 +40,7 @@ data:
   attack_samples_per_category: 15
 
   # Retention-heavy mixing
-  source_ratio: 0.9
+  source_ratio: 0.8
   source_val_ratio: 0.1
   val_samples: 20
 
@@ -65,9 +65,9 @@ training:
   optimizer_betas: [0.9, 0.95]
   optimizer_momentum: 0.9
 
-  attack_steps: 400
+  attack_steps: 200
   attack_epochs: null
-  defense_steps: 200
+  defense_steps: 50
   defense_epochs: null
 
 attack:
