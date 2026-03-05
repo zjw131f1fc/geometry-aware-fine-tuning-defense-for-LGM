@@ -78,8 +78,8 @@ EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 NUM_RENDER="${NUM_RENDER:-1}"
 
 # 两组类别集合（防御类别数 2/4）
-SETS_NAME=(k2 k4)
-SETS_CATS=("shoe,plant" "shoe,plant,dish,bowl")
+SETS_NAME=(k2 k3)
+SETS_CATS=("bowl,shoe" "shoe,dish,bowl")
 
 # 生成任务列表：2个类别集合 × 2个方法 = 4个任务
 TASKS=()

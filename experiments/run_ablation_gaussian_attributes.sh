@@ -9,9 +9,9 @@
 #
 # 环境变量:
 #   DEFENSE_CACHE_MODE               # 防御缓存模式（可选，不设置则使用程序默认值）
-#   EVAL_EVERY_STEPS                 # 评估间隔步数（可选，不设置则使用程序默认值）
 #   NUM_RENDER                       # 每阶段渲染样本数（可选；减小可缓解显存压力）
-#   TRAP_TASK_SET                    # 任务集选择: wo_attrs(默认) / single_combo(Trap单开&组合补全)
+#   TRAP_TASK_SET                    # 任务集选择: wo_attrs(默认) / singles(仅5种单属性) / single_combo(Trap单开&组合补全) / all_combos(所有排列组合)
+#   GPU_RECLAIM_DELAY                # GPU回收后等待显存释放的秒数（默认3秒，显存不足时可增大到5-10秒）
 
 set -e
 
@@ -53,6 +53,10 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 TRAP_TASK_SET="${TRAP_TASK_SET:-wo_attrs}"
 if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
     OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_trap_single_combo_${TIMESTAMP}"
+elif [[ "${TRAP_TASK_SET}" == "all_combos" ]]; then
+    OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_all_combos_${TIMESTAMP}"
+elif [[ "${TRAP_TASK_SET}" == "singles" ]]; then
+    OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_singles_${TIMESTAMP}"
 else
     OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_gaussian_attrs_${TIMESTAMP}"
 fi
@@ -72,7 +76,7 @@ echo "TRAP_TASK_SET: ${TRAP_TASK_SET}"
 echo "=========================================="
 
 # 精细指标口径：Defense 仅训练 50 step（用于达标步数分析）
-DEFENSE_STEPS=50
+DEFENSE_STEPS=30
 
 # ============================================================================
 # 任务列表
@@ -80,7 +84,70 @@ DEFENSE_STEPS=50
 
 TASKS=()
 
-if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
+if [[ "${TRAP_TASK_SET}" == "singles" ]]; then
+    # 仅测试5种单属性
+    # 说明：使用 --trap_losses 精确控制启用的 traps；不跳过 baseline 以便计算达标步数。
+
+    TASKS+=("single_position:--defense_method geotrap --trap_losses position")
+    TASKS+=("single_scale:--defense_method geotrap --trap_losses scale")
+    TASKS+=("single_opacity:--defense_method geotrap --trap_losses opacity")
+    TASKS+=("single_rotation:--defense_method geotrap --trap_losses rotation")
+    TASKS+=("single_color:--defense_method geotrap --trap_losses color")
+
+elif [[ "${TRAP_TASK_SET}" == "all_combos" ]]; then
+    # 所有排列组合：测试5种属性的所有可能组合（共30种，不含全部5属性）
+    # 说明：使用 --trap_losses 精确控制启用的 traps；不跳过 baseline 以便计算达标步数。
+
+    ATTRS=(position scale opacity rotation color)
+
+    # 1个属性的组合 (5种)
+    for attr in "${ATTRS[@]}"; do
+        TASKS+=("single_${attr}:--defense_method geotrap --trap_losses ${attr}")
+    done
+
+    # 2个属性的组合 (C(5,2) = 10种)
+    for i in {0..4}; do
+        for j in $(seq $((i+1)) 4); do
+            attr1="${ATTRS[$i]}"
+            attr2="${ATTRS[$j]}"
+            combo="${attr1},${attr2}"
+            tag="combo_${attr1}_${attr2}"
+            TASKS+=("${tag}:--defense_method geotrap --trap_losses ${combo}")
+        done
+    done
+
+    # 3个属性的组合 (C(5,3) = 10种)
+    for i in {0..4}; do
+        for j in $(seq $((i+1)) 4); do
+            for k in $(seq $((j+1)) 4); do
+                attr1="${ATTRS[$i]}"
+                attr2="${ATTRS[$j]}"
+                attr3="${ATTRS[$k]}"
+                combo="${attr1},${attr2},${attr3}"
+                tag="combo_${attr1}_${attr2}_${attr3}"
+                TASKS+=("${tag}:--defense_method geotrap --trap_losses ${combo}")
+            done
+        done
+    done
+
+    # 4个属性的组合 (C(5,4) = 5种)
+    for i in {0..4}; do
+        for j in $(seq $((i+1)) 4); do
+            for k in $(seq $((j+1)) 4); do
+                for l in $(seq $((k+1)) 4); do
+                    attr1="${ATTRS[$i]}"
+                    attr2="${ATTRS[$j]}"
+                    attr3="${ATTRS[$k]}"
+                    attr4="${ATTRS[$l]}"
+                    combo="${attr1},${attr2},${attr3},${attr4}"
+                    tag="combo_${attr1}_${attr2}_${attr3}_${attr4}"
+                    TASKS+=("${tag}:--defense_method geotrap --trap_losses ${combo}")
+                done
+            done
+        done
+    done
+
+elif [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
     # Trap 消融补全：单 trap + trap 组合（>=3 traps）
     # 说明：使用 --trap_losses 精确控制启用的 traps；不跳过 baseline 以便计算达标步数。
 
@@ -95,7 +162,6 @@ if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
     TASKS+=("combo_pos_scale_opacity:--defense_method geotrap --trap_losses position,scale,opacity")
     TASKS+=("combo_scale_opacity_color:--defense_method geotrap --trap_losses scale,opacity,color")
     TASKS+=("combo_pos_rotation_color:--defense_method geotrap --trap_losses position,rotation,color")
-    TASKS+=("combo_all5:--defense_method geotrap --trap_losses position,scale,opacity,rotation,color")
 else
     # 高斯属性消融：测试5种高斯属性的 w/o
     # 说明：不跳过 baseline，以便计算达标步数。
@@ -119,9 +185,17 @@ fi
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-if [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
+if [[ "${TRAP_TASK_SET}" == "singles" ]]; then
+    echo "  - 仅测试5种单属性: position/scale/opacity/rotation/color"
+elif [[ "${TRAP_TASK_SET}" == "all_combos" ]]; then
+    echo "  - 所有排列组合 (30种，不含全部5属性):"
+    echo "    * 1个属性: 5种"
+    echo "    * 2个属性: 10种"
+    echo "    * 3个属性: 10种"
+    echo "    * 4个属性: 5种"
+elif [[ "${TRAP_TASK_SET}" == "single_combo" ]]; then
     echo "  - 单 trap: position/scale/opacity/rotation/color"
-    echo "  - trap 组合: pos+scale+opacity / scale+opacity+color / pos+rotation+color / all5"
+    echo "  - trap 组合: pos+scale+opacity / scale+opacity+color / pos+rotation+color"
 else
     echo "  - w/o position"
     echo "  - w/o scale"
@@ -148,6 +222,9 @@ run_task() {
 
     echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
 
+    # Scale trap 在渲染阶段容易 OOM（极端scale导致rasterizer分配巨大缓冲区）
+    # 暂时跳过包含 scale 的任务
+
     if {
         echo "=== GPU ${gpu}: ${tag} ==="
         echo "Params: ${params}"
@@ -159,7 +236,6 @@ run_task() {
             --config "${CONFIG}" \
             ${params} \
             ${DEFENSE_CACHE_MODE:+--defense_cache_mode "${DEFENSE_CACHE_MODE}"} \
-            ${EVAL_EVERY_STEPS:+--eval_every_steps "${EVAL_EVERY_STEPS}"} \
             ${NUM_RENDER:+--num_render "${NUM_RENDER}"} \
             --defense_steps "${DEFENSE_STEPS}" \
             --tag "${tag}" \

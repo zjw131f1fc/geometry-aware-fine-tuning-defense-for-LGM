@@ -2,14 +2,7 @@
 #
 # Changes vs v33:
 # - Increase source mixing and distillation weight to reduce source damage.
-# - Slightly reduce lambda_trap since LoRA attacker is weaker than full fine-tune.
-#
-# Run (baseline cached if previously run with same attack settings):
-#   ../venvs/3d-defense/bin/python -u script/run_pipeline.py --gpu 0 \
-#     --config configs/config_geotrap_v34_plant_fusehead_lora_retention.yaml \
-#     --attack_steps 60 --defense_steps 60 --eval_every_steps 10 --num_render 0 \
-#     --defense_cache_mode none \
-#     --output_dir output/_analysis_v34_retention_lora_a60_d60
+
 
 model:
   size: big
@@ -29,7 +22,7 @@ data:
 
   target:
     dataset: omni
-    categories: [bowl]
+    categories: [dish]
 
   object_split:
     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
@@ -53,11 +46,11 @@ data:
 training:
   # Attack uses LoRA; defense remains full fine-tune by design.
   mode: lora
-  batch_size: 4
+  batch_size: 2
   lr: 0.00003
   weight_decay: 0.05
   gradient_clip: 1.0
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
   lambda_lpips: 1.0
   mixed_precision: bf16
 
@@ -67,14 +60,14 @@ training:
 
   attack_steps: 200
   attack_epochs: null
-  defense_steps: 50
+  defense_steps: 30
   defense_epochs: null
 
 attack:
   scenario: malicious_content
   mode: null
   malicious_content:
-    malicious_categories: [bowl]
+    malicious_categories: [dish]
   pre_eval:
     enabled: true
     render_metrics: true
@@ -94,7 +87,7 @@ defense:
 
   target:
     dataset: omni
-    categories: [bowl]
+    categories: [dish]
     # object_split:
     #   plant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     samples_per_object: 5
@@ -112,6 +105,18 @@ defense:
       topk_k: null
     rotation: {static: true, dynamic: false}
     color: {static: true, dynamic: false}
+
+    # trap_losses:
+    # position: {static: false, dynamic: false}
+    # scale: {static: true, dynamic: false}
+    # opacity:
+    #   static: false
+    #   dynamic: false
+    #   mode: logit
+    #   topk_frac: 0.02
+    #   topk_k: null
+    # rotation: {static: false, dynamic: false}
+    # color: {static: false, dynamic: false}
 
   trap_aggregation:
     method: bottleneck_logsumexp
@@ -239,18 +244,7 @@ lora:
 #   lambda_lpips: 1.0
 #   mixed_precision: bf16
 
-#   # 优化器配置
-#   optimizer: adamw                  # adamw / sgd
-#   optimizer_betas: [0.9, 0.95]
-#   optimizer_momentum: 0.9
-
-#   # 训练步数配置（优先使用 steps，如果为 null 则使用 epochs）
-#   # 注意：steps 指的是优化器步数（optimizer.step()调用次数），不是数据迭代次数
-#   attack_steps: 150                 # 攻击训练优化器步数（用于评估”可修复性”）
-#   attack_epochs: null                  # 充分评估修复难度（约 560 steps）
-#   defense_steps: 100                # 防御训练优化器步数
-#   defense_epochs: null                  # 确保 trap 写入深度（约 280 steps）
-
+#   # 优化器配
 # # -----------------------------------------------------------------------------
 # # 攻击场景配置
 # # -----------------------------------------------------------------------------
@@ -320,25 +314,8 @@ lora:
 #     enabled: true
 
 #   # 损失权重
-#   lambda_trap: 100.0
-#   lambda_distill: 400.0
-#   distill_loss_order: 1             # 1=L1, 2=L2(MSE)
 
-#   # 额外机制（默认全关，避免引入二阶或额外 forward）
-#   robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
-#   input_noise: {enabled: false, noise_scale: 0.10, warmup_steps: 0}
-#   gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
 
-#   # 敏感层自动选择（注释掉 = 全参数微调）
-#   # trap_combo: scale+opacity
-#   # num_target_layers: 20
-
-#   # 攻击评估配置（防御训练中周期性跑攻击来衡量防御效果）
-#   eval:
-#     eval_every_steps: 999999  # 默认关闭（想开再设小一些）
-#     attack_epochs: 1
-#     attack_lr: 0.00005
-#     num_render_samples: 1
 
 # # 其他配置
 # misc:

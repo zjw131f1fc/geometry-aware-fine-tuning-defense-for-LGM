@@ -639,6 +639,7 @@ class OmniObject3DDataset(Dataset):
             'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'category': sample['category'],
             'object': sample['object'],
+            'sample_idx': sample_idx,
         }
 
 
@@ -988,6 +989,7 @@ class ObjaverseRenderedDataset(Dataset):
             'supervision_elevations': torch.tensor(supervision_elevations, dtype=torch.float32) if supervision_elevations else torch.empty(0),
             'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'uuid': sample['uuid'],
+            'sample_idx': sample_idx,
         }
 
 
@@ -1033,6 +1035,12 @@ class SemanticDeflectionDataset(Dataset):
                     'supervision_azimuths': sup_sample.get('supervision_azimuths', torch.empty(0)),
                     'input_uuid': input_sample.get('uuid', ''),
                     'supervision_uuid': sup_sample.get('uuid', ''),
+                    'input_category': input_sample.get('category', ''),
+                    'input_object': input_sample.get('object', ''),
+                    'input_sample_idx': input_sample.get('sample_idx', 0),
+                    'supervision_category': sup_sample.get('category', ''),
+                    'supervision_object': sup_sample.get('object', ''),
+                    'supervision_sample_idx': sup_sample.get('sample_idx', 0),
                 }
             except (FileNotFoundError, IOError, OSError, RuntimeError) as e:
                 # 数据文件缺失或损坏，尝试下一个样本
