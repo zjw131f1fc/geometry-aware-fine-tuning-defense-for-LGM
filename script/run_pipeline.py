@@ -54,6 +54,7 @@ from tools import (
     BASELINE_CACHE_DIR, compute_baseline_hash,
     load_baseline_cache, save_baseline_cache, copy_cached_renders,
     plot_pipeline_results,
+    EfficiencyTracker,
 )
 
 
@@ -163,6 +164,8 @@ def parse_args():
                         help='Rotation trap 开关：true / false（覆盖 config.defense.trap_losses.rotation.static）')
     parser.add_argument('--trap_color_static', type=str, default=None,
                         help='Color trap 开关：true / false（覆盖 config.defense.trap_losses.color.static）')
+    parser.add_argument('--measure_efficiency', action='store_true',
+                        help='启用训练效率测量（记录时间、FLOPs、显存等指标）')
     return parser.parse_args()
 
 
@@ -697,6 +700,17 @@ def main():
         attack_config['training']['optimizer'] = attack_optimizer_override
     _dump_json(os.path.join(workspace, "attack_config.json"), attack_config)
 
+    # ========== 初始化效率追踪器（用于 Defense Training）==========
+    defense_efficiency_tracker = None
+    if args.measure_efficiency:
+        print(f"\n{'='*80}")
+        print("效率测量已启用 - 将测量 Defense Training 效率")
+        print(f"{'='*80}")
+        defense_efficiency_tracker = EfficiencyTracker(
+            method_name=f"Defense Training ({config.get('defense', {}).get('method', 'unknown')})",
+            flops_per_step=None,  # 可以在这里设置已知的FLOPs值
+        )
+
     # ========== Phase 1: Baseline Attack（带缓存）==========
     if args.skip_baseline:
         print(f"\n{'='*80}")
@@ -796,6 +810,11 @@ def main():
     torch.cuda.empty_cache()
 
     # ========== Phase 2: Defense Training ==========
+    # 启动效率追踪
+    if defense_efficiency_tracker:
+        defense_efficiency_tracker.start()
+        config._efficiency_tracker = defense_efficiency_tracker
+
     need_defense_state = (defense_cache_mode != "registry")
     if need_defense_state:
         defense_tag, defense_history, defense_state_dict = load_or_train_defense(
@@ -1187,6 +1206,48 @@ def main():
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
     print(f"指标文件: {metrics_path}")
     print(f"工作目录: {workspace}")
+
+    # ========== 生成防御训练效率报告 ==========
+    if args.measure_efficiency and defense_efficiency_tracker:
+        if defense_efficiency_tracker.history:
+            print(f"\n{'='*80}")
+            print("防御训练效率报告")
+            print(f"{'='*80}")
+
+            # 导出完整历史
+            efficiency_data = defense_efficiency_tracker.export_to_dict()
+            efficiency_report_path = os.path.join(workspace, 'defense_efficiency.json')
+            _dump_json(efficiency_report_path, efficiency_data)
+            print(f"\n效率数据已保存: {efficiency_report_path}")
+
+            # 打印关键指标
+            final_metrics = defense_efficiency_tracker.history[-1]
+
+            print(f"\n【防御训练统计】")
+            print(f"方法: {defense_efficiency_tracker.method_name}")
+            print(f"总步数: {final_metrics.step}")
+            print(f"总时间: {final_metrics.elapsed_time/3600:.2f} 小时")
+            print(f"平均步时: {final_metrics.elapsed_time/final_metrics.step:.3f} 秒/步")
+            if final_metrics.gpu_memory_mb:
+                print(f"峰值显存: {final_metrics.gpu_memory_mb:.0f} MB")
+
+            # 简单表格
+            print(f"\n【效率数据】")
+            print(f"| 指标         | 数值                    |")
+            print(f"|--------------|-------------------------|")
+            print(f"| 训练步数     | {final_metrics.step:,} steps      |")
+            print(f"| 训练时间     | {final_metrics.elapsed_time/3600:.2f} hours       |")
+            print(f"| 平均步时     | {final_metrics.elapsed_time/final_metrics.step:.3f} s/step       |")
+            if defense_efficiency_tracker.peak_memory_mb > 0:
+                print(f"| 峰值显存     | {defense_efficiency_tracker.peak_memory_mb:.0f} MB          |")
+            if defense_efficiency_tracker.flops_per_step:
+                total_flops = defense_efficiency_tracker.flops_per_step * final_metrics.step / 1e12
+                print(f"| 总计算量     | {total_flops:.1f} TFLOPs       |")
+
+            print(f"\n提示: 运行不同防御方法后，可以对比各自的 defense_efficiency.json")
+            print(f"{'='*80}")
+
+
 
 
 if __name__ == '__main__':

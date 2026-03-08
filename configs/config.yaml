@@ -58,9 +58,9 @@ training:
   optimizer_betas: [0.9, 0.95]
   optimizer_momentum: 0.9
 
-  attack_steps: 200
+  attack_steps: 400
   attack_epochs: null
-  defense_steps: 30
+  defense_steps: 200
   defense_epochs: null
 
 attack:
@@ -82,8 +82,8 @@ defense:
   method: geotrap
   tag: geotrap_v34_plant_fusehead_lora_retention
 
-  batch_size: 2
-  gradient_accumulation_steps: 2
+  batch_size: 4
+  gradient_accumulation_steps: 1
 
   target:
     dataset: omni
@@ -234,16 +234,6 @@ lora:
 # # -----------------------------------------------------------------------------
 # # 训练配置（轻量默认）
 # # -----------------------------------------------------------------------------
-# training:
-#   mode: full                        # full / lora
-#   batch_size: 2
-#   lr: 0.00003
-#   weight_decay: 0.05
-#   gradient_clip: 1.0
-#   gradient_accumulation_steps: 2
-#   lambda_lpips: 1.0
-#   mixed_precision: bf16
-
 #   # 优化器配
 # # -----------------------------------------------------------------------------
 # # 攻击场景配置
@@ -284,31 +274,6 @@ lora:
 
 #   # 陷阱损失配置（静态 trap：纯一阶，不触发二阶）
 #   # 默认全开五种物理属性（position/scale/opacity/rotation/color）
-#   trap_losses:
-#     position: {static: true, dynamic: false}
-#     scale: {static: true, dynamic: false}
-#     opacity:
-#       static: true
-#       dynamic: false
-#       topk_frac: 0.001
-#     rotation: {static: true, dynamic: false}
-#     color: {static: true, dynamic: false}
-
-#   # 多属性稳定性：bottleneck（追着最弱 trap 推深）
-#   trap_aggregation:
-#     method: bottleneck_logsumexp
-#     tau: 0.25
-
-#   # Anti-shortcut：冻结 head(conv)，迫使 trap “写进 UNet”
-#   antishortcut:
-#     freeze_head: true
-
-#   # 梯度能量上限（Target only）：降低”少数张量快速达标”的 shortcut，提升抗修复性
-#   grad_clip:
-#     mode: energy
-#     energy_mult: 5.0  # 设置为 0 关闭 energy cap  4.0
-#     energy_apply_on: target
-
 #   # 可选：一阶鲁棒化（默认关）
 #   awp:
 #     enabled: true

@@ -2018,6 +2018,17 @@ class DefenseTrainer:
                 # 优化器步数 +1（只在实际更新参数时计数）
                 global_step += 1
 
+                # 记录效率指标
+                if hasattr(self, 'config') and hasattr(self.config, '_efficiency_tracker'):
+                    tracker = self.config._efficiency_tracker
+                    if tracker is not None:
+                        tracker.record(
+                            step=global_step,
+                            epoch=epoch,
+                            step_time=avg_step_time if step_times else 0.0,
+                            loss=loss_dict.get('loss'),
+                        )
+
                 # 更新噪声scale（warmup）
                 if (self.use_param_noise and self.noise_warmup_steps > 0) or \
                    (self.use_input_noise and self.input_noise_warmup_steps > 0):

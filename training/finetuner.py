@@ -1154,6 +1154,19 @@ def run_attack(config, target_train_loader, source_val_loader,
                         model.train()
                     step_history.append(metrics)
 
+                    # 记录效率指标
+                    if hasattr(config, '_efficiency_tracker') and config._efficiency_tracker is not None:
+                        config._efficiency_tracker.record(
+                            step=global_step,
+                            epoch=epoch,
+                            step_time=avg_step_time,
+                            masked_psnr=metrics.get('masked_psnr'),
+                            masked_lpips=metrics.get('masked_lpips'),
+                            psnr=metrics.get('psnr'),
+                            lpips=metrics.get('lpips'),
+                            loss=metrics.get('loss'),
+                        )
+
                     # 计算ETA
                     eta_str = ""
                     if len(step_times) >= 3:
