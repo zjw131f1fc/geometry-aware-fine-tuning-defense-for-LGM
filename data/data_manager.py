@@ -145,6 +145,44 @@ class DataManager:
 
         return defense_indices
 
+    def _compute_random_defense_indices(self, categories: List[str], dataset_type: str, split_ratio: float) -> Optional[Dict[str, List[int]]]:
+        """
+        随机选择指定比例的物体用于 defense。
+
+        Args:
+            categories: 类别列表
+            dataset_type: 数据集类型 ('omni' / 'gso')
+            split_ratio: defense 数据比例 (0.0-1.0)
+
+        Returns:
+            defense 物体索引字典
+        """
+        category_counts = self._scan_category_counts(categories, dataset_type=dataset_type)
+        if not category_counts:
+            print(f"[DataManager] 警告: dataset={dataset_type} 无法扫描类别统计，无法进行随机划分。")
+            return None
+
+        seed = self.config.get('misc', {}).get('seed', 42)
+        rng = random.Random(seed)
+
+        defense_indices = {}
+        for cat in categories:
+            total = category_counts.get(cat, 0)
+            if total == 0:
+                defense_indices[cat] = []
+                continue
+
+            # 计算 defense 数量
+            defense_count = max(1, int(total * split_ratio))
+            # 随机选择
+            all_indices = list(range(total))
+            selected = sorted(rng.sample(all_indices, defense_count))
+            defense_indices[cat] = selected
+
+            print(f"[DataManager] {cat}: 总{total}个物体, 随机选择{defense_count}个({split_ratio*100:.0f}%) 用于 defense: {selected}")
+
+        return defense_indices
+
     def _resolve_subset_params(self, subset: str):
         """
         根据 subset 解析数据集参数。
@@ -200,8 +238,36 @@ class DataManager:
             object_indices = None
             if object_split and subset == 'target' and categories:
                 object_indices = self._compute_attack_indices(categories, dataset_type=dataset_type)
-            elif object_split and subset == 'defense_target' and categories:
-                object_indices = self._compute_defense_indices(categories, object_split)
+            elif subset == 'defense_target' and categories:
+                if object_split:
+                    # 有 object_split 配置，检查是否跨数据集
+                    attack_dataset = data_config['target'].get('dataset', 'omni')
+                    defense_dataset = dataset_type
+
+                    # 如果 attack 和 defense 使用不同数据集，不划分 defense 数据（使用全部）
+                    if attack_dataset != defense_dataset:
+                        print(f"[DataManager] 跨数据集场景: attack={attack_dataset}, defense={defense_dataset}")
+                        print(f"[DataManager] defense_target 不划分，使用全部数据进行训练")
+                        object_indices = None
+                    else:
+                        # 同数据集场景，按 object_split 划分
+                        object_indices = self._compute_defense_indices(categories, object_split)
+                else:
+                    # 没有 object_split 配置，检查是否使用随机划分
+                    defense_cfg = self.config.get('defense', {})
+                    defense_target = defense_cfg.get('target', {})
+                    split_ratio = defense_target.get('split_ratio')
+
+                    if split_ratio is not None:
+                        # 使用随机划分
+                        print(f"[DataManager] object_split 未配置，使用随机划分: ratio={split_ratio}")
+                        object_indices = self._compute_random_defense_indices(
+                            categories, dataset_type, split_ratio
+                        )
+                    else:
+                        # 既没有 object_split 也没有 split_ratio，使用全部数据
+                        print(f"[DataManager] object_split 和 split_ratio 均未配置，使用全部数据")
+                        object_indices = None
 
             return {
                 'dataset_type': dataset_type,

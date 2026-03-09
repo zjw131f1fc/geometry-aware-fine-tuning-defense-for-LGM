@@ -752,7 +752,8 @@ class DefenseTrainer:
             print(f"\n[2/5] 跳过敏感层设置（微调所有层）")
 
         # 2.1 Anti-shortcut：限制 head(conv) 的快捷解（可选）
-        if self.method in ('geotrap', 'naive_unlearning') and (self.freeze_head or self.freeze_head_bias):
+        # 注意：freeze_head 只对 geotrap 生效，不对 naive_unlearning 生效
+        if self.method == 'geotrap' and (self.freeze_head or self.freeze_head_bias):
             self._apply_antishortcut_freeze(self.model_mgr.model)
 
         # 2.2 Anti-shortcut：冻结 LoRA 目标层（qkv/proj），迫使 trap 写入上游 conv 层
@@ -1242,11 +1243,13 @@ class DefenseTrainer:
             method = getattr(self, "trap_aggregation_method", "pairwise_multiplicative")
             if method == 'sum':
                 static_combined = torch.stack(loss_list).sum()
+            elif method == 'mean':
+                static_combined = torch.stack(loss_list).mean()
             elif method in ('bottleneck', 'bottleneck_logsumexp', 'logsumexp'):
                 tau = float(getattr(self, "trap_bottleneck_tau", 0.25))
                 tau = max(tau, 1e-6)
                 stacked = torch.stack(loss_list)
-                # tau * logsumexp(L/tau) 近似 max(L)，最小化它会持续推深“最弱 trap”
+                # tau * logsumexp(L/tau) 近似 max(L)，最小化它会持续推深”最弱 trap”
                 static_combined = tau * torch.logsumexp(stacked / tau, dim=0)
             elif method == 'max':
                 static_combined = torch.stack(loss_list).max()
@@ -2015,6 +2018,17 @@ class DefenseTrainer:
                 # 优化器步数 +1（只在实际更新参数时计数）
                 global_step += 1
 
+                # 记录效率指标
+                if hasattr(self, 'config') and hasattr(self.config, '_efficiency_tracker'):
+                    tracker = self.config._efficiency_tracker
+                    if tracker is not None:
+                        tracker.record(
+                            step=global_step,
+                            epoch=epoch,
+                            step_time=avg_step_time if step_times else 0.0,
+                            loss=loss_dict.get('loss'),
+                        )
+
                 # 更新噪声scale（warmup）
                 if (self.use_param_noise and self.noise_warmup_steps > 0) or \
                    (self.use_input_noise and self.input_noise_warmup_steps > 0):
@@ -2358,6 +2372,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
         cache_mode: 防御模型缓存策略
             - "registry"（默认）: 命中则加载；未命中则训练并写入 model_registry
             - "readonly": 命中则加载；未命中则训练但不写入 model_registry（用于省磁盘）
+            - "writeonly": 不读取缓存，强制重新训练并写入 model_registry（用于强制更新）
             - "none": 不读取也不写入 model_registry（每次都训练，最省磁盘但最慢）
         return_state_dict: 是否返回防御模型 state_dict（用于不落盘情况下 Phase 3 直接加载）
 
@@ -2379,8 +2394,8 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
         return None, None
 
     cache_mode = (cache_mode or "registry").lower()
-    if cache_mode not in ("registry", "readonly", "none"):
-        raise ValueError(f"cache_mode 不支持: {cache_mode}（支持 registry/readonly/none）")
+    if cache_mode not in ("registry", "readonly", "none", "writeonly"):
+        raise ValueError(f"cache_mode 不支持: {cache_mode}（支持 registry/readonly/none/writeonly）")
 
     config = copy.deepcopy(config)
     tag = compute_defense_hash(config)
@@ -2617,7 +2632,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
                 epoch_history.append(combined)
 
         # Final checkpoint after all stages
-        if cache_mode == "registry":
+        if cache_mode in ("registry", "writeonly"):
             trainer.save_checkpoint(save_dir, epoch, is_final=True)
 
     else:
@@ -2665,7 +2680,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
             # 保存 checkpoint
             is_final = (use_steps and global_step >= total_steps) or (not use_steps and epoch == defense_epochs)
             if is_final:
-                if cache_mode == "registry":
+                if cache_mode in ("registry", "writeonly"):
                     trainer.save_checkpoint(save_dir, epoch, is_final=True)
 
             # 退出条件

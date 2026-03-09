@@ -24,10 +24,21 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 # Make common caches writable / stable (important for headless + multiprocessing)
 if not os.environ.get('OMP_NUM_THREADS', '').isdigit():
     os.environ['OMP_NUM_THREADS'] = '1'
-os.environ.setdefault('MPLCONFIGDIR', '/tmp/mpl')
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Prefer data-disk tmp when available (avoid filling system disk).
+_tmp_base = os.environ.get('TMPDIR')
+if not _tmp_base:
+    _tmp_base = '/root/autodl-tmp/tmp' if os.path.isdir('/root/autodl-tmp') else '/tmp'
+os.environ.setdefault('MPLCONFIGDIR', os.path.join(_tmp_base, 'mpl'))
 os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure local CUDA extensions (e.g. diff_gaussian_rasterization) are importable without pip install.
+_dgr_path = os.path.join(_repo_root, 'lib', 'diff-gaussian-rasterization')
+if os.path.isdir(_dgr_path):
+    sys.path.insert(0, _dgr_path)
+
+sys.path.insert(0, _repo_root)
 
 import json
 import copy
@@ -43,6 +54,9 @@ from tools import (
     BASELINE_CACHE_DIR, compute_baseline_hash,
     load_baseline_cache, save_baseline_cache, copy_cached_renders,
     plot_pipeline_results,
+    EfficiencyTracker,
+    build_dual_attack_step_report,
+    format_dual_attack_step_report,
 )
 
 
@@ -76,6 +90,14 @@ def parse_args():
                         help='每阶段渲染样本数')
     parser.add_argument('--eval_every_steps', type=int, default=10,
                         help='每隔多少 step 评估一次指标')
+    parser.add_argument('--export_gaussian_samples', action='store_true',
+                        help='导出固定样本的 Gaussian（用于论文级分布图）')
+    parser.add_argument('--gaussian_samples_num', type=int, default=32,
+                        help='导出 Gaussian 的样本数（默认32）')
+    parser.add_argument('--gaussian_plot_bins', type=int, default=80,
+                        help='分布图直方图 bins（默认80）')
+    parser.add_argument('--no_baseline_cache', action='store_true',
+                        help='禁用 baseline_cache（强制重新跑 Phase 1，便于导出分布图）')
     parser.add_argument('--semantic_deflection', action='store_true',
                         help='启用语义偏转攻击模式')
     parser.add_argument('--supervision_categories', type=str, default=None,
@@ -103,12 +125,16 @@ def parse_args():
     parser.add_argument('--defense_grad_accumulation_steps', type=int, default=None,
                         help="防御梯度累计步数（覆盖 config.defense.gradient_accumulation_steps；不影响攻击）")
     parser.add_argument('--defense_cache_mode', type=str, default='registry',
-                        help="防御模型缓存策略：registry(读写) / readonly(只读不写) / none(不读不写，最省磁盘)")
+                        help="防御模型缓存策略：registry(读写) / readonly(只读不写) / writeonly(只写不读) / none(不读不写，最省磁盘)")
     # 互锁机制参数
     parser.add_argument('--robustness', type=str, default=None,
                         help='参数加噪鲁棒性开关：true / false（覆盖 config）')
     parser.add_argument('--noise_scale', type=float, default=None,
                         help='参数加噪 σ（覆盖 config.defense.robustness.noise_scale）')
+    parser.add_argument('--input_noise_enabled', type=str, default=None,
+                        help='输入加噪开关：true / false（覆盖 config.defense.input_noise.enabled）')
+    parser.add_argument('--input_noise_scale', type=float, default=None,
+                        help='输入加噪 σ（覆盖 config.defense.input_noise.noise_scale）')
     # 梯度手术参数
     parser.add_argument('--grad_surgery_enabled', type=str, default=None,
                         help='梯度手术开关：true / false（覆盖 config.defense.grad_surgery.enabled）')
@@ -121,7 +147,7 @@ def parse_args():
                         help='能量梯度裁剪倍数（覆盖 config.defense.grad_clip.energy_mult）')
     # 陷阱聚合参数
     parser.add_argument('--trap_aggregation_method', type=str, default=None,
-                        help='陷阱聚合方法：sum / mean / bottleneck_logsumexp（覆盖 config.defense.trap_aggregation.method）')
+                        help='陷阱聚合方法：sum / mean / max / bottleneck_logsumexp（覆盖 config.defense.trap_aggregation.method）')
     parser.add_argument('--trap_bottleneck_tau', type=float, default=None,
                         help='Bottleneck聚合温度参数（覆盖 config.defense.trap_aggregation.tau）')
     # 反捷径机制参数
@@ -129,6 +155,19 @@ def parse_args():
                         help='冻结头部卷积层：true / false（覆盖 config.defense.antishortcut.freeze_head）')
     parser.add_argument('--freeze_lora_targets', type=str, default=None,
                         help='冻结 LoRA 目标层（qkv/proj）：true / false（覆盖 config.defense.antishortcut.freeze_lora_targets）')
+    # 单独控制每个高斯属性的 trap
+    parser.add_argument('--trap_position_static', type=str, default=None,
+                        help='Position trap 开关：true / false（覆盖 config.defense.trap_losses.position.static）')
+    parser.add_argument('--trap_scale_static', type=str, default=None,
+                        help='Scale trap 开关：true / false（覆盖 config.defense.trap_losses.scale.static）')
+    parser.add_argument('--trap_opacity_static', type=str, default=None,
+                        help='Opacity trap 开关：true / false（覆盖 config.defense.trap_losses.opacity.static）')
+    parser.add_argument('--trap_rotation_static', type=str, default=None,
+                        help='Rotation trap 开关：true / false（覆盖 config.defense.trap_losses.rotation.static）')
+    parser.add_argument('--trap_color_static', type=str, default=None,
+                        help='Color trap 开关：true / false（覆盖 config.defense.trap_losses.color.static）')
+    parser.add_argument('--measure_efficiency', action='store_true',
+                        help='启用训练效率测量（记录时间、FLOPs、显存等指标）')
     return parser.parse_args()
 
 
@@ -192,7 +231,7 @@ def main():
 
     # Defense cache mode（需要在打印 Summary 前就解析出来）
     defense_cache_mode = (args.defense_cache_mode or "registry").lower()
-    if defense_cache_mode not in ("registry", "readonly", "none"):
+    if defense_cache_mode not in ("registry", "readonly", "none", "writeonly"):
         raise ValueError(f"--defense_cache_mode 不支持: {args.defense_cache_mode}")
 
     # CLI 覆盖
@@ -303,6 +342,20 @@ def main():
     if args.num_target_layers is not None:
         config['defense']['num_target_layers'] = args.num_target_layers
 
+    # 单独控制每个高斯属性的 trap
+    trap_attr_map = {
+        'position': args.trap_position_static,
+        'scale': args.trap_scale_static,
+        'opacity': args.trap_opacity_static,
+        'rotation': args.trap_rotation_static,
+        'color': args.trap_color_static,
+    }
+    for attr_name, attr_value in trap_attr_map.items():
+        if attr_value is not None:
+            bool_value = attr_value.lower() in ('true', '1', 'yes')
+            config['defense']['trap_losses'][attr_name]['static'] = bool_value
+            print(f"[Pipeline] trap_losses.{attr_name}.static 覆盖: {bool_value}")
+
     # 互锁机制覆盖
     if args.robustness is not None:
         val = args.robustness.lower() == 'true'
@@ -312,6 +365,17 @@ def main():
         config.setdefault('defense', {}).setdefault('robustness', {})
         config['defense']['robustness']['noise_scale'] = float(args.noise_scale)
         print(f"[Pipeline] noise_scale 覆盖: {args.noise_scale}")
+
+    # 输入加噪覆盖
+    if args.input_noise_enabled is not None:
+        val = args.input_noise_enabled.lower() == 'true'
+        config.setdefault('defense', {}).setdefault('input_noise', {})
+        config['defense']['input_noise']['enabled'] = val
+        print(f"[Pipeline] 输入加噪覆盖: {val}")
+    if args.input_noise_scale is not None:
+        config.setdefault('defense', {}).setdefault('input_noise', {})
+        config['defense']['input_noise']['noise_scale'] = float(args.input_noise_scale)
+        print(f"[Pipeline] input_noise_scale 覆盖: {args.input_noise_scale}")
 
     # 梯度手术覆盖
     if args.grad_surgery_enabled is not None:
@@ -400,6 +464,10 @@ def main():
         "num_render": args.num_render,
         "eval_every_steps": args.eval_every_steps,
         "skip_baseline": bool(args.skip_baseline),
+        "export_gaussian_samples": bool(args.export_gaussian_samples),
+        "gaussian_samples_num": int(args.gaussian_samples_num),
+        "gaussian_plot_bins": int(args.gaussian_plot_bins),
+        "no_baseline_cache": bool(args.no_baseline_cache),
         "env": {
             "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
@@ -600,6 +668,32 @@ def main():
     print(f"  Target train: {len(target_train_loader.dataset)} 样本")
     print(f"  Source val: {len(source_val_loader.dataset)} 样本")
 
+    # Optional: fixed-sample Gaussian exports for paper-style distributions.
+    gaussian_export_loader = None
+    gaussian_export_paths = {}
+    if args.export_gaussian_samples:
+        if args.gaussian_samples_num <= 0:
+            raise ValueError("--gaussian_samples_num 必须为正整数")
+        from torch.utils.data import DataLoader
+
+        export_dataset = deflection_train_loader.dataset if supervision_categories else target_train_loader.dataset
+        gaussian_export_loader = DataLoader(
+            export_dataset,
+            batch_size=config['training']['batch_size'],
+            shuffle=False,  # IMPORTANT: keep sample order stable across stages
+            num_workers=config['data']['num_workers'],
+            pin_memory=True,
+        )
+        export_dir = os.path.join(workspace, "gaussian_samples")
+        os.makedirs(export_dir, exist_ok=True)
+        gaussian_export_paths = {
+            "baseline_attack": os.path.join(export_dir, "baseline_attack.pt"),
+            "defense": os.path.join(export_dir, "defense.pt"),
+            "postdefense_attack": os.path.join(export_dir, "postdefense_attack.pt"),
+        }
+        print(f"[Pipeline] Gaussian export enabled: num_samples={args.gaussian_samples_num}")
+        print(f"[Pipeline] Gaussian export dir: {export_dir}")
+
     # 创建攻击专用 config（应用 lr 和 optimizer 覆盖），Phase 1 和 Phase 3 共用
     attack_config = copy.deepcopy(config)
     if attack_lr_override is not None:
@@ -607,6 +701,17 @@ def main():
     if attack_optimizer_override is not None:
         attack_config['training']['optimizer'] = attack_optimizer_override
     _dump_json(os.path.join(workspace, "attack_config.json"), attack_config)
+
+    # ========== 初始化效率追踪器（用于 Defense Training）==========
+    defense_efficiency_tracker = None
+    if args.measure_efficiency:
+        print(f"\n{'='*80}")
+        print("效率测量已启用 - 将测量 Defense Training 效率")
+        print(f"{'='*80}")
+        defense_efficiency_tracker = EfficiencyTracker(
+            method_name=f"Defense Training ({config.get('defense', {}).get('method', 'unknown')})",
+            flops_per_step=None,  # 可以在这里设置已知的FLOPs值
+        )
 
     # ========== Phase 1: Baseline Attack（带缓存）==========
     if args.skip_baseline:
@@ -628,7 +733,12 @@ def main():
         phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
         gaussians_cache_path = os.path.join(cache_dir, 'baseline_gaussians.pt')
 
-        baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
+        use_baseline_cache = not bool(args.no_baseline_cache)
+        if use_baseline_cache:
+            baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
+        else:
+            print("[Cache] baseline_cache disabled (--no_baseline_cache): will rerun Phase 1.")
+            baseline_history, baseline_source, baseline_target, cache_hit = None, None, None, False
         if cache_hit:
             # 缓存命中：baseline_source 和 baseline_target 都从缓存加载
             # 如果旧缓存没有 baseline_source，重新评估
@@ -647,6 +757,28 @@ def main():
             else:
                 baseline_gaussians = None
                 print("[Cache] 旧缓存无 baseline Gaussians，Phase 3 将不计算距离")
+
+            # Optional: export cached baseline gaussians (not guaranteed sample-aligned).
+            if args.export_gaussian_samples and gaussian_export_paths.get("baseline_attack"):
+                if baseline_gaussians is None:
+                    print("[GaussianExport] baseline_attack skipped (cache hit but no baseline_gaussians).")
+                else:
+                    try:
+                        export_obj = {
+                            "format_version": 1,
+                            "created_at": datetime.now().isoformat(),
+                            "stage": "baseline_attack",
+                            "export_source": "baseline_cache",
+                            "num_requested": None,
+                            "num_collected": int(len(baseline_gaussians)),
+                            "sample_keys": [],
+                            "gaussians": baseline_gaussians,
+                            "note": "Exported from baseline_cache; sample keys/order may not match fixed loader.",
+                        }
+                        torch.save(export_obj, gaussian_export_paths["baseline_attack"])
+                        print(f"[GaussianExport] saved cached baseline: {gaussian_export_paths['baseline_attack']}")
+                    except Exception as e:
+                        print(f"[GaussianExport] cached baseline export failed: {type(e).__name__}: {e}")
         else:
             baseline_history, baseline_source, baseline_target, baseline_gaussians = run_attack(
                 attack_config, deflection_train_loader if supervision_categories else target_train_loader,
@@ -660,13 +792,19 @@ def main():
                 eval_every_steps=args.eval_every_steps,
                 phase_name="Phase 1: Baseline Attack",
                 return_gaussians=True,
+                gaussian_export_loader=gaussian_export_loader,
+                gaussian_export_num_samples=args.gaussian_samples_num,
+                gaussian_export_path=gaussian_export_paths.get("baseline_attack"),
+                gaussian_export_stage="baseline_attack",
             )
-            save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
-            copy_cached_renders(phase1_dir, cache_dir)
+            if use_baseline_cache:
+                save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
+                copy_cached_renders(phase1_dir, cache_dir)
             # 缓存 Gaussian
             if baseline_gaussians:
-                torch.save(baseline_gaussians, gaussians_cache_path)
-                print(f"[Cache] baseline Gaussians 已缓存: {len(baseline_gaussians)} 个样本")
+                if use_baseline_cache:
+                    torch.save(baseline_gaussians, gaussians_cache_path)
+                    print(f"[Cache] baseline Gaussians 已缓存: {len(baseline_gaussians)} 个样本")
 
     # ========== Phase 1.9: 清理 Phase 1 残留的显存 ==========
     import gc
@@ -674,6 +812,11 @@ def main():
     torch.cuda.empty_cache()
 
     # ========== Phase 2: Defense Training ==========
+    # 启动效率追踪
+    if defense_efficiency_tracker:
+        defense_efficiency_tracker.start()
+        config._efficiency_tracker = defense_efficiency_tracker
+
     need_defense_state = (defense_cache_mode != "registry")
     if need_defense_state:
         defense_tag, defense_history, defense_state_dict = load_or_train_defense(
@@ -690,6 +833,51 @@ def main():
             return_state_dict=False,
         )
         defense_state_dict = None
+
+    # Optional: export defense-stage gaussians (before post-defense attack).
+    if args.export_gaussian_samples and gaussian_export_loader is not None:
+        if defense_tag is None and defense_state_dict is None:
+            print("[GaussianExport] defense skipped (defense.method=none).")
+        else:
+            try:
+                print(f"\n{'='*80}")
+                print("  Phase 2.X: Export Gaussian samples (Defense stage)")
+                print(f"  num_samples={args.gaussian_samples_num}")
+                print(f"{'='*80}")
+
+                diag_cfg = copy.deepcopy(config)
+                if defense_state_dict is None and defense_tag is not None:
+                    diag_cfg.setdefault('model', {})
+                    diag_cfg['model']['resume'] = f"tag:{defense_tag}"
+
+                diag_mgr = ModelManager(diag_cfg)
+                diag_mgr.setup(apply_lora=False, device='cuda')
+                diag_model = diag_mgr.model
+
+                if defense_state_dict is not None:
+                    missing, unexpected = diag_model.load_state_dict(defense_state_dict, strict=False)
+                    if missing or unexpected:
+                        print(f"  [GaussianExport] defense state_dict non-strict "
+                              f"(missing={len(missing)}, unexpected={len(unexpected)})")
+
+                diag_eval = Evaluator(diag_model, device='cuda')
+                export_obj = diag_eval.collect_gaussian_samples(
+                    gaussian_export_loader,
+                    num_samples=args.gaussian_samples_num,
+                    stage="defense",
+                    include_inputs=False,
+                )
+                export_obj["format_version"] = 1
+                export_obj["created_at"] = datetime.now().isoformat()
+                export_obj["defense_tag"] = defense_tag
+                torch.save(export_obj, gaussian_export_paths.get("defense"))
+                print(f"[GaussianExport] saved: {gaussian_export_paths.get('defense')} "
+                      f"(n={export_obj.get('num_collected', 0)})")
+
+                del diag_eval, diag_model, diag_mgr
+                torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"[GaussianExport] defense export skipped due to error: {type(e).__name__}: {e}")
 
     # ========== Phase 2.5: Defense transfer diagnostics (pre-attack) ==========
     transfer_diag_cfg = (config.get('defense', {}).get('transfer_diag', {}) or {})
@@ -791,6 +979,10 @@ def main():
             phase_name="Phase 3: Post-Defense Attack",
             ref_gaussians=baseline_gaussians if not args.skip_baseline else None,
             model_state_dict_override=defense_state_dict,
+            gaussian_export_loader=gaussian_export_loader,
+            gaussian_export_num_samples=args.gaussian_samples_num,
+            gaussian_export_path=gaussian_export_paths.get("postdefense_attack"),
+            gaussian_export_stage="postdefense_attack",
         )
     else:
         # defense.method=none，跳过 Phase 3
@@ -816,6 +1008,18 @@ def main():
             postdef_history, baseline_effect_psnr, baseline_effect_lpips
         )
 
+    attack_step_report = build_dual_attack_step_report(
+        baseline_history,
+        postdef_history,
+        total_steps=attack_steps,
+        num_checkpoints=5,
+    )
+    attack_step_report_text = format_dual_attack_step_report(attack_step_report)
+    attack_step_report_path = os.path.join(workspace, "attack_step_report.txt")
+    with open(attack_step_report_path, "w", encoding="utf-8") as f:
+        f.write(attack_step_report_text)
+        f.write("\n")
+
     print(f"\n{'='*80}")
     print("Attack 阶段达标步数（达到 Baseline Attack 最终质量阈值）")
     print(f"{'='*80}")
@@ -835,11 +1039,44 @@ def main():
         else:
             print(f"Post-Defense Attack 达到 Baseline Attack 最终效果的最早 step: {postdef_steps_to_reach_baseline}")
 
+    print(f"\n{'='*80}")
+    print("Attack 分步结果（自动均分为 5 个 checkpoint）")
+    print(f"{'='*80}")
+    print(attack_step_report_text)
+
     # ========== Phase 4: 绘图 + 保存结果 ==========
     plot_pipeline_results(
         baseline_history, postdef_history, defense_history,
         save_path=os.path.join(workspace, 'pipeline_result.png'),
     )
+
+    # Optional: plot Gaussian distributions (paper-style) from exported samples.
+    gaussian_dist_plot = None
+    gaussian_dist_summary = None
+    if args.export_gaussian_samples and gaussian_export_paths:
+        try:
+            from tools.gaussian_plotting import load_gaussian_export, plot_gaussian_distributions
+
+            export_files = []
+            for k in ("baseline_attack", "defense", "postdefense_attack"):
+                p = gaussian_export_paths.get(k)
+                if p and os.path.exists(p):
+                    export_files.append(p)
+
+            if export_files:
+                exports = [load_gaussian_export(p) for p in export_files]
+                gaussian_dist_plot = os.path.join(workspace, "gaussian_distributions.png")
+                gaussian_dist_summary = os.path.join(workspace, "gaussian_distributions_summary.json")
+                plot_gaussian_distributions(
+                    exports,
+                    save_path=gaussian_dist_plot,
+                    summary_path=gaussian_dist_summary,
+                    title="Gaussian Distributions (fixed sample order)",
+                    bins=int(args.gaussian_plot_bins),
+                )
+                print(f"[GaussianPlot] saved: {gaussian_dist_plot}")
+        except Exception as e:
+            print(f"[GaussianPlot] skipped due to error: {type(e).__name__}: {e}")
 
     # 保存指标 JSON
     all_metrics = {
@@ -861,6 +1098,12 @@ def main():
             'semantic_deflection': supervision_categories is not None,
             'supervision_categories': supervision_categories,
         },
+        'artifacts': {
+            'gaussian_exports': gaussian_export_paths if args.export_gaussian_samples else None,
+            'gaussian_dist_plot': gaussian_dist_plot,
+            'gaussian_dist_summary': gaussian_dist_summary,
+            'attack_step_report': attack_step_report_path,
+        },
         'defense_transfer_diag': defense_transfer_diag,
         'analysis': {
             'baseline_attack_effect_at_end': (
@@ -872,6 +1115,7 @@ def main():
             ),
             'baseline_attack_steps_to_effect': baseline_steps_to_reach_baseline,
             'postdefense_attack_steps_to_baseline_effect': postdef_steps_to_reach_baseline,
+            'attack_step_report': attack_step_report,
         },
         'baseline_attack': baseline_history,
         'baseline_source': baseline_source,
@@ -981,8 +1225,51 @@ def main():
                 print(f"  gaussian_dist_to_baseline={gd['gaussian_dist_to_baseline']:.6f}")
 
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
+    print(f"分步汇总: {attack_step_report_path}")
     print(f"指标文件: {metrics_path}")
     print(f"工作目录: {workspace}")
+
+    # ========== 生成防御训练效率报告 ==========
+    if args.measure_efficiency and defense_efficiency_tracker:
+        if defense_efficiency_tracker.history:
+            print(f"\n{'='*80}")
+            print("防御训练效率报告")
+            print(f"{'='*80}")
+
+            # 导出完整历史
+            efficiency_data = defense_efficiency_tracker.export_to_dict()
+            efficiency_report_path = os.path.join(workspace, 'defense_efficiency.json')
+            _dump_json(efficiency_report_path, efficiency_data)
+            print(f"\n效率数据已保存: {efficiency_report_path}")
+
+            # 打印关键指标
+            final_metrics = defense_efficiency_tracker.history[-1]
+
+            print(f"\n【防御训练统计】")
+            print(f"方法: {defense_efficiency_tracker.method_name}")
+            print(f"总步数: {final_metrics.step}")
+            print(f"总时间: {final_metrics.elapsed_time/3600:.2f} 小时")
+            print(f"平均步时: {final_metrics.elapsed_time/final_metrics.step:.3f} 秒/步")
+            if final_metrics.gpu_memory_mb:
+                print(f"峰值显存: {final_metrics.gpu_memory_mb:.0f} MB")
+
+            # 简单表格
+            print(f"\n【效率数据】")
+            print(f"| 指标         | 数值                    |")
+            print(f"|--------------|-------------------------|")
+            print(f"| 训练步数     | {final_metrics.step:,} steps      |")
+            print(f"| 训练时间     | {final_metrics.elapsed_time/3600:.2f} hours       |")
+            print(f"| 平均步时     | {final_metrics.elapsed_time/final_metrics.step:.3f} s/step       |")
+            if defense_efficiency_tracker.peak_memory_mb > 0:
+                print(f"| 峰值显存     | {defense_efficiency_tracker.peak_memory_mb:.0f} MB          |")
+            if defense_efficiency_tracker.flops_per_step:
+                total_flops = defense_efficiency_tracker.flops_per_step * final_metrics.step / 1e12
+                print(f"| 总计算量     | {total_flops:.1f} TFLOPs       |")
+
+            print(f"\n提示: 运行不同防御方法后，可以对比各自的 defense_efficiency.json")
+            print(f"{'='*80}")
+
+
 
 
 if __name__ == '__main__':

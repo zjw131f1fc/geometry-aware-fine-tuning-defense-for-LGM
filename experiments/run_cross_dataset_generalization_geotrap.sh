@@ -1,14 +1,14 @@
 #!/bin/bash
-# 跨数据集泛化实验：
+# 跨数据集泛化实验 - GeoTrap
 # - Attack 阶段 target 使用 GSO
 # - Defense 阶段 target 使用 OmniObject3D
 #
 # 每个 pipeline 自动产生 Undefended（Phase 1）和对应防御方法（Phase 3）的结果
 #
 # 用法:
-#   bash experiments/run_cross_dataset_generalization.sh            # 默认 GPU=0 (单卡顺序执行)
-#   bash experiments/run_cross_dataset_generalization.sh 0          # 指定 GPU=0 (单卡顺序执行)
-#   bash experiments/run_cross_dataset_generalization.sh 0,1        # 多卡并行: 2张卡动态调度任务
+#   bash experiments/run_cross_dataset_generalization_geotrap.sh            # 默认 GPU=0 (单卡顺序执行)
+#   bash experiments/run_cross_dataset_generalization_geotrap.sh 0          # 指定 GPU=0 (单卡顺序执行)
+#   bash experiments/run_cross_dataset_generalization_geotrap.sh 0,1        # 多卡并行: 2张卡动态调度任务
 
 set -e
 
@@ -37,7 +37,7 @@ GPU_LIST="${1:-0}"
 echo "GPU列表: ${GPU_LIST}"
 
 CATEGORIES=(shoe plant dish bowl box)
-METHODS=(naive_unlearning geotrap)
+METHODS=(geotrap)
 
 ATTACK_TARGET_DATASET="gso"
 DEFENSE_TARGET_DATASET="omni"
@@ -50,7 +50,7 @@ CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本地目录）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
-OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_omni_defense_gso_attack_${TIMESTAMP}"
+OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_geotrap_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
 # 复制配置文件到输出目录，避免后续修改影响实验参数
@@ -59,7 +59,7 @@ CONFIG="${OUTPUT_ROOT}/config.yaml"
 cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
 echo "=========================================="
-echo "跨数据集泛化实验: 5类别 × 2方法 = 10个pipeline"
+echo "跨数据集泛化实验 - GeoTrap: 5类别"
 echo "Attack target dataset:  ${ATTACK_TARGET_DATASET}"
 echo "Defense target dataset: ${DEFENSE_TARGET_DATASET}"
 echo "Config: ${CONFIG} (已复制)"
@@ -151,7 +151,7 @@ SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
 {
 echo ""
 echo "=========================================="
-echo "汇总结果（Defense=Omni, Attack=GSO）"
+echo "汇总结果 - GeoTrap (Defense=Omni, Attack=GSO)"
 echo "=========================================="
 
 for category in "${CATEGORIES[@]}"; do

@@ -1,14 +1,14 @@
 #!/bin/bash
-# 跨数据集泛化实验：
-# - Attack 阶段 target 使用 GSO
-# - Defense 阶段 target 使用 OmniObject3D
+# 跨数据集泛化实验（反向）：
+# - Attack 阶段 target 使用 OmniObject3D
+# - Defense 阶段 target 使用 GSO
 #
 # 每个 pipeline 自动产生 Undefended（Phase 1）和对应防御方法（Phase 3）的结果
 #
 # 用法:
-#   bash experiments/run_cross_dataset_generalization.sh            # 默认 GPU=0 (单卡顺序执行)
-#   bash experiments/run_cross_dataset_generalization.sh 0          # 指定 GPU=0 (单卡顺序执行)
-#   bash experiments/run_cross_dataset_generalization.sh 0,1        # 多卡并行: 2张卡动态调度任务
+#   bash experiments/run_cross_dataset_generalization_gso_to_omni.sh            # 默认 GPU=0 (单卡顺序执行)
+#   bash experiments/run_cross_dataset_generalization_gso_to_omni.sh 0          # 指定 GPU=0 (单卡顺序执行)
+#   bash experiments/run_cross_dataset_generalization_gso_to_omni.sh 0,1        # 多卡并行: 2张卡动态调度任务
 
 set -e
 
@@ -39,8 +39,8 @@ echo "GPU列表: ${GPU_LIST}"
 CATEGORIES=(shoe plant dish bowl box)
 METHODS=(naive_unlearning geotrap)
 
-ATTACK_TARGET_DATASET="gso"
-DEFENSE_TARGET_DATASET="omni"
+ATTACK_TARGET_DATASET="omni"
+DEFENSE_TARGET_DATASET="gso"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
@@ -50,7 +50,7 @@ CONFIG="configs/config.yaml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本地目录）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
-OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_omni_defense_gso_attack_${TIMESTAMP}"
+OUTPUT_ROOT="${EXPERIMENTS_BASE}/cross_dataset_gso_defense_omni_attack_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
 # 复制配置文件到输出目录，避免后续修改影响实验参数
@@ -59,7 +59,7 @@ CONFIG="${OUTPUT_ROOT}/config.yaml"
 cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
 echo "=========================================="
-echo "跨数据集泛化实验: 5类别 × 2方法 = 10个pipeline"
+echo "跨数据集泛化实验（反向）: 5类别 × 2方法 = 10个pipeline"
 echo "Attack target dataset:  ${ATTACK_TARGET_DATASET}"
 echo "Defense target dataset: ${DEFENSE_TARGET_DATASET}"
 echo "Config: ${CONFIG} (已复制)"
@@ -86,7 +86,7 @@ run_task() {
     local task=${TASKS[$task_idx]}
 
     IFS=':' read -r category method <<< "$task"
-    local tag="${category}_${method}_omni2gso"
+    local tag="${category}_${method}_gso2omni"
     local log="${OUTPUT_ROOT}/${tag}.log"
 
     echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag}"
@@ -151,7 +151,7 @@ SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
 {
 echo ""
 echo "=========================================="
-echo "汇总结果（Defense=Omni, Attack=GSO）"
+echo "汇总结果（Defense=GSO, Attack=Omni）"
 echo "=========================================="
 
 for category in "${CATEGORIES[@]}"; do
@@ -160,7 +160,7 @@ for category in "${CATEGORIES[@]}"; do
     echo ""
 
     for method in "${METHODS[@]}"; do
-        tag="${category}_${method}_omni2gso"
+        tag="${category}_${method}_gso2omni"
         metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
         if [ -f "$metrics" ]; then
@@ -171,9 +171,8 @@ for category in "${CATEGORIES[@]}"; do
         fi
     done
 
-    # 打印Undefended（使用第一个方法的baseline）
     first_method="${METHODS[0]}"
-    tag="${category}_${first_method}_omni2gso"
+    tag="${category}_${first_method}_gso2omni"
     metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then

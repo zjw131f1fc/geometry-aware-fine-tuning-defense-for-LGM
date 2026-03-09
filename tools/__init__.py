@@ -9,6 +9,12 @@ from .utils import (
     load_baseline_cache, save_baseline_cache, copy_cached_renders,
 )
 from .plotting import plot_pipeline_results
+from .efficiency_tracker import EfficiencyTracker, EfficiencyMetrics
+from .step_reporting import (
+    build_attack_step_report,
+    build_dual_attack_step_report,
+    format_dual_attack_step_report,
+)
 from . import model_registry
 
 __all__ = [
@@ -17,4 +23,7 @@ __all__ = [
     "compute_defense_hash",
     "load_baseline_cache", "save_baseline_cache", "copy_cached_renders",
     "plot_pipeline_results",
+    "EfficiencyTracker", "EfficiencyMetrics",
+    "build_attack_step_report", "build_dual_attack_step_report",
+    "format_dual_attack_step_report",
 ]

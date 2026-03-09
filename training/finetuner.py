@@ -429,7 +429,12 @@ def run_attack(config, target_train_loader, source_val_loader,
                num_render=3, eval_every_steps=10,
                model_resume_override=None, phase_name="Attack",
                return_gaussians=False, ref_gaussians=None,
-               model_state_dict_override=None):
+               model_state_dict_override=None,
+               *,
+               gaussian_export_loader=None,
+               gaussian_export_num_samples: int = 32,
+               gaussian_export_path: str = None,
+               gaussian_export_stage: str = None):
     """
     一行运行攻击阶段。
 
@@ -1149,6 +1154,19 @@ def run_attack(config, target_train_loader, source_val_loader,
                         model.train()
                     step_history.append(metrics)
 
+                    # 记录效率指标
+                    if hasattr(config, '_efficiency_tracker') and config._efficiency_tracker is not None:
+                        config._efficiency_tracker.record(
+                            step=global_step,
+                            epoch=epoch,
+                            step_time=avg_step_time,
+                            masked_psnr=metrics.get('masked_psnr'),
+                            masked_lpips=metrics.get('masked_lpips'),
+                            psnr=metrics.get('psnr'),
+                            lpips=metrics.get('lpips'),
+                            loss=metrics.get('loss'),
+                        )
+
                     # 计算ETA
                     eta_str = ""
                     if len(step_times) >= 3:
@@ -1167,7 +1185,8 @@ def run_attack(config, target_train_loader, source_val_loader,
                           f"Loss: {metrics['loss']:.4f}, "
                           f"LPIPS: {metrics['masked_lpips']:.4f}, "
                           f"PSNR: {metrics['masked_psnr']:.2f}, "
-                          f"SourcePSNR: {metrics['source_psnr']:.2f}{eta_str}")
+                          f"SourcePSNR: {metrics['source_psnr']:.2f}, "
+                          f"SourceLPIPS: {metrics['source_lpips']:.4f}{eta_str}")
 
                     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
                     interval_count = 0
@@ -1265,6 +1284,30 @@ def run_attack(config, target_train_loader, source_val_loader,
         target_metrics['gaussian_diag'] = gaussian_diag
     else:
         target_metrics['gaussian_diag'] = gaussian_diag
+
+    # Optional: export per-sample gaussians for paper-style distribution plots.
+    if gaussian_export_path and gaussian_export_loader is not None:
+        try:
+            from datetime import datetime
+            os.makedirs(os.path.dirname(gaussian_export_path), exist_ok=True)
+            stage = gaussian_export_stage or phase_name
+            export_obj = evaluator.collect_gaussian_samples(
+                gaussian_export_loader,
+                num_samples=gaussian_export_num_samples,
+                stage=str(stage),
+                include_inputs=False,
+            )
+            export_obj["format_version"] = 1
+            export_obj["created_at"] = datetime.now().isoformat()
+            export_obj["phase_name"] = str(phase_name)
+            export_obj["eval_every_steps"] = int(eval_every_steps)
+            export_obj["attack_steps"] = int(attack_steps) if attack_steps is not None else None
+            export_obj["attack_epochs"] = int(attack_epochs) if attack_epochs is not None else None
+            torch.save(export_obj, gaussian_export_path)
+            print(f"  [GaussianExport] saved: {gaussian_export_path} "
+                  f"(n={export_obj.get('num_collected', 0)})")
+        except Exception as e:
+            print(f"  [GaussianExport] skipped due to error: {type(e).__name__}: {e}")
 
     # Cleanup debug hooks (important when running multiple phases in a single process).
     if feature_hook_handle is not None:

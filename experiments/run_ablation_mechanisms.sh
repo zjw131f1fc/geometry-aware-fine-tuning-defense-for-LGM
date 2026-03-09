@@ -48,9 +48,14 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_mechanisms_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "防御机制消融实验"
-echo "测试配置: ${CONFIG}"
+echo "测试配置: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 if [[ "${SKIP_BASELINE}" == "1" ]]; then
     echo "模式: 跳过 Baseline Attack"
@@ -185,28 +190,19 @@ echo "防御机制消融结果汇总"
 echo "=========================================="
 echo ""
 
-printf "%-30s %-15s %-15s %-15s %-15s\n" \
-    "实验配置" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "----------------------------------------------------------------------------------------------------"
-
 for task in "${TASKS[@]}"; do
     IFS=':' read -r tag params <<< "$task"
 
     metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
-
-print(f'${tag:<30s} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
-"
+        echo "--- ${tag} ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        echo ""
     else
-        printf "%-30s (未完成或失败)\n" "${tag}"
+        echo "--- ${tag} ---"
+        echo "(未完成或失败)"
+        echo ""
     fi
 done
 

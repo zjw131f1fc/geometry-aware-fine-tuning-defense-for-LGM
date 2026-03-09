@@ -3,27 +3,24 @@
 #
 # 目的：
 #   在同一 target 数据集 OmniObject3D 上（attack/defense 都是 omni），
-#   分别用 1 / 3 / 5 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
+#   分别用 2 / 3 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
+#   同时测试 naive_unlearning 和 geotrap 两种防御方法。
 #
 # 用法:
 #   bash experiments/run_ablation_defense_num_categories.sh            # 默认 GPU=0 (单卡顺序执行)
 #   bash experiments/run_ablation_defense_num_categories.sh 0          # 指定 GPU=0 (单卡顺序执行)
-#   bash experiments/run_ablation_defense_num_categories.sh 0,1        # 多卡并行: 2张卡动态调度任务
+#   bash experiments/run_ablation_defense_num_categories.sh 0,1,2,3    # 多卡并行: 4张卡动态调度任务
 #
 # 默认类别集合（可按需改）：
-#   K=1: shoe
-#   K=3: shoe,plant,dish
-#   K=5: shoe,plant,dish,bowl,box
+#   K=2: bowl,shoe
+#   K=3: shoe,dish,bowl
 #
 # 可选环境变量：
 #   CONFIG=configs/config.yaml
 #   EXPERIMENTS_BASE=output/experiments_output
-#   DEFENSE_METHOD=geotrap
 #   DEFENSE_CACHE_MODE=registry
 #   DEFENSE_BATCH_SIZE=2
 #   DEFENSE_GRAD_ACCUM=2
-#   ATTACK_STEPS=200
-#   DEFENSE_STEPS=200
 #   EVAL_EVERY_STEPS=10
 #   NUM_RENDER=1
 
@@ -44,9 +41,17 @@ if [[ -z "${PYTHON:-}" ]]; then
     fi
 fi
 
-# Avoid OpenMP env issues + make matplotlib cache writable (important for multiprocessing)
+# Avoid OpenMP env issues + keep caches/tmp off system disk when possible
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+if [[ -d "/root/autodl-tmp" ]]; then
+    export TMPDIR="${TMPDIR:-/root/autodl-tmp/tmp}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/root/autodl-tmp/.cache}"
+    export TORCH_HOME="${TORCH_HOME:-/root/autodl-tmp/.cache/torch}"
+    export HF_HOME="${HF_HOME:-/root/autodl-tmp/.cache/huggingface}"
+    export WANDB_DIR="${WANDB_DIR:-/root/autodl-tmp/.cache/wandb}"
+    mkdir -p "${TMPDIR}" "${XDG_CACHE_HOME}" "${TORCH_HOME}" "${HF_HOME}" "${WANDB_DIR}"
+fi
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
 # 解析GPU列表
@@ -58,39 +63,55 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_defense_num_categories_${TIMESTAMP}"
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
-DEFENSE_METHOD="${DEFENSE_METHOD:-geotrap}"
+# 两种防御方法
+METHODS=(naive_unlearning geotrap)
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 
-ATTACK_STEPS="${ATTACK_STEPS:-}"
-DEFENSE_STEPS="${DEFENSE_STEPS:-}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 NUM_RENDER="${NUM_RENDER:-1}"
 
-# 三组类别集合（防御类别数 1/3/5）
-SETS_NAME=(k1 k3 k5)
-SETS_CATS=("shoe" "shoe,plant,dish" "shoe,plant,dish,bowl,box")
+# 两组类别集合（防御类别数 2/3）
+SETS_NAME=(k2 k3)
+SETS_CATS=("bowl,shoe" "shoe,dish,bowl")
 
-TOTAL_TASKS=${#SETS_NAME[@]}
+# 生成任务列表：2个类别集合 × 2个方法 = 4个任务
+TASKS=()
+for method in "${METHODS[@]}"; do
+    for i in "${!SETS_NAME[@]}"; do
+        TASKS+=("${i}:${method}")
+    done
+done
+
+TOTAL_TASKS=${#TASKS[@]}
 
 echo "=========================================="
 echo "防御类别数消融（target=omni，attack/defense 同 dataset）"
 echo "Config: ${CONFIG}"
-echo "Defense method: ${DEFENSE_METHOD}"
+echo "Defense methods: ${METHODS[*]}"
 echo "Defense cache mode: ${DEFENSE_CACHE_MODE}"
 echo "Output: ${OUTPUT_ROOT}"
-echo "Tasks: ${TOTAL_TASKS} (1/3/5 categories)"
+echo "Tasks: ${TOTAL_TASKS} (2/3 categories × 2 methods)"
 echo "=========================================="
 
+# 任务执行函数
+# 参数: $1=GPU_ID, $2=task_idx
 launch_on_gpu() {
     local gpu=$1
-    local idx=$2
+    local task_idx=$2
+    local task=${TASKS[$task_idx]}
+
+    IFS=':' read -r idx method <<< "$task"
     local name=${SETS_NAME[$idx]}
     local cats=${SETS_CATS[$idx]}
 
-    local tag="defcats_${name}_${DEFENSE_METHOD}_omni"
+    local tag="defcats_${name}_${method}_omni"
     local log="${OUTPUT_ROOT}/${tag}.log"
     local out_dir="${OUTPUT_ROOT}/${tag}"
 
@@ -101,14 +122,8 @@ launch_on_gpu() {
     if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
         extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
     fi
-    if [[ -n "${ATTACK_STEPS}" ]]; then
-        extra_args+=(--attack_steps "${ATTACK_STEPS}")
-    fi
-    if [[ -n "${DEFENSE_STEPS}" ]]; then
-        extra_args+=(--defense_steps "${DEFENSE_STEPS}")
-    fi
 
-    echo "[GPU ${gpu}] 任务 $((idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats})"
+    echo "[GPU ${gpu}] 任务 $((task_idx+1))/${TOTAL_TASKS}: ${tag} (cats=${cats}, method=${method})"
 
     if {
         echo "=== GPU ${gpu}: ${tag} ==="
@@ -118,7 +133,7 @@ launch_on_gpu() {
         --attack_target_dataset omni \
         --defense_target_dataset omni \
         --categories "${cats}" \
-        --defense_method "${DEFENSE_METHOD}" \
+        --defense_method "${method}" \
         --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
         --eval_every_steps "${EVAL_EVERY_STEPS}" \
         --num_render "${NUM_RENDER}" \
@@ -157,4 +172,41 @@ FAILED=${#FAILED_TASKS[@]}
 
 echo ""
 echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
+
+# ============================================================================
+# 汇总结果
+# ============================================================================
+
+SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
+
+{
+echo ""
+echo "=========================================="
+echo "防御类别数消融结果汇总"
+echo "=========================================="
+echo ""
+
+for method in "${METHODS[@]}"; do
+    echo "=== ${method} ==="
+    echo ""
+    for i in "${!SETS_NAME[@]}"; do
+        name=${SETS_NAME[$i]}
+        cats=${SETS_CATS[$i]}
+        tag="defcats_${name}_${method}_omni"
+        metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
+
+        echo "--- ${tag} (cats=${cats}) ---"
+        if [ -f "$metrics" ]; then
+            "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        else
+            echo "(未完成或失败)"
+        fi
+        echo ""
+    done
+done
+
+echo "=========================================="
 echo "结果保存在: ${OUTPUT_ROOT}"
+echo "汇总文件: ${SUMMARY_FILE}"
+echo "=========================================="
+} | tee "${SUMMARY_FILE}"

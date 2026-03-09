@@ -682,6 +682,131 @@ class Evaluator:
         return result
 
     @torch.no_grad()
+    def collect_gaussian_samples(
+        self,
+        loader,
+        num_samples: int = 32,
+        *,
+        stage: str = "",
+        include_inputs: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Collect a fixed number of per-sample Gaussian tensors from a loader.
+
+        This is a lightweight alternative to diagnose_gaussians() intended for
+        paper-style distribution plots (opacity/scale/position/RGB, etc.).
+
+        Notes:
+            - Returned gaussians are moved to CPU float32 for stable serialization.
+            - Sample keys are best-effort: category/object/sample_idx/uuid if present.
+            - By default we do NOT store input tensors (avoid large outputs).
+
+        Args:
+            loader: DataLoader yielding dict batches (Omni/GSO/Objaverse/SemanticDeflection).
+            num_samples: Max number of samples to collect (None = collect all).
+            stage: Optional stage label for downstream plotting ("baseline_attack", "defense", ...).
+            include_inputs: Whether to store a minimal copy of input_images for debugging (False by default).
+
+        Returns:
+            Dict with keys:
+                - stage, num_requested, num_collected
+                - sample_keys: List[dict]
+                - gaussians: List[Tensor [N,14] on CPU float32]
+                - inputs (optional): List[Tensor] (small, best-effort)
+        """
+        self.model.eval()
+
+        def _as_py(x):
+            if x is None:
+                return None
+            if torch.is_tensor(x):
+                try:
+                    return x.item()
+                except Exception:
+                    return x.detach().cpu().tolist()
+            return x
+
+        def _key_from_batch(batch: Dict[str, Any], i: int, global_i: int) -> Dict[str, Any]:
+            key: Dict[str, Any] = {"i": int(global_i)}
+            # Common (Omni/GSO)
+            if "category" in batch:
+                try:
+                    key["category"] = batch["category"][i]
+                except Exception:
+                    pass
+            if "object" in batch:
+                try:
+                    key["object"] = batch["object"][i]
+                except Exception:
+                    pass
+            if "sample_idx" in batch:
+                try:
+                    si = batch["sample_idx"][i] if torch.is_tensor(batch["sample_idx"]) else batch["sample_idx"][i]
+                    key["sample_idx"] = _as_py(si)
+                except Exception:
+                    key["sample_idx"] = _as_py(batch.get("sample_idx"))
+            # Objaverse
+            if "uuid" in batch:
+                try:
+                    key["uuid"] = batch["uuid"][i]
+                except Exception:
+                    pass
+            # Semantic deflection (paired uuids)
+            if "input_uuid" in batch:
+                try:
+                    key["input_uuid"] = batch["input_uuid"][i]
+                except Exception:
+                    key["input_uuid"] = batch.get("input_uuid")
+            if "supervision_uuid" in batch:
+                try:
+                    key["supervision_uuid"] = batch["supervision_uuid"][i]
+                except Exception:
+                    key["supervision_uuid"] = batch.get("supervision_uuid")
+            return key
+
+        collected_gaussians: List[torch.Tensor] = []
+        collected_keys: List[Dict[str, Any]] = []
+        collected_inputs: List[torch.Tensor] = []
+
+        collected = 0
+        for batch in loader:
+            if num_samples is not None and collected >= num_samples:
+                break
+
+            data = prepare_lgm_data(batch, self.model, self.device)
+            gaussians = self.model.forward_gaussians(data["input"])
+            B = int(gaussians.shape[0])
+
+            for bi in range(B):
+                if num_samples is not None and collected >= num_samples:
+                    break
+
+                collected_gaussians.append(gaussians[bi].detach().float().cpu())
+                collected_keys.append(_key_from_batch(batch, bi, collected))
+
+                if include_inputs:
+                    try:
+                        # Store only the RGB part for debug (avoid rays / large tensors).
+                        rgb = batch["input_images"][bi, :, :3].detach().cpu()
+                        collected_inputs.append(rgb)
+                    except Exception:
+                        # Best-effort only.
+                        pass
+
+                collected += 1
+
+        out: Dict[str, Any] = {
+            "stage": str(stage or ""),
+            "num_requested": int(num_samples) if num_samples is not None else None,
+            "num_collected": int(collected),
+            "sample_keys": collected_keys,
+            "gaussians": collected_gaussians,
+        }
+        if include_inputs:
+            out["inputs_rgb"] = collected_inputs
+        return out
+
+    @torch.no_grad()
     def eval_source(self, source_val_loader) -> Dict[str, float]:
         """
         评估 source 数据集上的模型质量。

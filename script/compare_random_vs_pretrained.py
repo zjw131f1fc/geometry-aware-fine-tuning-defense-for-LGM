@@ -70,14 +70,14 @@ def plot_comparison(random_history, pretrained_history, save_path):
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     fig.suptitle('Random Init vs Pretrained LGM - Attack Training Comparison', fontsize=14)
 
-    # 提取数据
+    # 提取数据 (使用 .get() 避免 KeyError，因为 pre-diagnostic 条目可能没有 loss)
     random_steps = [h['step'] for h in random_history]
-    random_loss = [h['loss'] for h in random_history]
+    random_loss = [h.get('loss', 0) for h in random_history]
     random_masked_lpips = [h.get('masked_lpips', 0) for h in random_history]
     random_masked_psnr = [h.get('masked_psnr', 0) for h in random_history]
 
     pretrained_steps = [h['step'] for h in pretrained_history]
-    pretrained_loss = [h['loss'] for h in pretrained_history]
+    pretrained_loss = [h.get('loss', 0) for h in pretrained_history]
     pretrained_masked_lpips = [h.get('masked_lpips', 0) for h in pretrained_history]
     pretrained_masked_psnr = [h.get('masked_psnr', 0) for h in pretrained_history]
 
@@ -136,6 +136,10 @@ def generate_report(random_results, pretrained_results, save_path):
     random_history, random_source, random_target = random_results
     pretrained_history, pretrained_source, pretrained_target = pretrained_results
 
+    # 过滤出包含 loss 的条目（排除 pre-diagnostic 条目）
+    random_loss_history = [h for h in random_history if 'loss' in h]
+    pretrained_loss_history = [h for h in pretrained_history if 'loss' in h]
+
     report = []
     report.append("=" * 80)
     report.append("随机初始化 vs 预训练LGM - 攻击训练对比报告")
@@ -146,14 +150,20 @@ def generate_report(random_results, pretrained_results, save_path):
     report.append("## 训练过程")
     report.append("")
     report.append("### 随机初始化")
-    report.append(f"  初始Loss: {random_history[0]['loss']:.4f}")
-    report.append(f"  最终Loss: {random_history[-1]['loss']:.4f}")
-    report.append(f"  Loss下降: {random_history[0]['loss'] - random_history[-1]['loss']:.4f}")
+    if random_loss_history:
+        report.append(f"  初始Loss: {random_loss_history[0]['loss']:.4f}")
+        report.append(f"  最终Loss: {random_loss_history[-1]['loss']:.4f}")
+        report.append(f"  Loss下降: {random_loss_history[0]['loss'] - random_loss_history[-1]['loss']:.4f}")
+    else:
+        report.append("  无训练数据")
     report.append("")
     report.append("### 预训练模型")
-    report.append(f"  初始Loss: {pretrained_history[0]['loss']:.4f}")
-    report.append(f"  最终Loss: {pretrained_history[-1]['loss']:.4f}")
-    report.append(f"  Loss下降: {pretrained_history[0]['loss'] - pretrained_history[-1]['loss']:.4f}")
+    if pretrained_loss_history:
+        report.append(f"  初始Loss: {pretrained_loss_history[0]['loss']:.4f}")
+        report.append(f"  最终Loss: {pretrained_loss_history[-1]['loss']:.4f}")
+        report.append(f"  Loss下降: {pretrained_loss_history[0]['loss'] - pretrained_loss_history[-1]['loss']:.4f}")
+    else:
+        report.append("  无训练数据")
     report.append("")
 
     # Source质量对比

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 互锁机制消融实验（Section 5.2）：coconut
+# 互锁机制消融实验（Section 5.2）
 # Baseline 全启用，然后 w/o 形式去掉每个机制
 #
 # 单卡顺序执行（不做 GPU 空闲检查）
@@ -22,9 +22,17 @@ if [[ -z "${PYTHON:-}" ]]; then
     fi
 fi
 
-# Avoid OpenMP env issues + make matplotlib cache writable (important for multiprocessing)
+# Avoid OpenMP env issues + keep caches/tmp off system disk when possible
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl}"
+if [[ -d "/root/autodl-tmp" ]]; then
+    export TMPDIR="${TMPDIR:-/root/autodl-tmp/tmp}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/root/autodl-tmp/.cache}"
+    export TORCH_HOME="${TORCH_HOME:-/root/autodl-tmp/.cache/torch}"
+    export HF_HOME="${HF_HOME:-/root/autodl-tmp/.cache/huggingface}"
+    export WANDB_DIR="${WANDB_DIR:-/root/autodl-tmp/.cache/wandb}"
+    mkdir -p "${TMPDIR}" "${XDG_CACHE_HOME}" "${TORCH_HOME}" "${HF_HOME}" "${WANDB_DIR}"
+fi
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/mpl}"
 mkdir -p "${MPLCONFIGDIR}"
 
 # 单卡选择：优先使用 CLI 参数，其次 GPU_ID/GPU 环境变量，最后默认 0
@@ -58,15 +66,21 @@ EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/ablation_coupling_${TIMESTAMP}"
 
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
+
 echo "=========================================="
 echo "互锁机制消融实验 (Section 5.2)"
-echo "测试类别: coconut"
+echo "测试类别: bowl"
+echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
 
-TEST_CAT="coconut"
-ATTACK_EPOCHS=3
-DEFENSE_EPOCHS=10
+TEST_CAT="bowl"
+# 精细指标口径：Defense 仅训练 50 step（不看最终 LPIPS/PSNR）
+DEFENSE_STEPS=50
 
 # 固定最优trap组合（从5.1实验结果确定，这里假设是scale+opacity）
 TRAP_LOSSES="scale,opacity"
@@ -77,17 +91,25 @@ TRAP_LOSSES="scale,opacity"
 
 TASKS=()
 
-# Baseline：乘法耦合 + 参数加噪
-TASKS+=("5.2:baseline_all:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness true")
+# Baseline：输入加噪 + 冻结head + logsumexp聚合
+TASKS+=("5.2:baseline_all:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES}")
 
-# w/o 参数加噪鲁棒性
-TASKS+=("5.2:wo_robustness:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --robustness false")
+# w/o 输入加噪
+TASKS+=("5.2:wo_input_noise:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --input_noise_enabled false")
+
+# w/o 冻结head
+TASKS+=("5.2:wo_freeze_head:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --freeze_head false")
+
+# logsumexp 换成 mean（平均，保持数值范围）
+TASKS+=("5.2:mean_aggregation:--categories ${TEST_CAT} --defense_method geotrap --trap_losses ${TRAP_LOSSES} --trap_aggregation_method mean")
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  1. Baseline (乘法耦合 + 参数加噪)"
-echo "  2. w/o 参数加噪鲁棒性"
+echo "  1. Baseline (输入加噪 + 冻结head + logsumexp聚合)"
+echo "  2. w/o 输入加噪"
+echo "  3. w/o 冻结head"
+echo "  4. mean聚合（替代logsumexp，保持数值范围）"
 echo ""
 
 # ============================================================================
@@ -121,8 +143,7 @@ run_task() {
             --gpu "${GPU}" \
             --config "${CONFIG}" \
             ${params} \
-            --defense_epochs "${DEFENSE_EPOCHS}" \
-            --attack_epochs "${ATTACK_EPOCHS}" \
+            --defense_steps "${DEFENSE_STEPS}" \
             --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
             --eval_every_steps "${EVAL_EVERY_STEPS}" \
             --tag "${section}_${tag}" \
@@ -131,11 +152,11 @@ run_task() {
     } > "${log}" 2>&1; then
         echo "[GPU ${GPU}] 完成: ${section} - ${tag}"
         return 0
+    else
+        exit_code=$?
+        echo "[GPU ${GPU}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
+        return "${exit_code}"
     fi
-
-    exit_code=$?
-    echo "[GPU ${GPU}] 失败: ${section} - ${tag} (exit=${exit_code}), log: ${log}"
-    return "${exit_code}"
 }
 
 # ============================================================================
@@ -170,28 +191,19 @@ echo "互锁机制消融结果汇总 (Section 5.2)"
 echo "=========================================="
 echo ""
 
-printf "%-30s %-15s %-15s %-15s %-15s\n" \
-    "实验配置" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "----------------------------------------------------------------------------------------------------"
-
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
 
     metrics="${OUTPUT_ROOT}/${section}_${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
-
-print(f'${tag:<30s} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
-"
+        echo "--- ${tag} ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        echo ""
     else
-        printf "%-30s (未完成或失败)\n" "${tag}"
+        echo "--- ${tag} ---"
+        echo "(未完成或失败)"
+        echo ""
     fi
 done
 

@@ -7,6 +7,7 @@
 #   bash experiments/run_single.sh 1                  # 指定 GPU=1
 #   SKIP_BASELINE=1 bash experiments/run_single.sh 0  # 跳过 baseline
 #   TAG=my_test bash experiments/run_single.sh 0      # 自定义标签
+#   MEASURE_EFFICIENCY=1 bash experiments/run_single.sh 0  # 启用效率测量
 
 set -e
 
@@ -37,16 +38,26 @@ TAG="${TAG:-single_test}"
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_DIR="${OUTPUT_DIR:-${EXPERIMENTS_BASE}/single_${TIMESTAMP}}"
 SKIP_BASELINE="${SKIP_BASELINE:-0}"
+MEASURE_EFFICIENCY="${MEASURE_EFFICIENCY:-0}"
+
+# 创建输出目录并复制配置文件
+mkdir -p "${OUTPUT_DIR}"
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_DIR}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
 echo "=========================================="
 echo "单任务快速运行"
 echo "=========================================="
 echo "GPU: ${GPU}"
-echo "Config: ${CONFIG}"
+echo "Config: ${CONFIG} (已复制)"
 echo "Tag: ${TAG}"
 echo "Output: ${OUTPUT_DIR}"
 if [[ "${SKIP_BASELINE}" == "1" ]]; then
     echo "模式: 跳过 Baseline Attack"
+fi
+if [[ "${MEASURE_EFFICIENCY}" == "1" ]]; then
+    echo "效率测量: 启用 ✓"
 fi
 echo "=========================================="
 echo ""
@@ -63,6 +74,10 @@ CMD=(
 # 添加可选参数
 if [[ "${SKIP_BASELINE}" == "1" ]]; then
     CMD+=(--skip_baseline)
+fi
+
+if [[ "${MEASURE_EFFICIENCY}" == "1" ]]; then
+    CMD+=(--measure_efficiency)
 fi
 
 # 执行

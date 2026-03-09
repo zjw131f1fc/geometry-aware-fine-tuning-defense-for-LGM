@@ -60,8 +60,12 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
 OUTPUT_ROOT="${EXPERIMENTS_BASE}/compare_random_vs_pretrained_5cats_${TIMESTAMP}"
 mkdir -p "${OUTPUT_ROOT}"
+# 复制配置文件到输出目录，避免后续修改影响实验参数
+ORIGINAL_CONFIG="${CONFIG}"
+CONFIG="${OUTPUT_ROOT}/config.yaml"
+cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
-ATTACK_STEPS="${ATTACK_STEPS:-}"
+ATTACK_STEPS="800"
 ATTACK_EPOCHS="${ATTACK_EPOCHS:-}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 NUM_RENDER="${NUM_RENDER:-1}"

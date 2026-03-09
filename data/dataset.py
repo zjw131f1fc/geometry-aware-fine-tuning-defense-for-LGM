@@ -254,6 +254,12 @@ class OmniObject3DDataset(Dataset):
         self.category_parse_mode = category_parse_mode
         self.dataset_name = dataset_name
 
+        # GSO物体缩放：GSO物体比Omni大约2.3倍，缩小到0.66匹配Omni尺度
+        # 基于诊断分析：GSO median bbox_ratio=0.632 vs Omni=0.272，建议scale=0.657x
+        self.gso_scale_factor = 0.66 if 'GSO' in self.dataset_name.upper() else 1.0
+        if self.gso_scale_factor != 1.0:
+            print(f"[Dataset] GSO物体缩放已启用: scale_factor={self.gso_scale_factor:.2f}")
+
         # 创建视角选择器
         if view_selector == 'orthogonal':
             self.view_selector = OrthogonalViewSelector(angle_offset=angle_offset)
@@ -459,7 +465,26 @@ class OmniObject3DDataset(Dataset):
             img_raw = Image.open(img_path)
             original_mode = img_raw.mode
             img = img_raw.convert('RGBA')
-            img = img.resize((self.input_size, self.input_size), Image.BILINEAR)
+
+            # GSO物体缩放（缩小物体并添加透明边距）
+            if self.gso_scale_factor != 1.0:
+                # 计算缩放后的尺寸
+                new_size = int(self.input_size * self.gso_scale_factor)
+
+                # 缩小物体
+                img_small = img.resize((new_size, new_size), Image.LANCZOS)
+
+                # 创建新的透明背景图像
+                img_new = Image.new('RGBA', (self.input_size, self.input_size), (0, 0, 0, 0))
+
+                # 将缩小的物体粘贴到中心
+                offset = (self.input_size - new_size) // 2
+                img_new.paste(img_small, (offset, offset), img_small)
+
+                img = img_new
+            else:
+                img = img.resize((self.input_size, self.input_size), Image.BILINEAR)
+
             img_tensor = TF.to_tensor(img)  # [4, H, W], 值域[0, 1]
 
             # 对 RGB 黑底图片（无 alpha 通道），从黑色背景推断 alpha mask
@@ -614,6 +639,7 @@ class OmniObject3DDataset(Dataset):
             'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'category': sample['category'],
             'object': sample['object'],
+            'sample_idx': sample_idx,
         }
 
 
@@ -963,6 +989,7 @@ class ObjaverseRenderedDataset(Dataset):
             'supervision_elevations': torch.tensor(supervision_elevations, dtype=torch.float32) if supervision_elevations else torch.empty(0),
             'supervision_azimuths': torch.tensor(supervision_azimuths, dtype=torch.float32) if supervision_azimuths else torch.empty(0),
             'uuid': sample['uuid'],
+            'sample_idx': sample_idx,
         }
 
 
@@ -1008,6 +1035,12 @@ class SemanticDeflectionDataset(Dataset):
                     'supervision_azimuths': sup_sample.get('supervision_azimuths', torch.empty(0)),
                     'input_uuid': input_sample.get('uuid', ''),
                     'supervision_uuid': sup_sample.get('uuid', ''),
+                    'input_category': input_sample.get('category', ''),
+                    'input_object': input_sample.get('object', ''),
+                    'input_sample_idx': input_sample.get('sample_idx', 0),
+                    'supervision_category': sup_sample.get('category', ''),
+                    'supervision_object': sup_sample.get('object', ''),
+                    'supervision_sample_idx': sup_sample.get('sample_idx', 0),
                 }
             except (FileNotFoundError, IOError, OSError, RuntimeError) as e:
                 # 数据文件缺失或损坏，尝试下一个样本
