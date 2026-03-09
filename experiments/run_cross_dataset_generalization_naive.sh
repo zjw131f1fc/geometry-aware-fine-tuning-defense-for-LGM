@@ -165,24 +165,7 @@ for category in "${CATEGORIES[@]}"; do
 
         if [ -f "$metrics" ]; then
             echo "--- ${method} ---"
-            "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-# Undefended = baseline
-bt_base = m.get('baseline_target') or {}
-bs_base = m.get('baseline_source') or {}
-
-# 防御方法 = postdefense
-bt_def = m.get('postdefense_target') or {}
-bs_def = m.get('postdefense_source') or {}
-
-print(f'  Target LPIPS: {bt_base.get(\"lpips\", 0):.4f} → {bt_def.get(\"lpips\", 0):.4f} (Δ={bt_def.get(\"lpips\", 0)-bt_base.get(\"lpips\", 0):+.4f})')
-print(f'  Target PSNR:  {bt_base.get(\"psnr\", 0):.2f} → {bt_def.get(\"psnr\", 0):.2f} (Δ={bt_def.get(\"psnr\", 0)-bt_base.get(\"psnr\", 0):+.2f})')
-print(f'  Source PSNR:  {bs_base.get(\"psnr\", 0):.2f} → {bs_def.get(\"psnr\", 0):.2f} (Δ={bs_def.get(\"psnr\", 0)-bs_base.get(\"psnr\", 0):+.2f})')
-print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\", 0):.4f} (Δ={bs_def.get(\"lpips\", 0)-bs_base.get(\"lpips\", 0):+.4f})')
-"
+            "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
         else
             echo "--- ${method} --- (未完成)"
         fi
@@ -195,18 +178,8 @@ print(f'  Source LPIPS: {bs_base.get(\"lpips\", 0):.4f} → {bs_def.get(\"lpips\
 
     if [ -f "$metrics" ]; then
         echo ""
-        echo "--- Undefended (baseline) ---"
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-bt = m.get('baseline_target') or {}
-bs = m.get('baseline_source') or {}
-print(f'  Target LPIPS: {bt.get(\"lpips\", 0):.4f}')
-print(f'  Target PSNR:  {bt.get(\"psnr\", 0):.2f}')
-print(f'  Source PSNR:  {bs.get(\"psnr\", 0):.2f}')
-print(f'  Source LPIPS: {bs.get(\"lpips\", 0):.4f}')
-"
+        echo "--- Undefended (baseline checkpoints) ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics" --phase baseline
     fi
 done
 
@@ -216,4 +189,3 @@ echo "结果保存在: ${OUTPUT_ROOT}"
 echo "汇总文件: ${SUMMARY_FILE}"
 echo "=========================================="
 } | tee "${SUMMARY_FILE}"
-

@@ -176,29 +176,19 @@ echo "攻击实验消融结果汇总"
 echo "=========================================="
 echo ""
 
-printf "%-30s %-15s %-15s %-15s %-15s\n" \
-    "实验配置" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "----------------------------------------------------------------------------------------------------"
-
 for task in "${TASKS[@]}"; do
     IFS=':' read -r section tag params <<< "$task"
 
     metrics="${OUTPUT_ROOT}/${section}_${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-pt = m.get('postdefense_target') or {}
-ps = m.get('postdefense_source') or {}
-
-name = '${section}_${tag}'
-print(f'{name:<30s} {pt.get(\"lpips\", 0):>13.4f}   {pt.get(\"psnr\", 0):>13.2f}   {ps.get(\"psnr\", 0):>13.2f}   {ps.get(\"lpips\", 0):>13.4f}')
-"
+        echo "--- ${section}_${tag} ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        echo ""
     else
-        printf "%-30s (未完成或失败)\n" "${section}_${tag}"
+        echo "--- ${section}_${tag} ---"
+        echo "(未完成或失败)"
+        echo ""
     fi
 done
 

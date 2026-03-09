@@ -122,7 +122,7 @@ print_cuda_tensors("Phase 3 开始前")
 如果磁盘空间充足，建议使用 `cache_mode="registry"`，这样 defense 训练完成后会将模型保存到磁盘，Phase 3 从磁盘加载，避免在内存中保存 `state_dict`。
 
 ```bash
-DEFENSE_CACHE_MODE=registry bash experiments/run_main.sh
+DEFENSE_CACHE_MODE=registry bash experiments/run_main_omni.sh
 ```
 
 ### 2. 减小 batch size
@@ -130,7 +130,7 @@ DEFENSE_CACHE_MODE=registry bash experiments/run_main.sh
 如果显存仍然不足，可以减小 defense 的 batch size：
 
 ```bash
-DEFENSE_BATCH_SIZE=1 bash experiments/run_main.sh
+DEFENSE_BATCH_SIZE=1 bash experiments/run_main_omni.sh
 ```
 
 ### 3. 使用梯度累积
@@ -138,7 +138,7 @@ DEFENSE_BATCH_SIZE=1 bash experiments/run_main.sh
 增加梯度累积步数，减小实际 batch size：
 
 ```bash
-DEFENSE_GRAD_ACCUM=4 bash experiments/run_main.sh
+DEFENSE_GRAD_ACCUM=4 bash experiments/run_main_omni.sh
 ```
 
 ## 总结

@@ -84,16 +84,16 @@ Last updated: 2026-03-02
 
 ### B. 批量主实验调度（多 GPU 动态调度）
 
-入口：`experiments/run_main.sh`
+入口：`experiments/run_main_omni.sh`
 
-- `bash experiments/run_main.sh 0,1,2,3`
+- `bash experiments/run_main_omni.sh 0,1,2,3`
 
 它会对 `CATEGORIES=(shoe plant dish bowl box)` 和 `METHODS=(geotrap naive_unlearning)` 生成 10 个 pipeline。
 
 输出目录：
 
 - 默认：`output/experiments_output/...`（便于把 `output/` 整体挪到系统盘/做软链接，避免写满数据盘）
-- 可通过环境变量覆盖：`EXPERIMENTS_BASE=/some/path bash experiments/run_main.sh 0,1,2,3`
+- 可通过环境变量覆盖：`EXPERIMENTS_BASE=/some/path bash experiments/run_main_omni.sh 0,1,2,3`
 
 ### C. 只跑防御训练
 

@@ -55,6 +55,8 @@ from tools import (
     load_baseline_cache, save_baseline_cache, copy_cached_renders,
     plot_pipeline_results,
     EfficiencyTracker,
+    build_dual_attack_step_report,
+    format_dual_attack_step_report,
 )
 
 
@@ -1006,6 +1008,18 @@ def main():
             postdef_history, baseline_effect_psnr, baseline_effect_lpips
         )
 
+    attack_step_report = build_dual_attack_step_report(
+        baseline_history,
+        postdef_history,
+        total_steps=attack_steps,
+        num_checkpoints=5,
+    )
+    attack_step_report_text = format_dual_attack_step_report(attack_step_report)
+    attack_step_report_path = os.path.join(workspace, "attack_step_report.txt")
+    with open(attack_step_report_path, "w", encoding="utf-8") as f:
+        f.write(attack_step_report_text)
+        f.write("\n")
+
     print(f"\n{'='*80}")
     print("Attack 阶段达标步数（达到 Baseline Attack 最终质量阈值）")
     print(f"{'='*80}")
@@ -1024,6 +1038,11 @@ def main():
             print("Post-Defense Attack: 无（defense.method=none）")
         else:
             print(f"Post-Defense Attack 达到 Baseline Attack 最终效果的最早 step: {postdef_steps_to_reach_baseline}")
+
+    print(f"\n{'='*80}")
+    print("Attack 分步结果（自动均分为 5 个 checkpoint）")
+    print(f"{'='*80}")
+    print(attack_step_report_text)
 
     # ========== Phase 4: 绘图 + 保存结果 ==========
     plot_pipeline_results(
@@ -1083,6 +1102,7 @@ def main():
             'gaussian_exports': gaussian_export_paths if args.export_gaussian_samples else None,
             'gaussian_dist_plot': gaussian_dist_plot,
             'gaussian_dist_summary': gaussian_dist_summary,
+            'attack_step_report': attack_step_report_path,
         },
         'defense_transfer_diag': defense_transfer_diag,
         'analysis': {
@@ -1095,6 +1115,7 @@ def main():
             ),
             'baseline_attack_steps_to_effect': baseline_steps_to_reach_baseline,
             'postdefense_attack_steps_to_baseline_effect': postdef_steps_to_reach_baseline,
+            'attack_step_report': attack_step_report,
         },
         'baseline_attack': baseline_history,
         'baseline_source': baseline_source,
@@ -1204,6 +1225,7 @@ def main():
                 print(f"  gaussian_dist_to_baseline={gd['gaussian_dist_to_baseline']:.6f}")
 
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
+    print(f"分步汇总: {attack_step_report_path}")
     print(f"指标文件: {metrics_path}")
     print(f"工作目录: {workspace}")
 

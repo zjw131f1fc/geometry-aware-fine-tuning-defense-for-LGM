@@ -168,28 +168,19 @@ echo "防御训练时长消融结果汇总"
 echo "=========================================="
 echo ""
 
-printf "%-15s %-15s %-15s %-15s %-15s\n" \
-    "defense_epochs" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "------------------------------------------------------------------------"
-
 for task in "${TASKS[@]}"; do
     IFS=':' read -r tag params <<< "$task"
 
     metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
-
-print(f'${tag:<15s} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
-"
+        echo "--- ${tag} ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        echo ""
     else
-        printf "%-15s (未完成或失败)\n" "${tag}"
+        echo "--- ${tag} ---"
+        echo "(未完成或失败)"
+        echo ""
     fi
 done
 

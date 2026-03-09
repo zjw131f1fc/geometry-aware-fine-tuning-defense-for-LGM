@@ -161,7 +161,7 @@
   - `experiments/run_ablation_defense_num_categories.sh`
   - `experiments/run_ablation_gaussian_attributes.sh`
 - 明确**不跑**：
-  - `experiments/run_main.sh`
+  - `experiments/run_main_omni.sh`
   - `experiments/run_cross_dataset_generalization*.sh`（跨数据集/跨类别）
   - `experiments/run_compare_random_vs_pretrained_5cats.sh`（random vs pretrained）
 

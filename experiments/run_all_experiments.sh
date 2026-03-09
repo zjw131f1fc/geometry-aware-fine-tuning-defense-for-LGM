@@ -1,8 +1,8 @@
 #!/bin/bash
 # 聚合实验脚本：防御时长消融 + 互锁机制消融
 #
-# 实验 1: 防御时长消融 - defense_epochs = 4,8,12,16,20, attack_epochs = 3
-# 实验 2: 互锁机制消融 - 每个 defense_epoch 下做 baseline + 3 个 w/o
+# 实验 1: 防御时长消融 - defense_epochs = 10,20,30,40, attack_epochs = 10
+# 实验 2: 互锁机制消融 - 每个 defense_epoch 下做 baseline + w/o robustness
 #
 # 单卡顺序执行（不做 GPU 空闲检查）
 # 用法:
@@ -91,7 +91,7 @@ for def_ep in "${DEFENSE_EPOCHS[@]}"; do
 done
 
 # ============================================================================
-# 实验 2: 互锁机制消融（每个 defense_epoch 下做 4 种配置）
+# 实验 2: 互锁机制消融（每个 defense_epoch 下做 2 种配置）
 # ============================================================================
 
 echo ""
@@ -113,7 +113,7 @@ echo "=========================================="
 echo "总任务统计"
 echo "=========================================="
 echo "实验 1 (防御时长): ${#DEFENSE_EPOCHS[@]} 个任务"
-echo "实验 2 (互锁消融): $((${#DEFENSE_EPOCHS[@]} * 4)) 个任务 (${#DEFENSE_EPOCHS[@]} def_ep × 4 配置)"
+echo "实验 2 (互锁消融): $((${#DEFENSE_EPOCHS[@]} * 2)) 个任务 (${#DEFENSE_EPOCHS[@]} def_ep × 2 配置)"
 echo "总计: ${TOTAL_TASKS} 个任务"
 echo ""
 
@@ -201,25 +201,19 @@ echo ""
 # 实验 1: 防御时长消融
 echo "=== 实验 1: 防御时长消融 (attack_epochs=${ATTACK_EPOCHS}) ==="
 echo ""
-printf "%-15s %-15s %-15s %-15s %-15s\n" \
-    "defense_epochs" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "------------------------------------------------------------------------"
 
 for def_ep in "${DEFENSE_EPOCHS[@]}"; do
     tag="def_ep${def_ep}"
     metrics="${OUTPUT_ROOT}/exp1_${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
-print(f'${def_ep:<15d} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
-"
+        echo "--- defense_epochs=${def_ep} ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        echo ""
     else
-        printf "%-15s (未完成或失败)\n" "${def_ep}"
+        echo "--- defense_epochs=${def_ep} ---"
+        echo "(未完成或失败)"
+        echo ""
     fi
 done
 
@@ -227,26 +221,20 @@ done
 echo ""
 echo "=== 实验 2: 互锁机制消融 (attack_epochs=${ATTACK_EPOCHS}) ==="
 echo ""
-printf "%-35s %-10s %-15s %-15s %-15s %-15s\n" \
-    "配置" "Def_Ep" "Target LPIPS↑" "Target PSNR↓" "Source PSNR↑" "Source LPIPS↓"
-echo "------------------------------------------------------------------------------------------------------------"
 
 for def_ep in "${DEFENSE_EPOCHS[@]}"; do
-    for config in "baseline" "wo_mult" "wo_gc" "wo_robust"; do
+    for config in "baseline" "wo_robust"; do
         tag="coupling_${config}_def${def_ep}"
         metrics="${OUTPUT_ROOT}/exp2_${tag}/metrics.json"
 
         if [ -f "$metrics" ]; then
-            "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-bt = m.get('postdefense_target') or m.get('baseline_target') or {}
-bs = m.get('postdefense_source') or m.get('baseline_source') or {}
-print(f'${config:<35s} ${def_ep:<10d} {bt.get(\"lpips\", 0):>13.4f}   {bt.get(\"psnr\", 0):>13.2f}   {bs.get(\"psnr\", 0):>13.2f}   {bs.get(\"lpips\", 0):>13.4f}')
-"
+            echo "--- config=${config}, defense_epochs=${def_ep} ---"
+            "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+            echo ""
         else
-            printf "%-35s %-10s (未完成或失败)\n" "${config}" "${def_ep}"
+            echo "--- config=${config}, defense_epochs=${def_ep} ---"
+            echo "(未完成或失败)"
+            echo ""
         fi
     done
 done

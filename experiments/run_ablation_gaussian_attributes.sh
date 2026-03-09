@@ -291,38 +291,19 @@ echo "=========================================="
 echo "任务集: ${TRAP_TASK_SET}"
 echo ""
 
-printf "%-20s %-12s %-8s %-10s %-10s\n" \
-    "实验配置" "达标步数" "阈值step" "阈值PSNR" "阈值LPIPS"
-echo "--------------------------------------------------------------"
-
 for task in "${TASKS[@]}"; do
     IFS=':' read -r tag params <<< "$task"
 
     metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
 
     if [ -f "$metrics" ]; then
-        "${PYTHON}" -c "
-import json
-with open('${metrics}') as f:
-    m = json.load(f)
-
-analysis = m.get('analysis') or {}
-steps = analysis.get('postdefense_attack_steps_to_baseline_effect')
-baseline = analysis.get('baseline_attack_effect_at_end') or {}
-b_step = baseline.get('step')
-b_psnr = baseline.get('masked_psnr')
-b_lpips = baseline.get('masked_lpips')
-
-name = '${tag}'
-def fmt(v, nd=2):
-    return 'NA' if v is None else f'{v:.{nd}f}'
-
-steps_s = 'NA' if steps is None else str(int(steps))
-b_step_s = 'NA' if b_step is None else str(int(b_step))
-print(f'{name:<20s} {steps_s:>12s} {b_step_s:>8s} {fmt(b_psnr,2):>10s} {fmt(b_lpips,4):>10s}')
-"
+        echo "--- ${tag} ---"
+        "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        echo ""
     else
-        printf "%-20s (未完成或失败)\n" "${tag}"
+        echo "--- ${tag} ---"
+        echo "(未完成或失败)"
+        echo ""
     fi
 done
 

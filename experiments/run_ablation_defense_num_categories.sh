@@ -3,7 +3,7 @@
 #
 # 目的：
 #   在同一 target 数据集 OmniObject3D 上（attack/defense 都是 omni），
-#   分别用 2 / 4 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
+#   分别用 2 / 3 个类别进行防御训练并跑完整 pipeline（baseline→defense→postdefense）。
 #   同时测试 naive_unlearning 和 geotrap 两种防御方法。
 #
 # 用法:
@@ -12,8 +12,8 @@
 #   bash experiments/run_ablation_defense_num_categories.sh 0,1,2,3    # 多卡并行: 4张卡动态调度任务
 #
 # 默认类别集合（可按需改）：
-#   K=2: shoe,plant
-#   K=4: shoe,plant,dish,bowl
+#   K=2: bowl,shoe
+#   K=3: shoe,dish,bowl
 #
 # 可选环境变量：
 #   CONFIG=configs/config.yaml
@@ -77,7 +77,7 @@ DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
 NUM_RENDER="${NUM_RENDER:-1}"
 
-# 两组类别集合（防御类别数 2/4）
+# 两组类别集合（防御类别数 2/3）
 SETS_NAME=(k2 k3)
 SETS_CATS=("bowl,shoe" "shoe,dish,bowl")
 
@@ -97,7 +97,7 @@ echo "Config: ${CONFIG}"
 echo "Defense methods: ${METHODS[*]}"
 echo "Defense cache mode: ${DEFENSE_CACHE_MODE}"
 echo "Output: ${OUTPUT_ROOT}"
-echo "Tasks: ${TOTAL_TASKS} (2/4 categories × 2 methods)"
+echo "Tasks: ${TOTAL_TASKS} (2/3 categories × 2 methods)"
 echo "=========================================="
 
 # 任务执行函数
@@ -172,4 +172,41 @@ FAILED=${#FAILED_TASKS[@]}
 
 echo ""
 echo "全部完成！成功: $((TOTAL_TASKS - FAILED)), 失败: ${FAILED}"
+
+# ============================================================================
+# 汇总结果
+# ============================================================================
+
+SUMMARY_FILE="${OUTPUT_ROOT}/summary.txt"
+
+{
+echo ""
+echo "=========================================="
+echo "防御类别数消融结果汇总"
+echo "=========================================="
+echo ""
+
+for method in "${METHODS[@]}"; do
+    echo "=== ${method} ==="
+    echo ""
+    for i in "${!SETS_NAME[@]}"; do
+        name=${SETS_NAME[$i]}
+        cats=${SETS_CATS[$i]}
+        tag="defcats_${name}_${method}_omni"
+        metrics="${OUTPUT_ROOT}/${tag}/metrics.json"
+
+        echo "--- ${tag} (cats=${cats}) ---"
+        if [ -f "$metrics" ]; then
+            "${PYTHON}" script/print_attack_step_report.py --metrics "$metrics"
+        else
+            echo "(未完成或失败)"
+        fi
+        echo ""
+    done
+done
+
+echo "=========================================="
 echo "结果保存在: ${OUTPUT_ROOT}"
+echo "汇总文件: ${SUMMARY_FILE}"
+echo "=========================================="
+} | tee "${SUMMARY_FILE}"
