@@ -1741,10 +1741,7 @@ class DefenseTrainer:
 
         if is_target_data:
             if self.method == 'naive_unlearning':
-                # Naive Unlearning: 对 target 数据的渲染 loss 做梯度上升（干净权重）
-                with self._autocast_defense():
-                    student_gaussians = model.forward_gaussians(input_images)
-                student_gaussians = student_gaussians.float()
+                # Naive Unlearning: 直接对 target 数据的 render loss 做梯度上升
                 total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
             else:
                 # GeoTrap:
