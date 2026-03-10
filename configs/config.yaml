@@ -24,6 +24,10 @@ data:
     dataset: omni
     categories: [dish]
 
+  # 是否按 object_split 对 target / defense_target 抽取物体。
+  # true: target 使用剩余物体做 attack，defense_target 使用 split 中指定物体。
+  # false: 忽略 object_split；target 使用全部物体，defense_target 走 split_ratio 或全部数据。
+  use_object_split: true
   object_split:
     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
     plant: [2, 4, 8, 9]
@@ -33,7 +37,7 @@ data:
   attack_samples_per_category: 15
 
   # Retention-heavy mixing
-  source_ratio: 0.8
+  source_ratio: 0.85
   source_val_ratio: 0.1
   val_samples: 20
 
@@ -92,7 +96,7 @@ defense:
     #   plant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     samples_per_object: 5
 
-  mixed_precision: no
+  mixed_precision: bf16
 
   trap_losses:
     position: {static: true, dynamic: false}
@@ -119,7 +123,7 @@ defense:
     # color: {static: false, dynamic: false}
 
   trap_aggregation:
-    method: bottleneck_logsumexp
+    method: mean
     tau: 0.25
 
   # trap_combo: position+opacity

@@ -214,13 +214,14 @@ class DefenseTrainer:
             self.coupling_use_log = False
 
         # Trap 聚合方式（仅 geotrap 需要）
-        # - pairwise_multiplicative: 旧版两两乘法耦合（默认）
-        # - sum: 直接加和（最稳定，但容易出现“单项更深，其它项被忽略”）
-        # - bottleneck_logsumexp: 近似 max 的瓶颈优化，持续追着“最弱 trap”打（推荐用于多属性全开）
+        # - mean: 当前默认，稳定且不会随启用 trap 数量直接放大总 loss
+        # - sum: 直接加和（稳定，但会随 trap 数量线性放大）
+        # - bottleneck_logsumexp: 近似 max 的瓶颈优化，持续追着“最弱 trap”打
+        # - pairwise_multiplicative: 旧版两两乘法耦合（保留兼容）
         if self.method == 'geotrap':
             agg_cfg = self.defense_config.get('trap_aggregation', {}) or {}
             self.trap_aggregation_method = str(
-                agg_cfg.get('method', 'pairwise_multiplicative')
+                agg_cfg.get('method', 'mean')
             ).lower()
             self.trap_bottleneck_tau = float(agg_cfg.get('tau', 0.25))
         else:
@@ -1240,7 +1241,7 @@ class DefenseTrainer:
         elif len(loss_list) == 1:
             static_combined = loss_list[0]
         else:
-            method = getattr(self, "trap_aggregation_method", "pairwise_multiplicative")
+            method = getattr(self, "trap_aggregation_method", "mean")
             if method == 'sum':
                 static_combined = torch.stack(loss_list).sum()
             elif method == 'mean':
@@ -1719,7 +1720,8 @@ class DefenseTrainer:
         """
         训练一个 step（只计算损失和反向传播，不更新参数）
 
-        Target 数据：干净权重 trap loss + 加噪权重 trap loss（双前向）
+        Target 数据：GeoTrap 默认对目标输入做一次 trap 前向；
+                   若开启 input_noise，则主 trap 通路直接使用加噪输入。
         Source 数据：干净权重上前向 → 蒸馏 loss → backward
 
         Args:
@@ -1745,13 +1747,19 @@ class DefenseTrainer:
                 student_gaussians = student_gaussians.float()
                 total_loss = self._compute_naive_unlearning_loss(batch, loss_dict)
             else:
-                # GeoTrap: 干净权重 trap loss + 加噪权重 trap loss + 输入加噪 trap loss
+                # GeoTrap:
+                # - 默认: 干净输入上的 trap loss
+                # - 若开启 input_noise: 主 trap 通路直接改为加噪输入，不再额外叠加 clean/noisy 两套输入图
+                # - 若开启 param_noise: 仍会额外做一条参数加噪通路
                 lambda_trap = self.defense_config.get('lambda_trap', 1.0)
+                trap_input_images = input_images
+                if self.use_input_noise:
+                    trap_input_images = self._add_input_noise(input_images)
 
-                # (a) 干净权重前向 → trap loss
+                # (a) 主 trap 前向：默认用干净输入；开启 input_noise 后改为加噪输入
                 with torch.set_grad_enabled(True):
                     with self._autocast_defense():
-                        gaussians_clean = model.forward_gaussians(input_images)
+                        gaussians_clean = model.forward_gaussians(trap_input_images)
                     gaussians_clean = gaussians_clean.float()
 
                 trap_dict_clean, trap_loss_clean = self.compute_trap_loss(
@@ -1806,7 +1814,7 @@ class DefenseTrainer:
 
                     with torch.set_grad_enabled(True):
                         with self._autocast_defense():
-                            gaussians_noisy = model.forward_gaussians(input_images)
+                            gaussians_noisy = model.forward_gaussians(trap_input_images)
                         gaussians_noisy = gaussians_noisy.float()
 
                     trap_dict_noisy, trap_loss_noisy = self.compute_trap_loss(
@@ -1819,23 +1827,6 @@ class DefenseTrainer:
 
                     # 恢复干净权重（backward 仍基于两份计算图）
                     self._restore_params(model, original_state)
-
-                # (c) 输入加噪前向 → trap loss（输入鲁棒性）
-                if self.use_input_noise:
-                    input_images_noisy = self._add_input_noise(input_images)
-
-                    with torch.set_grad_enabled(True):
-                        with self._autocast_defense():
-                            gaussians_input_noisy = model.forward_gaussians(input_images_noisy)
-                        gaussians_input_noisy = gaussians_input_noisy.float()
-
-                    trap_dict_input_noisy, trap_loss_input_noisy = self.compute_trap_loss(
-                        gaussians_input_noisy, model)
-                    # 记录输入加噪版本的指标（带 input_noisy_ 前缀）
-                    for k, v in trap_dict_input_noisy.items():
-                        loss_dict[f'input_noisy_{k}'] = v
-
-                    total_loss = total_loss + lambda_trap * trap_loss_input_noisy
 
         else:
             # Source Data: 干净权重上前向 → 蒸馏损失
