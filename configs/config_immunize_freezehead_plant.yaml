@@ -92,7 +92,7 @@ defense:
     color: {static: true, dynamic: false}
 
   trap_aggregation:
-    method: bottleneck_logsumexp
+    method: mean
     tau: 0.25
 
   # Key: freeze head to prevent head-only shortcut.
@@ -121,4 +121,3 @@ defense:
 misc:
   workspace: ./output/workspace_plant_freezehead_v1
   seed: 42
-

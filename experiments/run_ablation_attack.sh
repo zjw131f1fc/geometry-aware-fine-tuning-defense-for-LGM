@@ -1,6 +1,12 @@
 #!/bin/bash
 # 攻击实验消融（Section 5.3）：测试类别=bowl
 #
+# 当前口径：
+# - 类别固定为 bowl
+# - defense_method 固定为 geotrap
+# - defense_steps 固定为 100
+# - 其余未显式覆盖的参数保持 config 默认
+#
 # 用法:
 #   bash experiments/run_ablation_attack.sh            # 默认 GPU=0 (单卡顺序执行)
 #   bash experiments/run_ablation_attack.sh 0          # 指定 GPU=0 (单卡顺序执行)
@@ -41,6 +47,11 @@ GPU_LIST="${1:-0}"
 echo "GPU列表: ${GPU_LIST}"
 
 CONFIG="configs/config.yaml"
+DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
+DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
+DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:--1}"
+DEFENSE_STEPS="${DEFENSE_STEPS:-100}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本地目录）
 EXPERIMENTS_BASE="${EXPERIMENTS_BASE:-output/experiments_output}"
@@ -55,6 +66,7 @@ cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 echo "=========================================="
 echo "攻击实验消融"
 echo "测试类别: bowl"
+echo "Defense steps: ${DEFENSE_STEPS}"
 echo "Config: ${CONFIG} (已复制)"
 echo "Output: ${OUTPUT_ROOT}"
 echo "=========================================="
@@ -68,34 +80,32 @@ TEST_CAT="bowl"
 
 TASKS=()
 
-# 0. 默认配置（用于稳健性最终指标，attack_steps/defense_steps 使用 config 默认值）
-TASKS+=("robust:default:--categories ${TEST_CAT} --defense_method geotrap")
+# 0. 默认配置（保持 config 默认 attack 设置）
+TASKS+=("robust:default:--categories ${TEST_CAT} --defense_method geotrap --defense_steps ${DEFENSE_STEPS}")
 
-# 1. LoRA rank=8, alpha=8 (已跑过，保留注释不再启用)
-# TASKS+=("lora:r8a8:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 8 --lora_alpha 8 --skip_baseline")
+# 1. 攻击训练模式
+TASKS+=("mode:lora8:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 8 --lora_alpha 8 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("mode:lora32:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 32 --lora_alpha 32 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("mode:full:--categories ${TEST_CAT} --defense_method geotrap --training_mode full --defense_steps ${DEFENSE_STEPS}")
 
-# 2. LoRA rank=32, alpha=32 (已跑过，保留注释不再启用)
-# TASKS+=("lora:r32a32:--categories ${TEST_CAT} --defense_method geotrap --training_mode lora --lora_r 32 --lora_alpha 32 --skip_baseline")
+# 2. Optimizer / LR
+TASKS+=("optimizer:adamw_3e6:--categories ${TEST_CAT} --defense_method geotrap --optimizer adamw --lr 3e-6 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("optimizer:adamw_3e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer adamw --lr 3e-4 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("optimizer:sgd_3e5:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-5 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("optimizer:sgd_3e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-4 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("optimizer:sgd_3e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-3 --defense_steps ${DEFENSE_STEPS}")
 
-# 3. AdamW lr=3e-6 (已跑过，保留注释不再启用)
-# TASKS+=("optimizer:adamw_3e6:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-6 --skip_baseline")
-
-# 4. AdamW lr=3e-4 (已跑过，保留注释不再启用)
-# TASKS+=("optimizer:adamw_3e4:--categories ${TEST_CAT} --defense_method geotrap --lr 3e-4 --skip_baseline")
-
-# 5. SGD lr=3e-5 (已跑过，保留注释不再启用)
-# TASKS+=("optimizer:sgd_3e5:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-5 --skip_baseline")
-
-# 6. SGD lr=3e-4 (已跑过，保留注释不再启用)
-# TASKS+=("optimizer:sgd_3e4:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-4 --skip_baseline")
-
-# 7. SGD lr=3e-3 (已跑过，保留注释不再启用)
-# TASKS+=("optimizer:sgd_3e3:--categories ${TEST_CAT} --defense_method geotrap --optimizer sgd --lr 3e-3 --skip_baseline")
+# 3. Attack steps
+TASKS+=("steps:attack_800:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 800 --defense_steps ${DEFENSE_STEPS}")
+TASKS+=("steps:attack_1600:--categories ${TEST_CAT} --defense_method geotrap --attack_steps 1600 --defense_steps ${DEFENSE_STEPS}")
 
 TOTAL_TASKS=${#TASKS[@]}
 echo ""
 echo "总任务数: ${TOTAL_TASKS}"
-echo "  - 稳健性: ${TOTAL_TASKS} 个任务（完整 pipeline；默认 steps）"
+echo "  - 默认: 1 个任务"
+echo "  - 训练模式: 3 个任务（lora8 / lora32 / full）"
+echo "  - Optimizer/LR: 5 个任务"
+echo "  - Attack steps: 2 个任务（800 / 1600）"
 echo ""
 
 # ============================================================================
@@ -119,13 +129,23 @@ run_task() {
         echo "Params: ${params}"
         echo ""
 
-        # 执行 pipeline
+        extra_args=()
+        if [[ -n "${DEFENSE_BATCH_SIZE}" ]]; then
+            extra_args+=(--defense_batch_size "${DEFENSE_BATCH_SIZE}")
+        fi
+        if [[ -n "${DEFENSE_GRAD_ACCUM}" ]]; then
+            extra_args+=(--defense_grad_accumulation_steps "${DEFENSE_GRAD_ACCUM}")
+        fi
+
         "${PYTHON}" script/run_pipeline.py \
             --gpu "${gpu}" \
             --config "${CONFIG}" \
             ${params} \
+            --defense_cache_mode "${DEFENSE_CACHE_MODE}" \
+            --eval_every_steps "${EVAL_EVERY_STEPS}" \
             --tag "${section}_${tag}" \
-            --output_dir "${output_dir}"
+            --output_dir "${output_dir}" \
+            "${extra_args[@]}"
     } > "${log}" 2>&1; then
         echo "[GPU ${gpu}] 完成: ${section} - ${tag}"
         return 0
@@ -156,7 +176,8 @@ for i in $(seq 0 $((TOTAL_TASKS-1))); do
     submit_task run_task "${i}"
 done
 
-wait_all_tasks
+scheduler_exit_code=0
+wait_all_tasks || scheduler_exit_code=$?
 
 FAILED=${#FAILED_TASKS[@]}
 
@@ -200,3 +221,5 @@ echo "=========================================="
 
 echo ""
 echo "全部完成！"
+
+exit "${scheduler_exit_code}"

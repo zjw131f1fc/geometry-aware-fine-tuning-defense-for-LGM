@@ -7,6 +7,20 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
+def _series_with_values(history, key):
+    steps = []
+    values = []
+    for item in history or []:
+        if key not in item:
+            continue
+        value = item.get(key)
+        if value is None:
+            continue
+        steps.append(item.get('step'))
+        values.append(value)
+    return steps, values
+
+
 def plot_pipeline_results(baseline_history, postdef_history, defense_history, save_path):
     """
     绘制 Pipeline 2×2 对比图。
@@ -66,16 +80,21 @@ def plot_pipeline_results(baseline_history, postdef_history, defense_history, sa
 
     # (1,0) Source PSNR
     ax = axes[1, 0]
-    if has_baseline:
-        ax.plot(steps_b, [m.get('source_psnr', 0) for m in baseline_history],
+    baseline_src_steps, baseline_src_vals = _series_with_values(baseline_history, 'source_psnr')
+    postdef_src_steps, postdef_src_vals = _series_with_values(postdef_history, 'source_psnr')
+    if baseline_src_steps:
+        ax.plot(baseline_src_steps, baseline_src_vals,
                 'b-o', label='Baseline Attack', markersize=3)
-    if has_postdef:
-        ax.plot(steps_p, [m.get('source_psnr', 0) for m in postdef_history],
+    if postdef_src_steps:
+        ax.plot(postdef_src_steps, postdef_src_vals,
                 'r-s', label='Post-Defense Attack', markersize=3)
     ax.set_xlabel('Step')
     ax.set_ylabel('PSNR (dB)')
-    ax.set_title('Source PSNR (should stay similar)')
-    ax.legend()
+    ax.set_title('Source PSNR (checkpoint eval optional)')
+    if baseline_src_steps or postdef_src_steps:
+        ax.legend()
+    else:
+        ax.text(0.5, 0.5, 'Source measured pre-attack only', ha='center', va='center', transform=ax.transAxes)
     ax.grid(True, alpha=0.3)
 
     # (1,1) Defense Training Metrics

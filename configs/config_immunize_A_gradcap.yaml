@@ -90,7 +90,7 @@ defense:
     color: {static: true, dynamic: false}
 
   trap_aggregation:
-    method: bottleneck_logsumexp
+    method: mean
     tau: 0.25
 
   # Replace defense-stage grad clipping with energy cap (mitigate shortcut)

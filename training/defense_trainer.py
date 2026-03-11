@@ -472,6 +472,23 @@ class DefenseTrainer:
             return torch.autocast('cuda', dtype=torch.float16)
         raise ValueError(f"defense.antishortcut.head_attack_sim.mixed_precision 不支持: {mp}（支持 no/bf16/fp16）")
 
+    def _get_target_objective_weight(self) -> float:
+        """
+        Return the target-side objective weight for the active defense method.
+
+        - GeoTrap: use defense.lambda_trap
+        - Naive Unlearning: use defense.lambda_unlearn
+        """
+        if self.method == 'naive_unlearning':
+            if 'lambda_unlearn' not in self.defense_config:
+                raise KeyError("defense.lambda_unlearn is required when defense.method=naive_unlearning")
+            return float(self.defense_config['lambda_unlearn'])
+        return float(self.defense_config.get('lambda_trap', 1.0))
+
+    def _get_distill_weight(self) -> float:
+        """Return the source-side distillation weight."""
+        return float(self.defense_config.get('lambda_distill', 1.0))
+
     def _select_head_params(self, model, include_frozen: bool = True, exclude_bias: bool = False):
         selected = []
         for name, param in model.named_parameters():
@@ -1748,7 +1765,7 @@ class DefenseTrainer:
                 # - 默认: 干净输入上的 trap loss
                 # - 若开启 input_noise: 主 trap 通路直接改为加噪输入，不再额外叠加 clean/noisy 两套输入图
                 # - 若开启 param_noise: 仍会额外做一条参数加噪通路
-                lambda_trap = self.defense_config.get('lambda_trap', 1.0)
+                target_weight = self._get_target_objective_weight()
                 trap_input_images = input_images
                 if self.use_input_noise:
                     trap_input_images = self._add_input_noise(input_images)
@@ -1763,7 +1780,7 @@ class DefenseTrainer:
                     gaussians_clean, model)
                 loss_dict.update(trap_dict_clean)
 
-                total_loss = lambda_trap * trap_loss_clean
+                total_loss = target_weight * trap_loss_clean
 
                 # (a.1) Feature-space trap（可选）：在 UNet→head 的共享瓶颈特征上制造空间塌缩
                 # 目标：让 head-only 的恢复微调不再能快速修复结构（conv 是 1×1）。
@@ -1791,7 +1808,7 @@ class DefenseTrainer:
                     )
                     for k, v in awp_dict.items():
                         loss_dict[f'awp_{k}'] = v
-                    total_loss = total_loss + lambda_trap * self.awp_weight * awp_loss
+                    total_loss = total_loss + target_weight * self.awp_weight * awp_loss
 
                 # (a.4) Head-attack simulation（可选）：
                 # 通过 render_loss 的梯度方向模拟攻击者对 head(conv) 的一步更新，
@@ -1803,7 +1820,7 @@ class DefenseTrainer:
                     if hs_dict:
                         loss_dict.update(hs_dict)
                     if isinstance(hs_loss, torch.Tensor):
-                        total_loss = total_loss + lambda_trap * float(getattr(self, 'head_attack_sim_weight', 1.0)) * hs_loss
+                        total_loss = total_loss + target_weight * float(getattr(self, 'head_attack_sim_weight', 1.0)) * hs_loss
 
                 # (b) 加噪权重前向 → trap loss（参数鲁棒性）
                 if self.use_param_noise:
@@ -1820,7 +1837,7 @@ class DefenseTrainer:
                     for k, v in trap_dict_noisy.items():
                         loss_dict[f'param_noisy_{k}'] = v
 
-                    total_loss = total_loss + lambda_trap * trap_loss_noisy
+                    total_loss = total_loss + target_weight * trap_loss_noisy
 
                     # 恢复干净权重（backward 仍基于两份计算图）
                     self._restore_params(model, original_state)
@@ -1836,8 +1853,8 @@ class DefenseTrainer:
             distill_loss = self.compute_distillation_loss(student_gaussians, teacher_gaussians)
             loss_dict['distillation'] = distill_loss.item()
 
-            lambda_distill = self.defense_config.get('lambda_distill', 1.0)
-            total_loss = lambda_distill * distill_loss
+            distill_weight = self._get_distill_weight()
+            total_loss = distill_weight * distill_loss
 
         # Optional: anchoring regularizer (stage-wise)
         anchor_loss = self._compute_anchor_loss(model, is_target_data=is_target_data)
@@ -1879,8 +1896,9 @@ class DefenseTrainer:
         loss_dict['render_loss'] = render_loss.item()
 
         # 取负：最小化 -render_loss = 最大化 render_loss（梯度上升）
-        lambda_trap = self.defense_config.get('lambda_trap', 1.0)
-        total_loss = -lambda_trap * render_loss
+        # naive_unlearning 只使用单独的 defense.lambda_unlearn。
+        target_weight = self._get_target_objective_weight()
+        total_loss = -target_weight * render_loss
 
         loss_dict['unlearning_loss'] = total_loss.item()
         return total_loss
@@ -2456,6 +2474,11 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
                 trainer.defense_config['lambda_trap'] = float(stage_cfg['lambda_trap'])
             except Exception:
                 pass
+        if 'lambda_unlearn' in stage_cfg:
+            try:
+                trainer.defense_config['lambda_unlearn'] = float(stage_cfg['lambda_unlearn'])
+            except Exception:
+                pass
         if 'lambda_distill' in stage_cfg:
             try:
                 trainer.defense_config['lambda_distill'] = float(stage_cfg['lambda_distill'])
@@ -2585,6 +2608,7 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
             print(f"[Defense][Schedule] Stage {stage_idx}/{len(schedule_stages)} '{stage_name}': "
                   f"steps={stage_steps}, source_ratio={getattr(trainer, 'source_ratio', None)}, "
                   f"lambda_trap={trainer.defense_config.get('lambda_trap')}, "
+                  f"lambda_unlearn={trainer.defense_config.get('lambda_unlearn')}, "
                   f"lambda_distill={trainer.defense_config.get('lambda_distill')}, "
                   f"anchor_w={getattr(trainer, 'anchor_weight', 0.0)}")
 

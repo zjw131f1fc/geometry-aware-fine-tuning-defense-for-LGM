@@ -8,9 +8,9 @@
 #
 # 可选环境变量：
 #   EXPERIMENTS_BASE=output/experiments_output
-#   ATTACK_STEPS=200
+#   ATTACK_STEPS=400
 #   ATTACK_EPOCHS=5
-#   EVAL_EVERY_STEPS=10
+#   EVAL_EVERY_STEPS=-1
 #   NUM_RENDER=1
 #
 # 输出：
@@ -65,15 +65,34 @@ ORIGINAL_CONFIG="${CONFIG}"
 CONFIG="${OUTPUT_ROOT}/config.yaml"
 cp "${ORIGINAL_CONFIG}" "${CONFIG}"
 
-ATTACK_STEPS="800"
+ATTACK_TARGET_DATASET="${ATTACK_TARGET_DATASET:-omni}"
+ATTACK_STEPS="${ATTACK_STEPS:-400}"
 ATTACK_EPOCHS="${ATTACK_EPOCHS:-}"
-EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:--1}"
 NUM_RENDER="${NUM_RENDER:-1}"
 
 CATEGORIES=(shoe plant dish bowl box)
 
+"${PYTHON}" - "${CONFIG}" "${ATTACK_TARGET_DATASET}" <<'PY'
+import sys
+import yaml
+
+config_path, attack_dataset = sys.argv[1:3]
+
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = yaml.safe_load(f)
+
+cfg.setdefault("data", {})
+cfg["data"].setdefault("target", {})
+cfg["data"]["target"]["dataset"] = attack_dataset
+
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+PY
+
 echo "=========================================="
-echo "Random Init vs Pretrained（5 类别）"
+echo "Random Init vs Pretrained（5 类别，attack-only）"
+echo "Attack target dataset: ${ATTACK_TARGET_DATASET}"
 echo "Config: ${CONFIG}"
 echo "Output: ${OUTPUT_ROOT}"
 if [[ -n "${ATTACK_STEPS}" ]]; then
@@ -108,13 +127,13 @@ run_task() {
     if {
         echo "=== GPU ${GPU}: ${category} ==="
         "${PYTHON}" script/compare_random_vs_pretrained.py \
-        --config "${CONFIG}" \
-        --gpu "${GPU}" \
-        --categories "${category}" \
-        --output_dir "${out_dir}" \
-        --eval_every_steps "${EVAL_EVERY_STEPS}" \
-        --num_render "${NUM_RENDER}" \
-        "${extra_args[@]}"
+            --config "${CONFIG}" \
+            --gpu "${GPU}" \
+            --categories "${category}" \
+            --output_dir "${out_dir}" \
+            --eval_every_steps "${EVAL_EVERY_STEPS}" \
+            --num_render "${NUM_RENDER}" \
+            "${extra_args[@]}"
     } > "${log}" 2>&1; then
         echo "[GPU ${GPU}] 完成: ${category}"
         return 0

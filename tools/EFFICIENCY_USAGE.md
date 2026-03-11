@@ -37,7 +37,7 @@ python script/run_pipeline.py \
     --measure_efficiency \
     --attack_epochs 5 \
     --defense_epochs 25 \
-    --eval_every_steps 10
+    --eval_every_steps -1
 ```
 
 ## 输出内容
@@ -182,7 +182,7 @@ python script/run_pipeline.py \
     --config configs/config.yaml \
     --attack_steps 100 \
     --defense_steps 100 \
-    --eval_every_steps 10
+    --eval_every_steps -1
 ```
 
 应该在几分钟内完成并生成效率报告。

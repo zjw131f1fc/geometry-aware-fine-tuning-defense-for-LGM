@@ -10,7 +10,7 @@
 # 环境变量:
 #   SKIP_BASELINE=1                  # 跳过 baseline attack，直接从 defense 开始
 #   DEFENSE_CACHE_MODE=none          # 防御缓存模式（none/readonly/registry）
-#   EVAL_EVERY_STEPS=10              # 评估间隔步数
+#   EVAL_EVERY_STEPS=-1              # 攻击阶段只在自动均分的 4 个 step 节点评估
 
 set -e
 
@@ -40,7 +40,7 @@ echo "GPU列表: ${GPU_LIST}"
 
 CONFIG="configs/config.yaml"
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-none}"  # 消融实验不使用缓存，确保每个配置独立训练
-EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:--1}"
 SKIP_BASELINE="${SKIP_BASELINE:-0}"  # 默认不跳过 baseline
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # 默认把实验输出放到 repo 的 output/ 下（本地目录）

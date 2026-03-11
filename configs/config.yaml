@@ -37,7 +37,7 @@ data:
   attack_samples_per_category: 15
 
   # Retention-heavy mixing
-  source_ratio: 0.85
+  source_ratio: 0.8
   source_val_ratio: 0.1
   val_samples: 20
 
@@ -153,13 +153,16 @@ defense:
   feature_trap:
     enabled: false
 
-  # Weaken trap a bit; strengthen distill a lot.
+  # Target-side weights:
+  # - lambda_trap: GeoTrap 的 trap loss 权重
+  # - lambda_unlearn: Naive Unlearning 的 render-loss ascent 权重
   lambda_trap: 20.0
+  lambda_unlearn: 0.05
   lambda_distill: 400.0
   distill_loss_order: 1
 
   robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
-  input_noise: {enabled: true, noise_scale: 0.05, warmup_steps: 50}
+  input_noise: {enabled: true, noise_scale: 0.02, warmup_steps: 50}
   gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
 
   transfer_diag:

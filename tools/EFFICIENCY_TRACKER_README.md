@@ -86,7 +86,7 @@ python script/run_pipeline.py \
     --tag efficiency_test \
     --attack_epochs 5 \
     --defense_epochs 25 \
-    --eval_every_steps 10
+    --eval_every_steps -1
 ```
 
 ### 4. 查看结果

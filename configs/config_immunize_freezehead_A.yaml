@@ -93,9 +93,9 @@ defense:
     rotation: {static: true, dynamic: false}
     color: {static: true, dynamic: false}
 
-  # Bottleneck aggregation: keep pushing the weakest trap (first-order).
+  # Mean aggregation: stable default across active traps.
   trap_aggregation:
-    method: bottleneck_logsumexp
+    method: mean
     tau: 0.25
 
   # Anti-shortcut: HARD freeze the Gaussian head (conv.*).

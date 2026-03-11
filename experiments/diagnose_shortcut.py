@@ -72,7 +72,7 @@ def _aggregate_losses(loss_list, method: str, tau: float):
     if len(loss_list) == 1:
         return loss_list[0]
 
-    method = (method or "pairwise_multiplicative").lower()
+    method = (method or "mean").lower()
     if method == "sum":
         return torch.stack(loss_list).sum()
     if method in ("max",):
@@ -83,8 +83,8 @@ def _aggregate_losses(loss_list, method: str, tau: float):
         stacked = torch.stack(loss_list)
         return tau * torch.logsumexp(stacked / tau, dim=0)
 
-    # fallback: simple sum (avoid implementing legacy multiplicative coupling here)
-    return torch.stack(loss_list).sum()
+    # fallback: keep diagnostic behavior aligned with the current default aggregation
+    return torch.stack(loss_list).mean()
 
 
 def _grad_concentration(model, topk: int = 15):
@@ -181,7 +181,7 @@ def main():
         trap_fns[k] = fn.to("cuda")
 
     agg_cfg = defense_cfg.get("trap_aggregation", {}) or {}
-    agg_method = str(agg_cfg.get("method", "bottleneck_logsumexp"))
+    agg_method = str(agg_cfg.get("method", "mean"))
     agg_tau = float(agg_cfg.get("tau", 0.25))
 
     print("=" * 80)

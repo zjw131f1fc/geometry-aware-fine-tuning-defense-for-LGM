@@ -17,7 +17,11 @@ def _repo_root() -> str:
 
 sys.path.insert(0, _repo_root())
 
-from tools import build_dual_attack_step_report, format_dual_attack_step_report  # noqa: E402
+from tools import (  # noqa: E402
+    DEFAULT_ATTACK_REPORT_CHECKPOINTS,
+    build_dual_attack_step_report,
+    format_dual_attack_step_report,
+)
 
 
 def main() -> None:
@@ -26,7 +30,7 @@ def main() -> None:
     parser.add_argument(
         "--checkpoints",
         type=int,
-        default=5,
+        default=DEFAULT_ATTACK_REPORT_CHECKPOINTS,
         help="Number of evenly spaced checkpoints to report",
     )
     parser.add_argument(

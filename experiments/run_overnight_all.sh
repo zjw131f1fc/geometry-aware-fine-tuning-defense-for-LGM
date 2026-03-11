@@ -228,7 +228,7 @@ echo "===================="
 export DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-readonly}"
 export DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-2}"
 export DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-2}"
-export EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
+export EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:--1}"
 
 run_script_bg() {
   local __pid_var="$1"

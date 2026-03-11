@@ -426,7 +426,7 @@ class AutoFineTuner:
 def run_attack(config, target_train_loader, source_val_loader,
                supervision_loader=None, target_eval_loader=None,
                save_dir=None, attack_epochs=None, attack_steps=None,
-               num_render=3, eval_every_steps=10,
+               num_render=3, eval_every_steps=-1, eval_steps=None,
                model_resume_override=None, phase_name="Attack",
                return_gaussians=False, ref_gaussians=None,
                model_state_dict_override=None,
@@ -455,7 +455,8 @@ def run_attack(config, target_train_loader, source_val_loader,
         attack_epochs: 攻击 epoch 数（默认从 config 读取）
         attack_steps: 攻击优化器步数（优先于 attack_epochs）
         num_render: 渲染样本数
-        eval_every_steps: 每隔多少优化器步评估一次
+        eval_every_steps: 每隔多少优化器步评估一次；<=0 表示使用 eval_steps
+        eval_steps: 指定在哪些优化器步评估；None 表示按 eval_every_steps 决定
         model_resume_override: 覆盖 model.resume（如 "tag:xxx"）
         model_state_dict_override: 可选，直接覆盖模型权重（state_dict，通常用于 defense 不落盘）
         phase_name: 阶段名称（用于日志）
@@ -639,6 +640,14 @@ def run_attack(config, target_train_loader, source_val_loader,
     evaluator = Evaluator(model, device='cuda')
     os.makedirs(save_dir, exist_ok=True)
 
+    # Attack checkpoint eval: always run full target/input evaluation on the full loader.
+    attack_eval_loader = target_eval_loader if (is_semantic_deflection and target_eval_loader is not None) else target_train_loader
+    attack_eval_label = 'input' if is_semantic_deflection else 'target'
+    try:
+        attack_eval_num_samples = len(attack_eval_loader.dataset)
+    except Exception:
+        attack_eval_num_samples = None
+
     # 攻击前评估 source（LoRA 模式下禁用 adapter 测底座能力）
     print(f"  评估攻击前的 source 质量...")
     has_lora = hasattr(model, 'disable_adapter_layers')
@@ -766,8 +775,7 @@ def run_attack(config, target_train_loader, source_val_loader,
                     'trap_rotation': RotationAnisotropyLoss().to('cuda'),
                 }
 
-            diag_loader = target_eval_loader if (is_semantic_deflection and target_eval_loader is not None) else target_train_loader
-            diag_batch = next(iter(diag_loader))
+            diag_batch = next(iter(attack_eval_loader))
             diag_batch_full = diag_batch
             diag_input_images = diag_batch['input_images'].to('cuda')
             print(f"  [Debug] Trap metrics enabled: keys={list(trap_fns.keys())}, "
@@ -1018,8 +1026,7 @@ def run_attack(config, target_train_loader, source_val_loader,
 
             # (2) Optional: masked PSNR/LPIPS before any optimization (rendering-based)
             if pre_eval_render_metrics:
-                pre_loader = target_eval_loader if (is_semantic_deflection and target_eval_loader is not None) else target_train_loader
-                pre_target = evaluator.evaluate_on_loader(pre_loader, num_samples=pre_eval_num_samples)
+                pre_target = evaluator.evaluate_on_loader(attack_eval_loader, num_samples=pre_eval_num_samples)
                 pre_diag['masked_psnr'] = float(pre_target.get('psnr', 0.0))
                 pre_diag['masked_lpips'] = float(pre_target.get('lpips', 0.0))
                 n_str = pre_eval_num_samples if pre_eval_num_samples is not None else 'all'
@@ -1040,6 +1047,29 @@ def run_attack(config, target_train_loader, source_val_loader,
         # epoch模式：总优化器步数 = epochs × 每个epoch的batch数 / 梯度累积步数
         batches_per_epoch = len(target_train_loader)
         total_steps = (attack_epochs * batches_per_epoch + finetuner.gradient_accumulation_steps - 1) // finetuner.gradient_accumulation_steps
+
+    eval_step_set = set()
+    if eval_steps is not None:
+        for step in eval_steps:
+            try:
+                step_int = int(step)
+            except Exception:
+                continue
+            if step_int > 0:
+                eval_step_set.add(step_int)
+
+    if not eval_step_set:
+        if eval_every_steps is None:
+            eval_every_steps = -1
+        eval_every_steps = int(eval_every_steps)
+        if eval_every_steps > 0:
+            eval_step_set = set(range(eval_every_steps, total_steps + 1, eval_every_steps))
+        else:
+            eval_step_set = {int(total_steps)}
+
+    eval_step_set = {step for step in eval_step_set if step <= int(total_steps)}
+    eval_step_set.add(int(total_steps))
+    print(f"  Attack eval steps: {sorted(eval_step_set)}")
 
     # 时间跟踪
     import time
@@ -1089,14 +1119,16 @@ def run_attack(config, target_train_loader, source_val_loader,
                 interval_masked_lpips += loss_dict.get('masked_lpips', 0)
                 interval_count += 1
 
-                if global_step % eval_every_steps == 0 or global_step == total_steps:
+                if global_step in eval_step_set:
                     metrics = {
                         'step': global_step,
                         'epoch': epoch,
                         'loss': interval_loss / interval_count if interval_count > 0 else 0,
                         'lpips': interval_lpips / interval_count if interval_count > 0 else 0,
-                        'masked_lpips': interval_masked_lpips / interval_count if interval_count > 0 else 0,
-                        'masked_psnr': interval_masked_psnr / interval_count if interval_count > 0 else 0,
+                        # Keep interval training stats for debugging, but checkpoint report
+                        # should use full-loader attack evaluation metrics.
+                        'interval_masked_lpips': interval_masked_lpips / interval_count if interval_count > 0 else 0,
+                        'interval_masked_psnr': interval_masked_psnr / interval_count if interval_count > 0 else 0,
                     }
 
                     # Debug: parameter deltas (small, CPU-safe)
@@ -1131,26 +1163,21 @@ def run_attack(config, target_train_loader, source_val_loader,
                         except Exception as e:
                             metrics['debug_trap_error'] = f"{type(e).__name__}: {e}"
 
-                    # 轻量：每次 step-eval 同时评估 source（用于 plot_pipeline_results 的 Source 曲线）
+                    # 每个 checkpoint 都做一次完整 target/input 评估。
                     try:
                         model.eval()
-                        has_lora = hasattr(model, 'disable_adapter_layers')
-                        if has_lora:
-                            model.disable_adapter_layers()
-                        src_eval = evaluator.evaluate_on_loader(source_val_loader)
-                        metrics['source_psnr'] = float(src_eval.get('psnr', 0))
-                        metrics['source_lpips'] = float(src_eval.get('lpips', 0))
+                        target_eval = evaluator.evaluate_on_loader(attack_eval_loader)
+                        metrics['masked_psnr'] = float(target_eval.get('psnr', 0))
+                        metrics['masked_lpips'] = float(target_eval.get('lpips', 0))
+                        if attack_eval_num_samples is not None:
+                            metrics['target_eval_num_samples'] = int(attack_eval_num_samples)
                     except Exception as e:
                         # 评估失败不应中断攻击主流程
-                        print(f"  [run_attack] 警告: source-eval 失败 (step={global_step}): {e}")
-                        metrics['source_psnr'] = 0.0
-                        metrics['source_lpips'] = 0.0
+                        print(f"  [run_attack] 警告: full {attack_eval_label}-eval 失败 (step={global_step}): {e}")
+                        metrics['masked_psnr'] = None
+                        metrics['masked_lpips'] = None
+                        metrics['target_eval_error'] = f"{type(e).__name__}: {e}"
                     finally:
-                        if hasattr(model, 'enable_adapter_layers'):
-                            try:
-                                model.enable_adapter_layers()
-                            except Exception:
-                                pass
                         model.train()
                     step_history.append(metrics)
 
@@ -1181,12 +1208,23 @@ def run_attack(config, target_train_loader, source_val_loader,
                             minutes = int((eta_seconds % 3600) / 60)
                             eta_str = f", ETA: {hours}h{minutes}m"
 
+                    masked_lpips_str = (
+                        f"{metrics['masked_lpips']:.4f}"
+                        if metrics.get('masked_lpips') is not None else "NA"
+                    )
+                    masked_psnr_str = (
+                        f"{metrics['masked_psnr']:.2f}"
+                        if metrics.get('masked_psnr') is not None else "NA"
+                    )
+                    eval_n_str = (
+                        f", eval_n={attack_eval_num_samples}"
+                        if attack_eval_num_samples is not None else ""
+                    )
                     print(f"  [{phase_name}] Optimizer Step {global_step}/{total_steps} (Ep{epoch}) - "
                           f"Loss: {metrics['loss']:.4f}, "
-                          f"LPIPS: {metrics['masked_lpips']:.4f}, "
-                          f"PSNR: {metrics['masked_psnr']:.2f}, "
-                          f"SourcePSNR: {metrics['source_psnr']:.2f}, "
-                          f"SourceLPIPS: {metrics['source_lpips']:.4f}{eta_str}")
+                          f"LPIPS: {masked_lpips_str}, "
+                          f"PSNR: {masked_psnr_str}"
+                          f"{eval_n_str}{eta_str}")
 
                     interval_loss, interval_lpips, interval_masked_psnr, interval_masked_lpips = 0, 0, 0, 0
                     interval_count = 0
@@ -1226,17 +1264,16 @@ def run_attack(config, target_train_loader, source_val_loader,
         print(f"  评估攻击后的质量...")
 
         # vs 输入类别：输入 coconut，与 coconut GT 对比
-        eval_loader = target_eval_loader or target_train_loader
-        evaluator.render_samples(eval_loader,
+        evaluator.render_samples(attack_eval_loader,
                                  os.path.join(save_dir, 'input_renders'),
                                  prefix='input_', num_samples=num_render)
-        input_metrics = evaluator.evaluate_on_loader(eval_loader)
+        input_metrics = evaluator.evaluate_on_loader(attack_eval_loader)
         print(f"  vs Input PSNR: {input_metrics['psnr']:.2f}, "
               f"LPIPS: {input_metrics['lpips']:.4f}")
 
         # vs 监督类别：输入 coconut → 从 durian 视角渲染 → 与 durian GT 对比
         supervision_metrics = evaluator.evaluate_cross_category(
-            eval_loader, supervision_loader)
+            attack_eval_loader, supervision_loader)
         print(f"  vs Supervision PSNR: {supervision_metrics['psnr']:.2f}, "
               f"LPIPS: {supervision_metrics['lpips']:.4f}")
 
@@ -1246,20 +1283,19 @@ def run_attack(config, target_train_loader, source_val_loader,
         }
     else:
         # 标准模式：原有逻辑
-        evaluator.render_samples(target_train_loader,
+        evaluator.render_samples(attack_eval_loader,
                                  os.path.join(save_dir, 'target_renders'),
                                  prefix='target_', num_samples=num_render)
 
         print(f"  评估攻击后的 target 质量...")
-        target_metrics = evaluator.evaluate_on_loader(target_train_loader)
+        target_metrics = evaluator.evaluate_on_loader(attack_eval_loader)
         print(f"  攻击后 Target PSNR: {target_metrics['psnr']:.2f}, "
               f"LPIPS: {target_metrics['lpips']:.4f}")
 
     # Gaussian 诊断（标准模式和语义偏转模式都做）
     print(f"  Gaussian 诊断...")
-    eval_loader_for_diag = target_eval_loader if is_semantic_deflection else target_train_loader
     diag_result = evaluator.diagnose_gaussians(
-        eval_loader_for_diag, num_samples=8,
+        attack_eval_loader, num_samples=8,
         return_gaussians=return_gaussians,
         ref_gaussians=ref_gaussians,
     )

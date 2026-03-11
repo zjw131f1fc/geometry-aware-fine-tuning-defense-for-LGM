@@ -29,6 +29,15 @@ class DataManager:
         self.train_loader = None
         self.val_loader = None
 
+    def _use_object_split(self) -> bool:
+        """返回是否启用 object_split 抽样。默认启用。"""
+        value = self.config.get('data', {}).get('use_object_split', True)
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in ('1', 'true', 'yes', 'on')
+        return bool(value)
+
     def _get_gso_render_dir(self) -> str:
         """返回 GSO 渲染目录（绝对路径）。"""
         data_root = self.config['data']['root']
@@ -195,6 +204,7 @@ class DataManager:
                            samples_per_object, object_indices
         """
         data_config = self.config['data']
+        use_object_split = self._use_object_split()
 
         if subset in ('source', 'target', 'defense_target'):
             # defense_target: 优先使用 defense.target，否则回退到 data.target
@@ -233,6 +243,10 @@ class DataManager:
                 samples_per_object = sub.get('samples_per_object')
                 dataset_type = sub.get('dataset', 'omni')
                 max_samples = sub.get('max_samples')
+
+            if object_split and not use_object_split:
+                print(f"[DataManager] use_object_split=false，忽略 subset={subset} 的 object_split 配置")
+                object_split = None
 
             # 计算 object_indices
             object_indices = None
@@ -330,6 +344,7 @@ class DataManager:
 
         print(f"[DataManager] subset={subset}, dataset={dataset_type}, "
               f"categories={categories}, "
+              f"use_object_split={self._use_object_split()}, "
               f"object_indices={bool(object_indices)}, "
               f"max_samples={max_samples}, "
               f"samples_per_object={samples_per_object}")

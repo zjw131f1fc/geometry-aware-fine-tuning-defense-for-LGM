@@ -205,9 +205,12 @@ def compute_baseline_hash(config, attack_epochs, num_render, supervision_categor
         'attack_steps': attack_steps,
         'attack_epochs': attack_epochs,
         'eval_every_steps': eval_every_steps,
+        'attack_step_eval_mode': 'full_target_eval_v2',
+        'attack_step_source_eval_mode': 'pre_attack_only_v2',
         'data_target': config['data']['target'],
         'data_shared': {
             'root': config['data']['root'],
+            'use_object_split': config['data'].get('use_object_split', True),
             'view_selector': config['data'].get('view_selector'),
             'angle_offset': config['data'].get('angle_offset'),
             'num_supervision_views': config['data'].get('num_supervision_views'),
@@ -243,35 +246,39 @@ def compute_defense_hash(config):
     if effective_defense_grad_accum is None:
         effective_defense_grad_accum = training_cfg.get('gradient_accumulation_steps', 1)
 
+    defense_key = {
+        'method': defense_cfg.get('method', 'geotrap'),
+        'batch_size': effective_defense_batch_size,
+        'trap_losses': defense_cfg.get('trap_losses', {}),
+        # 影响梯度写入分布/稳定性的关键项：必须进 hash，避免缓存错用
+        'grad_clip': defense_cfg.get('grad_clip', {}),
+        'grad_surgery': defense_cfg.get('grad_surgery', {}),  # PCGrad等梯度手术
+        'trap_aggregation': defense_cfg.get('trap_aggregation', {}),
+        'trap_weights': defense_cfg.get('trap_weights', {}),
+        'antishortcut': defense_cfg.get('antishortcut', {}),
+        'awp': defense_cfg.get('awp', {}),
+        'robustness': defense_cfg.get('robustness', {}),
+        'input_noise': defense_cfg.get('input_noise', {}),
+        'coupling': defense_cfg.get('coupling', {}),
+        'feature_trap': defense_cfg.get('feature_trap', {}),  # 特征陷阱
+        'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
+        'lambda_distill': defense_cfg.get('lambda_distill', 1.0),
+        'distill_loss_order': defense_cfg.get('distill_loss_order', 2),
+        'gradient_accumulation_steps': effective_defense_grad_accum,
+        'gradient_conflict': defense_cfg.get('gradient_conflict', {}),
+        'target': defense_cfg.get('target', {}),  # defense 独立的 target 配置
+        'target_layers': defense_cfg.get('target_layers'),
+    }
+    if defense_cfg.get('method', 'geotrap') == 'naive_unlearning':
+        defense_key['lambda_unlearn'] = defense_cfg.get('lambda_unlearn')
+
     key_parts = {
         'model_resume': config['model']['resume'],
         'model_size': config['model']['size'],
         # Architecture / parameterization toggles (must affect cache keys).
         'model_fuse_head_conv': bool(model_cfg.get('fuse_head_conv', False)),
         'model_disable_head_conv': bool(model_cfg.get('disable_head_conv', False)),
-        'defense': {
-            'method': defense_cfg.get('method', 'geotrap'),
-            'batch_size': effective_defense_batch_size,
-            'trap_losses': defense_cfg.get('trap_losses', {}),
-            # 影响梯度写入分布/稳定性的关键项：必须进 hash，避免缓存错用
-            'grad_clip': defense_cfg.get('grad_clip', {}),
-            'grad_surgery': defense_cfg.get('grad_surgery', {}),  # PCGrad等梯度手术
-            'trap_aggregation': defense_cfg.get('trap_aggregation', {}),
-            'trap_weights': defense_cfg.get('trap_weights', {}),
-            'antishortcut': defense_cfg.get('antishortcut', {}),
-            'awp': defense_cfg.get('awp', {}),
-            'robustness': defense_cfg.get('robustness', {}),
-            'input_noise': defense_cfg.get('input_noise', {}),
-            'coupling': defense_cfg.get('coupling', {}),
-            'feature_trap': defense_cfg.get('feature_trap', {}),  # 特征陷阱
-            'lambda_trap': defense_cfg.get('lambda_trap', 1.0),
-            'lambda_distill': defense_cfg.get('lambda_distill', 1.0),
-            'distill_loss_order': defense_cfg.get('distill_loss_order', 2),
-            'gradient_accumulation_steps': effective_defense_grad_accum,
-            'gradient_conflict': defense_cfg.get('gradient_conflict', {}),
-            'target': defense_cfg.get('target', {}),  # defense 独立的 target 配置
-            'target_layers': defense_cfg.get('target_layers'),
-        },
+        'defense': defense_key,
         'training': {
             'defense_steps': training_cfg.get('defense_steps'),
             'defense_epochs': (training_cfg.get('defense_epochs') if training_cfg.get('defense_epochs') is not None else 25),
@@ -286,6 +293,7 @@ def compute_defense_hash(config):
         },
         'data': {
             'root': data_cfg.get('root'),
+            'use_object_split': data_cfg.get('use_object_split', True),
             'target': data_cfg.get('target', {}),
             'source': data_cfg.get('source', {}),
             'source_ratio': data_cfg.get('source_ratio'),

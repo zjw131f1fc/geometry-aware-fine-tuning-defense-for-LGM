@@ -2,12 +2,12 @@
 """
 端到端 Pipeline：Baseline Attack → Defense Training → Post-Defense Attack
 
-在单 GPU 上依次运行三个阶段，每隔 N 个 step 收集指标，最后绘制对比图（横轴为 step）。
+在单 GPU 上依次运行三个阶段，在指定 step 节点评估并收集指标，最后绘制对比图（横轴为 step）。
 
 用法：
     python script/run_pipeline.py --gpu 0 --config configs/config.yaml \
         --trap_losses position,scale --tag geotrap_v1 \
-        --attack_epochs 5 --defense_epochs 25 --eval_every_steps 10
+        --attack_epochs 5 --defense_epochs 25 --eval_every_steps -1
 """
 
 import os
@@ -55,6 +55,8 @@ from tools import (
     load_baseline_cache, save_baseline_cache, copy_cached_renders,
     plot_pipeline_results,
     EfficiencyTracker,
+    DEFAULT_ATTACK_REPORT_CHECKPOINTS,
+    build_requested_steps,
     build_dual_attack_step_report,
     format_dual_attack_step_report,
 )
@@ -88,8 +90,8 @@ def parse_args():
                         help='输出目录（默认自动生成）')
     parser.add_argument('--num_render', type=int, default=3,
                         help='每阶段渲染样本数')
-    parser.add_argument('--eval_every_steps', type=int, default=10,
-                        help='每隔多少 step 评估一次指标')
+    parser.add_argument('--eval_every_steps', type=int, default=-1,
+                        help=f'攻击阶段每隔多少 step 评估一次；-1 表示只在自动均分的 {DEFAULT_ATTACK_REPORT_CHECKPOINTS} 个 checkpoint 评估')
     parser.add_argument('--export_gaussian_samples', action='store_true',
                         help='导出固定样本的 Gaussian（用于论文级分布图）')
     parser.add_argument('--gaussian_samples_num', type=int, default=32,
@@ -239,6 +241,8 @@ def main():
         categories = [c.strip() for c in args.categories.split(',')]
         config['data']['target']['categories'] = categories
         config['attack']['malicious_content']['malicious_categories'] = categories
+        config.setdefault('defense', {}).setdefault('target', {})
+        config['defense']['target']['categories'] = categories
         print(f"[Pipeline] Categories 覆盖: {categories}")
 
     # 语义偏转模式
@@ -439,6 +443,17 @@ def main():
     if defense_steps is None and defense_epochs is None:
         defense_epochs = 25
 
+    attack_eval_steps = build_requested_steps(attack_steps, DEFAULT_ATTACK_REPORT_CHECKPOINTS)
+    if args.eval_every_steps > 0:
+        attack_eval_desc = f"every {args.eval_every_steps} steps"
+    elif attack_eval_steps:
+        attack_eval_desc = f"auto-{DEFAULT_ATTACK_REPORT_CHECKPOINTS} checkpoints: {attack_eval_steps}"
+    else:
+        attack_eval_desc = (
+            f"auto-{DEFAULT_ATTACK_REPORT_CHECKPOINTS} checkpoints "
+            "(resolved after data setup)"
+        )
+
     # 解析 target_layers（ConfigManager 已自动解析，这里取最终值）
     target_layers = config.get('defense', {}).get('target_layers')
 
@@ -451,7 +466,8 @@ def main():
     # 保存可复现实验的配置快照（比单纯打印更可靠）
     _dump_json(os.path.join(workspace, "pipeline_args.json"), vars(args))
     _dump_json(os.path.join(workspace, "pipeline_config.json"), config)
-    _dump_json(os.path.join(workspace, "pipeline_effective.json"), {
+    pipeline_effective_path = os.path.join(workspace, "pipeline_effective.json")
+    pipeline_effective = {
         "pipeline_tag": tag,
         "config_path": args.config,
         "attack_steps": attack_steps,
@@ -463,6 +479,7 @@ def main():
         "supervision_categories": supervision_categories,
         "num_render": args.num_render,
         "eval_every_steps": args.eval_every_steps,
+        "attack_eval_steps": attack_eval_steps,
         "skip_baseline": bool(args.skip_baseline),
         "export_gaussian_samples": bool(args.export_gaussian_samples),
         "gaussian_samples_num": int(args.gaussian_samples_num),
@@ -474,7 +491,8 @@ def main():
             "MPLCONFIGDIR": os.environ.get("MPLCONFIGDIR"),
             "HF_ENDPOINT": os.environ.get("HF_ENDPOINT"),
         },
-    })
+    }
+    _dump_json(pipeline_effective_path, pipeline_effective)
 
     print("=" * 80)
     print("Pipeline: Baseline Attack → Defense → Post-Defense Attack")
@@ -490,6 +508,7 @@ def main():
     else:
         print(f"Defense epochs: {defense_epochs}")
     print(f"Defense cache mode: {defense_cache_mode}")
+    print(f"Attack eval schedule: {attack_eval_desc}")
     print(f"Trap losses: {[k for k, v in config['defense']['trap_losses'].items() if v.get('static')]}")
     trap_combo = config['defense'].get('trap_combo')
     num_tl = config['defense'].get('num_target_layers')
@@ -527,6 +546,7 @@ def main():
     _print_kv("source.dataset", config.get('data', {}).get('source', {}).get('dataset'))
     _print_kv("source.categories", config.get('data', {}).get('source', {}).get('categories'))
     _print_kv("source_ratio", config.get('data', {}).get('source_ratio'))
+    _print_kv("data.use_object_split", config.get('data', {}).get('use_object_split', True))
     _print_kv("attack_samples_per_category", config.get('data', {}).get('attack_samples_per_category'))
     _print_kv("data.num_workers", config.get('data', {}).get('num_workers'))
     obj_split = config.get('data', {}).get('object_split', {})
@@ -549,6 +569,7 @@ def main():
     _print_kv("attack.lr_override", attack_lr_override)
     _print_kv("attack.optimizer_override", attack_optimizer_override)
     _print_kv("attack.eval_every_steps", args.eval_every_steps)
+    _print_kv("attack.eval_steps", attack_eval_steps)
     _print_kv("attack.num_render", args.num_render)
     _print_kv("attack.skip_baseline", args.skip_baseline)
     _print_kv("attack.semantic_deflection", bool(supervision_categories))
@@ -563,6 +584,7 @@ def main():
     _print_kv("defense.target.categories", defense_target_cfg.get('categories') if isinstance(defense_target_cfg, dict) else None)
     _print_kv("defense.target.samples_per_object", defense_target_cfg.get('samples_per_object') if isinstance(defense_target_cfg, dict) else None)
     _print_kv("lambda_trap", config.get('defense', {}).get('lambda_trap'))
+    _print_kv("lambda_unlearn", config.get('defense', {}).get('lambda_unlearn'))
     _print_kv("lambda_distill", config.get('defense', {}).get('lambda_distill'))
     _print_kv("distill_loss_order", config.get('defense', {}).get('distill_loss_order'))
     _print_kv("defense.batch_size", config.get('defense', {}).get('batch_size'))
@@ -612,7 +634,9 @@ def main():
     target_train_loader = target_data_mgr.train_loader
 
     # 监督数据加载器（语义偏转模式）
+    deflection_train_loader = None
     supervision_train_loader = None
+    target_eval_loader = None
     if supervision_categories:
         from data.dataset import SemanticDeflectionDataset
 
@@ -667,6 +691,25 @@ def main():
 
     print(f"  Target train: {len(target_train_loader.dataset)} 样本")
     print(f"  Source val: {len(source_val_loader.dataset)} 样本")
+
+    attack_train_loader = deflection_train_loader if supervision_categories else target_train_loader
+    if args.eval_every_steps <= 0 and not attack_eval_steps:
+        batches_per_epoch = len(attack_train_loader)
+        attack_grad_accum = int(config['training'].get('gradient_accumulation_steps', 1))
+        total_attack_steps = (
+            attack_epochs * batches_per_epoch + attack_grad_accum - 1
+        ) // attack_grad_accum
+        attack_eval_steps = build_requested_steps(
+            total_attack_steps, DEFAULT_ATTACK_REPORT_CHECKPOINTS
+        )
+        attack_eval_desc = (
+            f"auto-{DEFAULT_ATTACK_REPORT_CHECKPOINTS} checkpoints: {attack_eval_steps}"
+        )
+        pipeline_effective["attack_eval_steps"] = attack_eval_steps
+        _dump_json(pipeline_effective_path, pipeline_effective)
+        print(f"[Pipeline] Resolved attack eval steps from data loader: {attack_eval_steps}")
+    elif args.eval_every_steps <= 0:
+        print(f"[Pipeline] Resolved attack eval steps: {attack_eval_steps}")
 
     # Optional: fixed-sample Gaussian exports for paper-style distributions.
     gaussian_export_loader = None
@@ -790,6 +833,7 @@ def main():
                 attack_steps=attack_steps,
                 num_render=args.num_render,
                 eval_every_steps=args.eval_every_steps,
+                eval_steps=attack_eval_steps,
                 phase_name="Phase 1: Baseline Attack",
                 return_gaussians=True,
                 gaussian_export_loader=gaussian_export_loader,
@@ -975,6 +1019,7 @@ def main():
             attack_steps=attack_steps,
             num_render=args.num_render,
             eval_every_steps=args.eval_every_steps,
+            eval_steps=attack_eval_steps,
             model_resume_override=f"tag:{defense_tag}" if defense_state_dict is None else None,
             phase_name="Phase 3: Post-Defense Attack",
             ref_gaussians=baseline_gaussians if not args.skip_baseline else None,
@@ -1012,7 +1057,7 @@ def main():
         baseline_history,
         postdef_history,
         total_steps=attack_steps,
-        num_checkpoints=5,
+        num_checkpoints=DEFAULT_ATTACK_REPORT_CHECKPOINTS,
     )
     attack_step_report_text = format_dual_attack_step_report(attack_step_report)
     attack_step_report_path = os.path.join(workspace, "attack_step_report.txt")
@@ -1040,7 +1085,7 @@ def main():
             print(f"Post-Defense Attack 达到 Baseline Attack 最终效果的最早 step: {postdef_steps_to_reach_baseline}")
 
     print(f"\n{'='*80}")
-    print("Attack 分步结果（自动均分为 5 个 checkpoint）")
+    print(f"Attack 分步结果（自动均分为 {DEFAULT_ATTACK_REPORT_CHECKPOINTS} 个 checkpoint）")
     print(f"{'='*80}")
     print(attack_step_report_text)
 

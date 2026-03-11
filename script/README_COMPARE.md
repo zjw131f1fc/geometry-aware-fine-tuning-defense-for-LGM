@@ -36,7 +36,7 @@ python script/compare_random_vs_pretrained.py \
     --attack_epochs 5 \
     --gpu 0 \
     --num_render 3 \
-    --eval_every_steps 10 \
+    --eval_every_steps -1 \
     --output_dir output/compare_random_vs_pretrained
 ```
 
@@ -46,7 +46,7 @@ python script/compare_random_vs_pretrained.py \
 - `--attack_epochs`: 攻击训练的epoch数（默认从config读取）
 - `--gpu`: 使用的GPU ID（默认0）
 - `--num_render`: 渲染的样本数量（默认3）
-- `--eval_every_steps`: 每隔多少步评估一次（默认10）
+- `--eval_every_steps`: 攻击阶段每隔多少步评估一次；默认 `-1` 表示只在自动均分的 4 个 step 节点评估
 - `--output_dir`: 输出目录（默认output/compare_random_vs_pretrained）
 
 ## 输出结果

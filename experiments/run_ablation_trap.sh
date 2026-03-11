@@ -77,7 +77,7 @@ DEFENSE_EPOCHS=15
 DEFENSE_CACHE_MODE="${DEFENSE_CACHE_MODE:-registry}"
 DEFENSE_BATCH_SIZE="${DEFENSE_BATCH_SIZE:-}"
 DEFENSE_GRAD_ACCUM="${DEFENSE_GRAD_ACCUM:-}"
-EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-10}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:--1}"
 
 # ============================================================================
 # 任务列表

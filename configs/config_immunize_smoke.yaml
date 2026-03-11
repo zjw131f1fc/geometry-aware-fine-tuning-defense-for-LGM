@@ -97,9 +97,9 @@ defense:
       static: true
       dynamic: false
 
-  # Bottleneck aggregation: keep pushing the weakest trap (first-order).
+  # Mean aggregation: stable default across active traps.
   trap_aggregation:
-    method: bottleneck_logsumexp
+    method: mean
     tau: 0.25
 
   # Anti-shortcut: reduce reliance on a tiny head parameter set (conv.*).
@@ -146,4 +146,3 @@ defense:
 misc:
   workspace: ./output/workspace_immunize_smoke
   seed: 42
-

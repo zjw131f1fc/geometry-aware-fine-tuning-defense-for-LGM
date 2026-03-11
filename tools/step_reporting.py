@@ -7,6 +7,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional
 
+DEFAULT_ATTACK_REPORT_CHECKPOINTS = 4
+
 
 def _safe_int(value: Any) -> Optional[int]:
     try:
@@ -22,13 +24,16 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
-def build_requested_steps(total_steps: int | None, num_checkpoints: int = 5) -> List[int]:
+def build_requested_steps(
+    total_steps: int | None,
+    num_checkpoints: int = DEFAULT_ATTACK_REPORT_CHECKPOINTS,
+) -> List[int]:
     """Build evenly spaced checkpoint steps, always including the final step."""
     total = _safe_int(total_steps)
     if total is None or total <= 0:
         return []
 
-    num = max(1, min(_safe_int(num_checkpoints) or 5, total))
+    num = max(1, min(_safe_int(num_checkpoints) or DEFAULT_ATTACK_REPORT_CHECKPOINTS, total))
     requested = [int(math.ceil(total * i / num)) for i in range(1, num + 1)]
     requested[-1] = total
 
@@ -90,7 +95,7 @@ def build_attack_step_report(
     step_history: Any,
     *,
     total_steps: int | None = None,
-    num_checkpoints: int = 5,
+    num_checkpoints: int = DEFAULT_ATTACK_REPORT_CHECKPOINTS,
 ) -> Dict[str, Any]:
     """Build a checkpoint report for one attack history."""
     entries = _normalize_history(step_history)
@@ -145,7 +150,7 @@ def build_dual_attack_step_report(
     postdefense_history: Any,
     *,
     total_steps: int | None = None,
-    num_checkpoints: int = 5,
+    num_checkpoints: int = DEFAULT_ATTACK_REPORT_CHECKPOINTS,
 ) -> Dict[str, Any]:
     """Build a combined baseline/post-defense checkpoint report."""
     if total_steps is None:
@@ -181,13 +186,21 @@ def _format_phase_line(label: str, entry: Dict[str, Any]) -> str:
     if actual_step is None:
         return f"  {label:<20} (无可用 step 记录)"
 
-    return (
+    line = (
         f"  {label:<20} actual_step={actual_step:<4} "
         f"masked_psnr={_format_value(entry.get('masked_psnr'), 2)} "
-        f"masked_lpips={_format_value(entry.get('masked_lpips'), 4)} "
-        f"source_psnr={_format_value(entry.get('source_psnr'), 2)} "
-        f"source_lpips={_format_value(entry.get('source_lpips'), 4)}"
+        f"masked_lpips={_format_value(entry.get('masked_lpips'), 4)}"
     )
+
+    source_psnr = _safe_float(entry.get("source_psnr"))
+    source_lpips = _safe_float(entry.get("source_lpips"))
+    if source_psnr is not None or source_lpips is not None:
+        line += (
+            f" source_psnr={_format_value(entry.get('source_psnr'), 2)} "
+            f"source_lpips={_format_value(entry.get('source_lpips'), 4)}"
+        )
+
+    return line
 
 
 def format_dual_attack_step_report(
