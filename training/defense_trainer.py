@@ -1927,10 +1927,19 @@ class DefenseTrainer:
         accumulation_counter = 0  # 梯度累积计数器
         accum_has_target = False
         accum_has_source = False
+        tracker = None
+        if hasattr(self, 'config'):
+            if isinstance(self.config, dict):
+                tracker = self.config.get('_efficiency_tracker')
+            elif hasattr(self.config, '_efficiency_tracker'):
+                tracker = self.config._efficiency_tracker
 
         # 时间跟踪
         epoch_start_time = time.time()
         step_times = []  # 记录最近的步时间用于平滑估计
+        avg_step_time = 0.0
+        target_batch_time_total = 0.0
+        target_batch_count = 0
 
         # 双数据加载器：按比例混合source和target
         source_iter = iter(self.source_loader)
@@ -1950,9 +1959,14 @@ class DefenseTrainer:
         last_step_time = time.time()
 
         for batch_idx in pbar:
+            # FLOPs 以优化器步为单位统计：覆盖梯度累积内的全部 micro-batch、backward 和 optimizer.step()
+            if accumulation_counter == 0 and tracker is not None:
+                tracker.start_flops_profiler(global_step + 1)
+
             # 按比例决定使用source还是target
             import random
             use_source = random.random() < self.source_ratio
+            batch_start_time = time.time()
 
             try:
                 if use_source:
@@ -1979,6 +1993,11 @@ class DefenseTrainer:
                     accum_has_target = True
                     if getattr(self, "use_grad_surgery", False):
                         self._maybe_apply_grad_surgery_(source_iter)
+
+            batch_time = time.time() - batch_start_time
+            if not use_source:
+                target_batch_time_total += batch_time
+                target_batch_count += 1
 
             # 累积损失
             for key, value in loss_dict.items():
@@ -2024,16 +2043,22 @@ class DefenseTrainer:
                 # 优化器步数 +1（只在实际更新参数时计数）
                 global_step += 1
 
+                if tracker is not None:
+                    tracker.stop_flops_profiler(global_step)
+
                 # 记录效率指标
-                if hasattr(self, 'config') and hasattr(self.config, '_efficiency_tracker'):
-                    tracker = self.config._efficiency_tracker
-                    if tracker is not None:
-                        tracker.record(
-                            step=global_step,
-                            epoch=epoch,
-                            step_time=avg_step_time if step_times else 0.0,
-                            loss=loss_dict.get('loss'),
-                        )
+                if tracker is not None:
+                    tracker.record(
+                        step=global_step,
+                        epoch=epoch,
+                        step_time=avg_step_time if step_times else 0.0,
+                        loss=loss_dict.get('loss'),
+                        target_avg_batch_time_s=(
+                            target_batch_time_total / target_batch_count
+                            if target_batch_count > 0 else None
+                        ),
+                        target_batch_count=target_batch_count,
+                    )
 
                 # 更新噪声scale（warmup）
                 if (self.use_param_noise and self.noise_warmup_steps > 0) or \
@@ -2403,8 +2428,19 @@ def load_or_train_defense(config, device='cuda', save_dir=None, cache_mode: str 
     if cache_mode not in ("registry", "readonly", "none", "writeonly"):
         raise ValueError(f"cache_mode 不支持: {cache_mode}（支持 registry/readonly/none/writeonly）")
 
+    shared_efficiency_tracker = None
+    if isinstance(config, dict):
+        shared_efficiency_tracker = config.get('_efficiency_tracker')
+    elif hasattr(config, '_efficiency_tracker'):
+        shared_efficiency_tracker = config._efficiency_tracker
+
     config = copy.deepcopy(config)
     tag = compute_defense_hash(config)
+    if shared_efficiency_tracker is not None:
+        if isinstance(config, dict):
+            config['_efficiency_tracker'] = shared_efficiency_tracker
+        else:
+            config._efficiency_tracker = shared_efficiency_tracker
     model_path = REGISTRY_DIR / tag / "model.pth"
 
     if cache_mode in ("registry", "readonly") and model_path.exists():

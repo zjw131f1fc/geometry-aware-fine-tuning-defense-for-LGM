@@ -162,7 +162,7 @@ defense:
   distill_loss_order: 1
 
   robustness: {enabled: false, noise_scale: 0.005, warmup_steps: 0}
-  input_noise: {enabled: true, noise_scale: 0.02, warmup_steps: 50}
+  input_noise: {enabled: false, noise_scale: 0.02, warmup_steps: 50}
   gradient_conflict: {enabled: false, weight: 0.0, every_k_steps: 1}
 
   transfer_diag:

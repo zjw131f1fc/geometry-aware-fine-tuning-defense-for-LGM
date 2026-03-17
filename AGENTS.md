@@ -1,6 +1,6 @@
 # 3D-Defense 项目说明（给后续 Agent / Codex）
 
-Last updated: 2026-03-10
+Last updated: 2026-03-13
 
 这个文件记录当前仓库的有效项目结构、实验入口和需要遵守的结果口径，目的是让后续 session 不用重新通读一遍代码。
 
@@ -85,6 +85,7 @@ Last updated: 2026-03-10
 ### 3.4 其他常见实验
 
 - `experiments/run_ablation_attack.sh`
+- `experiments/run_ablation_attack_naive_unlearning.sh`
 - `experiments/run_ablation_attack_and_traps.sh`
 - `experiments/run_ablation_coupling.sh`
 - `experiments/run_ablation_gaussian_attributes.sh`
@@ -92,6 +93,7 @@ Last updated: 2026-03-10
 - `experiments/run_ablation_trap.sh`
 - `experiments/run_compare_trap_aggregation.sh`
 - `experiments/run_compare_random_vs_pretrained_5cats.sh`
+- `experiments/run_standard_defense_efficiency.sh`
 - `experiments/run_main_all_three.sh`
 - `experiments/run_all_experiments.sh`
 - `experiments/run_overnight_all.sh`
@@ -117,6 +119,13 @@ Last updated: 2026-03-10
   - 当前 attack steps 覆盖：`400(default)`、`800`、`1600`
   - 当前固定 `defense_steps=100`
 
+- `experiments/run_ablation_attack_naive_unlearning.sh`
+  - 从 `experiments/run_ablation_attack_and_traps.sh` 摘出的 attack-only 子集入口
+  - 当前覆盖项目命名里的 `gso -> omni` 场景下，`shoe/plant` 的 22 个攻击消融任务
+  - 当前固定 `defense_method=naive_unlearning`
+  - 当前固定 `attack_steps=400`、`defense_steps=100`、`eval_every_steps=-1`
+  - 当前脚本里的 `gso -> omni` 实际对应：`attack_target_dataset=omni`、`defense_target_dataset=gso`，且 defense target 使用全部数据
+
 - `experiments/run_ablation_attack_and_traps.sh`
   - 从 `experiments/run_main_all_three.sh` 摘出的子集入口
   - 当前覆盖项目命名里的 `gso -> omni` 场景下，`shoe/plant` 的攻击消融 + single-trap + multi-trap 代表链
@@ -136,6 +145,20 @@ Last updated: 2026-03-10
   - 默认是 5 种 trap 全开：`position,scale,rotation,opacity,color`
   - 默认比较 `mean` vs `bottleneck_logsumexp`
   - 默认 `defense_steps=50`
+
+- `experiments/run_standard_defense_efficiency.sh`
+  - 当前固定测量项目命名里的 `gso -> omni` setting 下的 defense efficiency
+  - 当前实际口径：`attack_target_dataset=omni`、`defense_target_dataset=gso`
+  - 当前口径：`data.use_object_split=true`，defense target 使用全部数据
+  - 当前固定 `attack_steps=400`、`defense_steps=100`
+  - 当前默认是 2 个任务，不是 `5 × 2`
+  - 当前两条任务都用同一组类别：`shoe,plant,dish,bowl,box`
+  - 当前任务 1：`naive_unlearning`
+  - 当前任务 2：`geotrap`，并显式开启 5 个 trap：`position,scale,opacity,rotation,color`
+  - 当前默认传 `--measure_efficiency`
+  - 当前默认 `DEFENSE_CACHE_MODE=none`，确保不会命中缓存而跳过真实 defense 训练
+  - 当前默认 `SKIP_BASELINE=1`、`SKIP_POSTDEFENSE_ATTACK=1`，因为效率统计只测 `Phase 2: Defense`
+  - 当前汇总读取 `defense_efficiency.json`，打印 `training time / avg step time / target avg batch time / peak GPU memory`
 
 读这些脚本时，优先看：
 

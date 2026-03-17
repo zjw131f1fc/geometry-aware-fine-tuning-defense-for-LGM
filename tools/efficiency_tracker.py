@@ -50,26 +50,137 @@ class EfficiencyTracker:
     def __init__(self,
                  method_name: str = "Method",
                  flops_per_step: Optional[float] = None,
-                 target_performance: Optional[Dict[str, float]] = None):
+                 target_performance: Optional[Dict[str, float]] = None,
+                 flops_profile_steps: int = 4,
+                 flops_profile_warmup_steps: int = 1):
         """
         Args:
             method_name: 方法名称（用于报告）
             flops_per_step: 每step的FLOPs（如果已知）
             target_performance: 目标性能阈值，如 {'psnr': 28.5, 'lpips': 0.15}
+            flops_profile_steps: 若 flops_per_step 未知，自动采样多少个优化器步估计 FLOPs
+            flops_profile_warmup_steps: 跳过前多少个优化器步后再开始 FLOPs 采样
         """
         self.method_name = method_name
+        self._manual_flops_per_step = flops_per_step
         self.flops_per_step = flops_per_step
         self.target_performance = target_performance or {}
+        self.flops_profile_steps = max(int(flops_profile_steps), 0)
+        self.flops_profile_warmup_steps = max(int(flops_profile_warmup_steps), 0)
 
         self.history: List[EfficiencyMetrics] = []
         self.start_time: Optional[float] = None
         self.peak_memory_mb: float = 0.0
+        self.flops_samples: List[float] = []
+        self.flops_profiled_steps: List[int] = []
+        self.flops_profile_attempts: int = 0
+        self.flops_measurement_error: Optional[str] = None
+        self._active_profiler = None
+        self._active_profiler_step: Optional[int] = None
 
     def start(self):
         """开始训练计时"""
         self.start_time = time.time()
         self.history = []
         self.peak_memory_mb = 0.0
+        self.flops_samples = []
+        self.flops_profiled_steps = []
+        self.flops_profile_attempts = 0
+        self.flops_measurement_error = None
+        self._active_profiler = None
+        self._active_profiler_step = None
+        self.flops_per_step = self._manual_flops_per_step
+
+    def get_flops_per_step(self) -> Optional[float]:
+        """返回当前可用的每 step FLOPs（手工指定或自动采样估计）"""
+        if self._manual_flops_per_step is not None:
+            return self._manual_flops_per_step
+        if self.flops_samples:
+            return sum(self.flops_samples) / len(self.flops_samples)
+        return self.flops_per_step
+
+    def should_profile_flops(self, step: int) -> bool:
+        """判断当前优化器步是否应该启动 FLOPs 采样"""
+        if self._manual_flops_per_step is not None:
+            return False
+        if self.flops_profile_steps <= 0:
+            return False
+        if self._active_profiler is not None:
+            return False
+        if self.flops_measurement_error is not None:
+            return False
+        if step <= self.flops_profile_warmup_steps:
+            return False
+        if self.flops_profile_attempts >= self.flops_profile_steps:
+            return False
+        return hasattr(torch, "profiler") and hasattr(torch.profiler, "profile")
+
+    def start_flops_profiler(self, step: int) -> bool:
+        """在一个优化器步开始前启动 FLOPs profiler"""
+        if not self.should_profile_flops(step):
+            return False
+
+        try:
+            activities = [torch.profiler.ProfilerActivity.CPU]
+            if torch.cuda.is_available():
+                activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+            profiler = torch.profiler.profile(
+                activities=activities,
+                with_flops=True,
+                record_shapes=False,
+                profile_memory=False,
+            )
+            profiler.__enter__()
+            self._active_profiler = profiler
+            self._active_profiler_step = int(step)
+            self.flops_profile_attempts += 1
+            return True
+        except Exception as exc:
+            self.flops_measurement_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            self._active_profiler = None
+            self._active_profiler_step = None
+            return False
+
+    def stop_flops_profiler(self, step: Optional[int] = None) -> Optional[float]:
+        """在一个优化器步结束后停止 profiler，并记录本步 FLOPs"""
+        profiler = self._active_profiler
+        profiled_step = self._active_profiler_step
+        self._active_profiler = None
+        self._active_profiler_step = None
+
+        if profiler is None:
+            return None
+
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            profiler.__exit__(None, None, None)
+
+            key_averages = profiler.key_averages()
+            total_flops = float(getattr(key_averages.total_average(), "flops", 0) or 0)
+            if total_flops <= 0:
+                total_flops = float(
+                    sum(float(getattr(evt, "flops", 0) or 0) for evt in key_averages)
+                )
+
+            if total_flops > 0:
+                effective_step = int(step if step is not None else (profiled_step or 0))
+                self.flops_samples.append(total_flops)
+                self.flops_profiled_steps.append(effective_step)
+                self.flops_per_step = self.get_flops_per_step()
+                return total_flops
+
+            if self.flops_profile_attempts >= self.flops_profile_steps:
+                self.flops_measurement_error = (
+                    "PyTorch profiler did not report FLOPs for sampled defense steps."
+                )
+        except Exception as exc:
+            self.flops_measurement_error = f"{type(exc).__name__}: {exc}"
+
+        return None
 
     def record(self,
                step: int,
@@ -98,8 +209,8 @@ class EfficiencyTracker:
         elapsed_time = time.time() - self.start_time
 
         # 计算FLOPs
-        flops_per_step = self.flops_per_step
-        cumulative_flops = self.flops_per_step * step if self.flops_per_step else None
+        flops_per_step = self.get_flops_per_step()
+        cumulative_flops = flops_per_step * step if flops_per_step is not None else None
 
         # 测量GPU显存
         gpu_memory_mb = None
@@ -284,6 +395,12 @@ class EfficiencyTracker:
             "method_name": self.method_name,
             "flops_per_step": self.flops_per_step,
             "peak_memory_mb": self.peak_memory_mb,
+            "flops_profile_steps": self.flops_profile_steps,
+            "flops_profile_warmup_steps": self.flops_profile_warmup_steps,
+            "flops_profile_attempts": self.flops_profile_attempts,
+            "flops_profiled_steps": self.flops_profiled_steps,
+            "flops_samples": self.flops_samples,
+            "flops_measurement_error": self.flops_measurement_error,
             "history": [
                 {
                     "step": m.step,

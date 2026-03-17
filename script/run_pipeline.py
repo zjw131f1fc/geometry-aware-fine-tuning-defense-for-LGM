@@ -116,6 +116,8 @@ def parse_args():
                         help='训练模式：full / lora（覆盖 config）')
     parser.add_argument('--skip_baseline', action='store_true',
                         help='跳过 Baseline Attack（Phase 1），直接从 Defense Training 开始')
+    parser.add_argument('--skip_postdefense_attack', action='store_true',
+                        help='跳过 Post-Defense Attack（Phase 3），仅运行到 Defense Training 结束')
     parser.add_argument('--attack_target_dataset', type=str, default=None,
                         help="攻击阶段 target 数据集：omni / gso / objaverse（覆盖 config.data.target.dataset）")
     parser.add_argument('--defense_target_dataset', type=str, default=None,
@@ -481,6 +483,7 @@ def main():
         "eval_every_steps": args.eval_every_steps,
         "attack_eval_steps": attack_eval_steps,
         "skip_baseline": bool(args.skip_baseline),
+        "skip_postdefense_attack": bool(args.skip_postdefense_attack),
         "export_gaussian_samples": bool(args.export_gaussian_samples),
         "gaussian_samples_num": int(args.gaussian_samples_num),
         "gaussian_plot_bins": int(args.gaussian_plot_bins),
@@ -572,6 +575,7 @@ def main():
     _print_kv("attack.eval_steps", attack_eval_steps)
     _print_kv("attack.num_render", args.num_render)
     _print_kv("attack.skip_baseline", args.skip_baseline)
+    _print_kv("attack.skip_postdefense_attack", args.skip_postdefense_attack)
     _print_kv("attack.semantic_deflection", bool(supervision_categories))
     if supervision_categories:
         _print_kv("attack.supervision_categories", supervision_categories)
@@ -753,7 +757,9 @@ def main():
         print(f"{'='*80}")
         defense_efficiency_tracker = EfficiencyTracker(
             method_name=f"Defense Training ({config.get('defense', {}).get('method', 'unknown')})",
-            flops_per_step=None,  # 可以在这里设置已知的FLOPs值
+            flops_per_step=None,
+            flops_profile_steps=4,
+            flops_profile_warmup_steps=1,
         )
 
     # ========== Phase 1: Baseline Attack（带缓存）==========
@@ -859,7 +865,10 @@ def main():
     # 启动效率追踪
     if defense_efficiency_tracker:
         defense_efficiency_tracker.start()
-        config._efficiency_tracker = defense_efficiency_tracker
+        if isinstance(config, dict):
+            config['_efficiency_tracker'] = defense_efficiency_tracker
+        else:
+            config._efficiency_tracker = defense_efficiency_tracker
 
     need_defense_state = (defense_cache_mode != "registry")
     if need_defense_state:
@@ -1008,7 +1017,10 @@ def main():
         torch.cuda.synchronize()
 
     # ========== Phase 3: Post-Defense Attack ==========
-    if defense_tag is not None:
+    if args.skip_postdefense_attack:
+        print("\n[Pipeline] --skip_postdefense_attack 已启用，跳过 Post-Defense Attack")
+        postdef_history, postdef_source, postdef_target = None, None, None
+    elif defense_tag is not None:
         postdef_history, postdef_source, postdef_target = run_attack(
             attack_config, deflection_train_loader if supervision_categories else target_train_loader,
             source_val_loader,
@@ -1142,6 +1154,7 @@ def main():
             'target_layers': target_layers,
             'semantic_deflection': supervision_categories is not None,
             'supervision_categories': supervision_categories,
+            'skip_postdefense_attack': bool(args.skip_postdefense_attack),
         },
         'artifacts': {
             'gaussian_exports': gaussian_export_paths if args.export_gaussian_samples else None,
@@ -1289,12 +1302,22 @@ def main():
 
             # 打印关键指标
             final_metrics = defense_efficiency_tracker.history[-1]
+            target_avg_batch_time = None
+            target_batch_count = None
+            if getattr(final_metrics, "extra_metrics", None):
+                target_avg_batch_time = final_metrics.extra_metrics.get("target_avg_batch_time_s")
+                target_batch_count = final_metrics.extra_metrics.get("target_batch_count")
 
             print(f"\n【防御训练统计】")
             print(f"方法: {defense_efficiency_tracker.method_name}")
             print(f"总步数: {final_metrics.step}")
             print(f"总时间: {final_metrics.elapsed_time/3600:.2f} 小时")
             print(f"平均步时: {final_metrics.elapsed_time/final_metrics.step:.3f} 秒/步")
+            if target_avg_batch_time is not None:
+                if target_batch_count is not None:
+                    print(f"Target平均batch时: {target_avg_batch_time:.3f} 秒/批次 (n={int(target_batch_count)})")
+                else:
+                    print(f"Target平均batch时: {target_avg_batch_time:.3f} 秒/批次")
             if final_metrics.gpu_memory_mb:
                 print(f"峰值显存: {final_metrics.gpu_memory_mb:.0f} MB")
 
@@ -1305,11 +1328,13 @@ def main():
             print(f"| 训练步数     | {final_metrics.step:,} steps      |")
             print(f"| 训练时间     | {final_metrics.elapsed_time/3600:.2f} hours       |")
             print(f"| 平均步时     | {final_metrics.elapsed_time/final_metrics.step:.3f} s/step       |")
+            if target_avg_batch_time is not None:
+                if target_batch_count is not None:
+                    print(f"| Target平均时 | {target_avg_batch_time:.3f} s/batch (n={int(target_batch_count)}) |")
+                else:
+                    print(f"| Target平均时 | {target_avg_batch_time:.3f} s/batch       |")
             if defense_efficiency_tracker.peak_memory_mb > 0:
                 print(f"| 峰值显存     | {defense_efficiency_tracker.peak_memory_mb:.0f} MB          |")
-            if defense_efficiency_tracker.flops_per_step:
-                total_flops = defense_efficiency_tracker.flops_per_step * final_metrics.step / 1e12
-                print(f"| 总计算量     | {total_flops:.1f} TFLOPs       |")
 
             print(f"\n提示: 运行不同防御方法后，可以对比各自的 defense_efficiency.json")
             print(f"{'='*80}")

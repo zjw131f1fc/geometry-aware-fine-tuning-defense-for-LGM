@@ -1182,8 +1182,13 @@ def run_attack(config, target_train_loader, source_val_loader,
                     step_history.append(metrics)
 
                     # 记录效率指标
-                    if hasattr(config, '_efficiency_tracker') and config._efficiency_tracker is not None:
-                        config._efficiency_tracker.record(
+                    tracker = None
+                    if isinstance(config, dict):
+                        tracker = config.get('_efficiency_tracker')
+                    elif hasattr(config, '_efficiency_tracker'):
+                        tracker = config._efficiency_tracker
+                    if tracker is not None:
+                        tracker.record(
                             step=global_step,
                             epoch=epoch,
                             step_time=avg_step_time,
