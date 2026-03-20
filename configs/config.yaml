@@ -22,12 +22,12 @@ data:
 
   target:
     dataset: omni
-    categories: [dish]
+    categories: [box]
 
   # 是否按 object_split 对 target / defense_target 抽取物体。
   # true: target 使用剩余物体做 attack，defense_target 使用 split 中指定物体。
   # false: 忽略 object_split；target 使用全部物体，defense_target 走 split_ratio 或全部数据。
-  use_object_split: true
+  use_object_split: false
   object_split:
     shoe: [0, 4, 10, 11, 14, 15, 16, 20, 24, 33, 34]
     plant: [2, 4, 8, 9]
@@ -71,7 +71,7 @@ attack:
   scenario: malicious_content
   mode: null
   malicious_content:
-    malicious_categories: [dish]
+    malicious_categories: [box]
   pre_eval:
     enabled: true
     render_metrics: true
@@ -90,8 +90,8 @@ defense:
   gradient_accumulation_steps: 1
 
   target:
-    dataset: omni
-    categories: [dish]
+    dataset: gso
+    categories: [box]
     # object_split:
     #   plant: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     samples_per_object: 5
