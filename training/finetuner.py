@@ -434,7 +434,11 @@ def run_attack(config, target_train_loader, source_val_loader,
                gaussian_export_loader=None,
                gaussian_export_num_samples: int = 32,
                gaussian_export_path: str = None,
-               gaussian_export_stage: str = None):
+               gaussian_export_stage: str = None,
+               stable_render_loader=None,
+               stable_render_save_dir: str = None,
+               stable_render_num_views: int = 4,
+               stable_render_max_samples: int = None):
     """
     一行运行攻击阶段。
 
@@ -462,6 +466,10 @@ def run_attack(config, target_train_loader, source_val_loader,
         phase_name: 阶段名称（用于日志）
         return_gaussians: 是否返回攻击后在 target 上生成的 Gaussian 列表
         ref_gaussians: 参考 Gaussian 列表（如 baseline 缓存），用于计算距离
+        stable_render_loader: 固定顺序 loader，用于导出可配对的 target 渲染视图
+        stable_render_save_dir: 稳定导出目录；None 表示不导出
+        stable_render_num_views: 每个样本导出多少个渲染视图
+        stable_render_max_samples: 最多导出多少个样本；None 表示导出全部
 
     Returns:
         (step_history, source_metrics, target_metrics) 或
@@ -1291,6 +1299,15 @@ def run_attack(config, target_train_loader, source_val_loader,
         evaluator.render_samples(attack_eval_loader,
                                  os.path.join(save_dir, 'target_renders'),
                                  prefix='target_', num_samples=num_render)
+
+        if stable_render_loader is not None and stable_render_save_dir:
+            evaluator.export_loader_render_views(
+                stable_render_loader,
+                stable_render_save_dir,
+                num_views=stable_render_num_views,
+                max_samples=stable_render_max_samples,
+                stage=phase_name,
+            )
 
         print(f"  评估攻击后的 target 质量...")
         target_metrics = evaluator.evaluate_on_loader(attack_eval_loader)

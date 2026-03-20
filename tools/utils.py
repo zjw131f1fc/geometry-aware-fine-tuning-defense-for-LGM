@@ -339,7 +339,7 @@ def save_baseline_cache(cache_dir, history, baseline_source=None, baseline_targe
 
 def copy_cached_renders(cache_dir, dest_dir):
     """从缓存复制渲染图片到当前 pipeline 工作目录。"""
-    for sub in ('source_renders', 'target_renders'):
+    for sub in ('source_renders', 'target_renders', 'target_comparison_export'):
         src = os.path.join(cache_dir, sub)
         dst = os.path.join(dest_dir, sub)
         if os.path.isdir(src):

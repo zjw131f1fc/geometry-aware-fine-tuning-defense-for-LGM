@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import os
+import json
 from tqdm import tqdm
 from typing import Dict, Any, List, Optional
 from PIL import Image
@@ -1112,6 +1113,180 @@ class Evaluator:
                     gaussians, save_dir=save_dir, prefix=f"{prefix}{i}_",
                     gt_images=gt_images, elevations=elevations, azimuths=azimuths,
                 )
+
+    @staticmethod
+    def _sample_metadata_from_batch(batch: Dict[str, Any], batch_index: int, global_index: int) -> Dict[str, Any]:
+        def _as_py(value):
+            if value is None:
+                return None
+            if torch.is_tensor(value):
+                try:
+                    return value.item()
+                except Exception:
+                    return value.detach().cpu().tolist()
+            return value
+
+        def _extract(field: str):
+            if field not in batch:
+                return None
+            value = batch[field]
+            try:
+                return _as_py(value[batch_index])
+            except Exception:
+                return _as_py(value)
+
+        meta: Dict[str, Any] = {"global_index": int(global_index)}
+        for field in (
+            'category',
+            'object',
+            'sample_idx',
+            'uuid',
+            'input_uuid',
+            'supervision_uuid',
+            'input_category',
+            'input_object',
+            'input_sample_idx',
+            'supervision_category',
+            'supervision_object',
+            'supervision_sample_idx',
+        ):
+            value = _extract(field)
+            if value is not None:
+                meta[field] = value
+        return meta
+
+    @staticmethod
+    def _make_sample_key(meta: Dict[str, Any]) -> str:
+        def _sanitize(value: Any) -> str:
+            text = str(value)
+            for ch in (os.sep, '/', '\\', ' ', ':', '|'):
+                text = text.replace(ch, '_')
+            return text
+
+        sample_idx = meta.get('sample_idx')
+        if 'category' in meta and 'object' in meta:
+            suffix = f"sample{sample_idx}" if sample_idx is not None else "sample"
+            return f"{_sanitize(meta['category'])}__{_sanitize(meta['object'])}__{suffix}"
+        if 'uuid' in meta:
+            suffix = f"sample{sample_idx}" if sample_idx is not None else "sample"
+            return f"uuid__{_sanitize(meta['uuid'])}__{suffix}"
+        return f"sample__{int(meta.get('global_index', 0)):04d}"
+
+    @staticmethod
+    def _build_view_strip(view_images: List[np.ndarray]) -> Image.Image:
+        if not view_images:
+            raise ValueError("view_images 不能为空")
+        widths = [img.shape[1] for img in view_images]
+        heights = [img.shape[0] for img in view_images]
+        canvas = Image.new("RGB", (sum(widths), max(heights)), color=(255, 255, 255))
+        offset_x = 0
+        for img in view_images:
+            pil_img = Image.fromarray(img)
+            canvas.paste(pil_img, (offset_x, 0))
+            offset_x += pil_img.width
+        return canvas
+
+    @torch.no_grad()
+    def export_loader_render_views(
+        self,
+        loader,
+        save_dir: str,
+        *,
+        num_views: int = 4,
+        max_samples: Optional[int] = None,
+        stage: str = '',
+    ) -> Dict[str, Any]:
+        """
+        用固定顺序 loader 导出逐样本渲染视图，并写出 manifest。
+
+        这里不复用 render_samples 的 batch 序号命名，而是显式导出稳定 sample_key，
+        方便 baseline / post-defense 两个阶段按样本键对齐。
+        """
+        self.model.eval()
+        os.makedirs(save_dir, exist_ok=True)
+
+        entries: List[Dict[str, Any]] = []
+        collected = 0
+
+        for batch in loader:
+            if max_samples is not None and collected >= max_samples:
+                break
+
+            data = prepare_lgm_data(batch, self.model, self.device)
+            gaussians = self.model.forward_gaussians(data['input'])
+
+            input_transforms = batch.get('input_transforms')
+            supervision_transforms = batch.get('supervision_transforms')
+            if input_transforms is not None and supervision_transforms is not None:
+                transforms = torch.cat([
+                    input_transforms.to(self.device),
+                    supervision_transforms.to(self.device),
+                ], dim=1)
+                rendered = self.render_views(gaussians, transforms=transforms)
+            else:
+                elevations = batch.get('supervision_elevations')
+                azimuths = batch.get('supervision_azimuths')
+                if elevations is not None:
+                    elevations = elevations.to(self.device)
+                if azimuths is not None:
+                    azimuths = azimuths.to(self.device)
+                if elevations is not None and azimuths is not None:
+                    rendered = self.render_views(gaussians, elevations, azimuths, self.model.opt)
+                else:
+                    rendered = self.render_canonical_views(gaussians)
+
+            batch_size = int(rendered.shape[0])
+            for batch_index in range(batch_size):
+                if max_samples is not None and collected >= max_samples:
+                    break
+
+                meta = self._sample_metadata_from_batch(batch, batch_index, collected)
+                sample_key = self._make_sample_key(meta)
+                sample_dir_name = f"{collected + 1:04d}_{sample_key}"
+                sample_dir = os.path.join(save_dir, sample_dir_name)
+                os.makedirs(sample_dir, exist_ok=True)
+
+                render_views_np = rendered[batch_index].clamp(0, 1).detach().cpu().permute(0, 2, 3, 1).numpy()
+                use_views = min(int(num_views), int(render_views_np.shape[0]))
+                rendered_paths: List[str] = []
+                strip_images: List[np.ndarray] = []
+
+                for view_index in range(use_views):
+                    img_uint8 = (render_views_np[view_index] * 255).astype(np.uint8)
+                    strip_images.append(img_uint8)
+                    filename = f"rendered_view_{view_index:02d}.png"
+                    abs_path = os.path.join(sample_dir, filename)
+                    Image.fromarray(img_uint8).save(abs_path)
+                    rendered_paths.append(os.path.relpath(abs_path, save_dir))
+
+                strip_path = os.path.join(sample_dir, 'rendered_strip.png')
+                self._build_view_strip(strip_images).save(strip_path)
+
+                entries.append({
+                    'export_index': int(collected + 1),
+                    'sample_key': sample_key,
+                    'sample_dir': os.path.relpath(sample_dir, save_dir),
+                    'rendered_strip_path': os.path.relpath(strip_path, save_dir),
+                    'rendered_view_paths': rendered_paths,
+                    'num_rendered_views': int(use_views),
+                    'metadata': meta,
+                })
+                collected += 1
+
+        manifest = {
+            'format_version': 1,
+            'stage': str(stage or ''),
+            'num_requested_views': int(num_views),
+            'max_samples': int(max_samples) if max_samples is not None else None,
+            'num_samples': int(len(entries)),
+            'entries': entries,
+        }
+        manifest_path = os.path.join(save_dir, 'manifest.json')
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+        print(f"[Evaluator] 稳定 target 视图导出完成: {save_dir} ({len(entries)} 个样本)")
+        return manifest
 
     def evaluate_batch(self, batch) -> Dict[str, float]:
         """

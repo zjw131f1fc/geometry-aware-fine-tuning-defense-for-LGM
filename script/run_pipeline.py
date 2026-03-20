@@ -172,6 +172,18 @@ def parse_args():
                         help='Color trap 开关：true / false（覆盖 config.defense.trap_losses.color.static）')
     parser.add_argument('--measure_efficiency', action='store_true',
                         help='启用训练效率测量（记录时间、FLOPs、显存等指标）')
+    parser.add_argument('--export_target_comparison_data', action='store_true',
+                        help='导出可配对的 target 对比素材（固定顺序，用于 baseline / post-defense 可视化）')
+    parser.add_argument('--target_comparison_num_views', type=int, default=4,
+                        help='为 target 对比素材导出多少个渲染视图（默认4）')
+    parser.add_argument('--target_comparison_max_samples', type=int, default=None,
+                        help='最多导出多少个 target 样本用于对比素材（默认全部）')
+    parser.add_argument('--export_source_comparison_data', action='store_true',
+                        help='导出可配对的 source 对比素材（clean baseline / defense 后，均为 attack 前）')
+    parser.add_argument('--source_comparison_num_views', type=int, default=4,
+                        help='为 source 对比素材导出多少个渲染视图（默认4）')
+    parser.add_argument('--source_comparison_max_samples', type=int, default=None,
+                        help='最多导出多少个 source 样本用于对比素材（默认全部）')
     return parser.parse_args()
 
 
@@ -185,6 +197,11 @@ def main():
 
     args = parse_args()
     device = 'cuda'
+
+    if args.export_target_comparison_data and args.target_comparison_num_views <= 0:
+        raise ValueError("--target_comparison_num_views 必须为正整数")
+    if args.export_source_comparison_data and args.source_comparison_num_views <= 0:
+        raise ValueError("--source_comparison_num_views 必须为正整数")
 
     def _dump_json(path: str, obj) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -228,6 +245,66 @@ def main():
                 except Exception:
                     return step
         return None
+
+    def _export_source_comparison_views(export_cfg, loader, save_dir: str, *,
+                                        num_views: int, max_samples: int | None,
+                                        stage: str, model_state_dict_override=None) -> bool:
+        try:
+            export_cfg = copy.deepcopy(export_cfg)
+            state_dict = model_state_dict_override
+            if isinstance(state_dict, dict) and 'model_state_dict' in state_dict:
+                state_dict = state_dict['model_state_dict']
+
+            export_mgr = ModelManager(export_cfg)
+            if state_dict is None:
+                export_mgr.setup(device='cuda')
+                export_model = export_mgr.model
+            else:
+                override_keys = list(getattr(state_dict, 'keys', lambda: [])())
+                has_peft_prefix = (
+                    any(str(k).startswith('base_model.') for k in override_keys)
+                    or any('.lora_' in str(k) for k in override_keys)
+                    or any('.base_layer.' in str(k) for k in override_keys)
+                )
+                export_mgr.setup(apply_lora=has_peft_prefix, device='cuda')
+                export_model = export_mgr.model
+
+                raw = export_model
+                while hasattr(raw, 'module'):
+                    raw = raw.module
+
+                load_target = raw
+                if (not has_peft_prefix) and hasattr(raw, 'base_model'):
+                    base = getattr(raw, 'base_model', None)
+                    if hasattr(base, 'model') and hasattr(base.model, 'load_state_dict'):
+                        load_target = base.model
+                    else:
+                        gbm = getattr(raw, 'get_base_model', None)
+                        if callable(gbm):
+                            try:
+                                load_target = gbm()
+                            except Exception:
+                                load_target = raw
+
+                missing, unexpected = load_target.load_state_dict(state_dict, strict=False)
+                if missing or unexpected:
+                    print(f"[SourceComparison] {stage}: state_dict non-strict (missing={len(missing)}, unexpected={len(unexpected)})")
+
+            export_eval = Evaluator(export_model, device='cuda')
+            export_eval.export_loader_render_views(
+                loader,
+                save_dir,
+                num_views=num_views,
+                max_samples=max_samples,
+                stage=stage,
+            )
+
+            del export_eval, export_model, export_mgr
+            torch.cuda.empty_cache()
+            return True
+        except Exception as e:
+            print(f"[SourceComparison] export skipped for {stage}: {type(e).__name__}: {e}")
+            return False
 
     # 加载配置
     config = ConfigManager(args.config).config
@@ -715,6 +792,57 @@ def main():
     elif args.eval_every_steps <= 0:
         print(f"[Pipeline] Resolved attack eval steps: {attack_eval_steps}")
 
+    target_comparison_loader = None
+    target_comparison_paths = {}
+    target_comparison_enabled = bool(args.export_target_comparison_data)
+    if target_comparison_enabled and supervision_categories:
+        print("[Pipeline] 语义偏转模式暂不导出 target comparison 素材，已跳过。")
+        target_comparison_enabled = False
+
+    if target_comparison_enabled:
+        from torch.utils.data import DataLoader
+
+        target_comparison_loader = DataLoader(
+            target_train_loader.dataset,
+            batch_size=config['training']['batch_size'],
+            shuffle=False,
+            num_workers=config['data']['num_workers'],
+            pin_memory=True,
+        )
+        target_comparison_paths = {
+            "baseline_attack": os.path.join(workspace, "phase1_baseline_attack", "target_comparison_export"),
+            "postdefense_attack": os.path.join(workspace, "phase3_postdefense_attack", "target_comparison_export"),
+        }
+        print(f"[Pipeline] Target comparison export enabled: views={args.target_comparison_num_views}, "
+              f"max_samples={args.target_comparison_max_samples if args.target_comparison_max_samples is not None else 'all'}")
+
+    source_comparison_loader = None
+    source_comparison_paths = {}
+    source_comparison_enabled = bool(args.export_source_comparison_data)
+    if source_comparison_enabled:
+        source_comparison_loader = source_val_loader
+        source_comparison_paths = {
+            "baseline_preattack": os.path.join(workspace, "source_comparison_export", "baseline_preattack"),
+            "defense_preattack": os.path.join(workspace, "source_comparison_export", "defense_preattack"),
+        }
+        print(f"[Pipeline] Source comparison export enabled: views={args.source_comparison_num_views}, "
+              f"max_samples={args.source_comparison_max_samples if args.source_comparison_max_samples is not None else 'all'}")
+
+    if source_comparison_enabled and source_comparison_loader is not None:
+        print(f"\n{'='*80}")
+        print("  Phase 0.X: Export Source comparison (clean baseline, pre-attack)")
+        print(f"  num_views={args.source_comparison_num_views}, "
+              f"max_samples={args.source_comparison_max_samples if args.source_comparison_max_samples is not None else 'all'}")
+        print(f"{'='*80}")
+        _export_source_comparison_views(
+            config,
+            source_comparison_loader,
+            source_comparison_paths.get('baseline_preattack'),
+            num_views=args.source_comparison_num_views,
+            max_samples=args.source_comparison_max_samples,
+            stage='clean_baseline_preattack',
+        )
+
     # Optional: fixed-sample Gaussian exports for paper-style distributions.
     gaussian_export_loader = None
     gaussian_export_paths = {}
@@ -781,12 +909,16 @@ def main():
         cache_dir = os.path.join(BASELINE_CACHE_DIR, baseline_hash)
         phase1_dir = os.path.join(workspace, 'phase1_baseline_attack')
         gaussians_cache_path = os.path.join(cache_dir, 'baseline_gaussians.pt')
+        target_comparison_cache_manifest = os.path.join(cache_dir, 'target_comparison_export', 'manifest.json')
 
         use_baseline_cache = not bool(args.no_baseline_cache)
         if use_baseline_cache:
             baseline_history, baseline_source, baseline_target, cache_hit = load_baseline_cache(cache_dir)
         else:
             print("[Cache] baseline_cache disabled (--no_baseline_cache): will rerun Phase 1.")
+            baseline_history, baseline_source, baseline_target, cache_hit = None, None, None, False
+        if cache_hit and target_comparison_enabled and not os.path.exists(target_comparison_cache_manifest):
+            print("[Cache] baseline cache 缺少 target comparison 素材，将重跑 Phase 1 以补导出。")
             baseline_history, baseline_source, baseline_target, cache_hit = None, None, None, False
         if cache_hit:
             # 缓存命中：baseline_source 和 baseline_target 都从缓存加载
@@ -846,6 +978,10 @@ def main():
                 gaussian_export_num_samples=args.gaussian_samples_num,
                 gaussian_export_path=gaussian_export_paths.get("baseline_attack"),
                 gaussian_export_stage="baseline_attack",
+                stable_render_loader=target_comparison_loader,
+                stable_render_save_dir=target_comparison_paths.get("baseline_attack"),
+                stable_render_num_views=args.target_comparison_num_views,
+                stable_render_max_samples=args.target_comparison_max_samples,
             )
             if use_baseline_cache:
                 save_baseline_cache(cache_dir, baseline_history, baseline_source, baseline_target)
@@ -931,6 +1067,38 @@ def main():
                 torch.cuda.empty_cache()
             except Exception as e:
                 print(f"[GaussianExport] defense export skipped due to error: {type(e).__name__}: {e}")
+
+    if source_comparison_enabled and source_comparison_loader is not None:
+        if defense_tag is None and defense_state_dict is None:
+            print("[SourceComparison] defense_preattack skipped (defense.method=none).")
+        else:
+            defense_export_state = defense_state_dict
+            if defense_export_state is None and defense_tag is not None:
+                try:
+                    from tools.model_registry import resolve_resume_path
+                    defense_export_state = torch.load(
+                        resolve_resume_path(f"tag:{defense_tag}"),
+                        map_location='cpu',
+                    )
+                except Exception as e:
+                    print(f"[SourceComparison] failed to load defense tag for export: {type(e).__name__}: {e}")
+                    defense_export_state = None
+
+            if defense_export_state is not None:
+                print(f"\n{'='*80}")
+                print("  Phase 2.Y: Export Source comparison (defense, pre-attack)")
+                print(f"  num_views={args.source_comparison_num_views}, "
+                      f"max_samples={args.source_comparison_max_samples if args.source_comparison_max_samples is not None else 'all'}")
+                print(f"{'='*80}")
+                _export_source_comparison_views(
+                    config,
+                    source_comparison_loader,
+                    source_comparison_paths.get('defense_preattack'),
+                    num_views=args.source_comparison_num_views,
+                    max_samples=args.source_comparison_max_samples,
+                    stage='defense_preattack',
+                    model_state_dict_override=defense_export_state,
+                )
 
     # ========== Phase 2.5: Defense transfer diagnostics (pre-attack) ==========
     transfer_diag_cfg = (config.get('defense', {}).get('transfer_diag', {}) or {})
@@ -1040,6 +1208,10 @@ def main():
             gaussian_export_num_samples=args.gaussian_samples_num,
             gaussian_export_path=gaussian_export_paths.get("postdefense_attack"),
             gaussian_export_stage="postdefense_attack",
+            stable_render_loader=target_comparison_loader,
+            stable_render_save_dir=target_comparison_paths.get("postdefense_attack"),
+            stable_render_num_views=args.target_comparison_num_views,
+            stable_render_max_samples=args.target_comparison_max_samples,
         )
     else:
         # defense.method=none，跳过 Phase 3
@@ -1161,6 +1333,8 @@ def main():
             'gaussian_dist_plot': gaussian_dist_plot,
             'gaussian_dist_summary': gaussian_dist_summary,
             'attack_step_report': attack_step_report_path,
+            'target_comparison_exports': target_comparison_paths if target_comparison_enabled else None,
+            'source_comparison_exports': source_comparison_paths if source_comparison_enabled else None,
         },
         'defense_transfer_diag': defense_transfer_diag,
         'analysis': {
@@ -1284,6 +1458,12 @@ def main():
 
     print(f"\n对比图: {os.path.join(workspace, 'pipeline_result.png')}")
     print(f"分步汇总: {attack_step_report_path}")
+    if target_comparison_enabled:
+        print(f"Target对比素材(Baseline): {target_comparison_paths.get('baseline_attack')}")
+        print(f"Target对比素材(Post-Defense): {target_comparison_paths.get('postdefense_attack')}")
+    if source_comparison_enabled:
+        print(f"Source对比素材(Clean Baseline, Pre-Attack): {source_comparison_paths.get('baseline_preattack')}")
+        print(f"Source对比素材(Defense, Pre-Attack): {source_comparison_paths.get('defense_preattack')}")
     print(f"指标文件: {metrics_path}")
     print(f"工作目录: {workspace}")
 
